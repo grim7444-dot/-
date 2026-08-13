@@ -1,0 +1,10 @@
+# Alpaca 5-asset trading bot — runtime dependencies (Python >= 3.10)
+alpaca-py>=0.21.0
+pandas>=2.0.0
+numpy>=1.24.0
+PyYAML>=6.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+
+# --- development / testing ---
+pytest>=7.4.0

@@ -1,0 +1,141 @@
+# ---------------------------------------------------------------------------
+# Alpaca 5-asset trading bot — configuration
+#
+# Nothing secret lives here.  API keys and tokens are read from .env only.
+# ---------------------------------------------------------------------------
+
+account:
+  # Used by the dry-run broker and as the backtest starting equity.
+  starting_equity: 100000.0
+  currency: USD
+
+risk:
+  # Rule 4: every trade risks exactly this fraction of *current* equity.
+  per_trade_pct: 0.01
+  # Rule 5: peak-to-trough equity drawdown that trips the kill switch.
+  max_drawdown_pct: 0.10
+  # ATR lookback used for both sizing and the hard stop.
+  atr_period: 14
+  # Hard stop distance in ATR multiples.  1.0 => a 1-ATR adverse move loses
+  # exactly per_trade_pct of equity.
+  hard_stop_atr_mult: 1.0
+  # Never let a single position exceed this share of equity in notional terms.
+  max_position_notional_pct: 0.35
+  # Correlation filter (rule): block new BTC/USD longs while SPY *and* QQQ
+  # are both long.
+  correlation_filter:
+    enabled: true
+    blockers: [SPY, QQQ]
+    blocked_symbol: BTC/USD
+    blocked_side: LONG
+
+# Rule 11: cost assumptions live here and are printed with every result set.
+costs:
+  equity_commission_bps: 0.0      # Alpaca US equities are commission-free
+  equity_slippage_bps: 2.0
+  crypto_commission_bps: 25.0     # Alpaca crypto taker fee, basis points
+  crypto_slippage_bps: 5.0
+
+assets:
+  SPY:
+    enabled: true
+    asset_class: us_equity
+    strategy: mean_reversion
+    timeframe: 15Min
+    fractional: false
+    min_qty: 1
+    params:
+      period: 20
+      entry_sigma: 1.5
+
+  QQQ:
+    enabled: true
+    asset_class: us_equity
+    strategy: mean_reversion
+    timeframe: 15Min
+    fractional: false
+    min_qty: 1
+    params:
+      period: 20
+      # Wider band: QQQ is more volatile than SPY.
+      entry_sigma: 1.8
+
+  BTC/USD:
+    enabled: true
+    asset_class: crypto
+    strategy: breakout
+    timeframe: 1Hour
+    fractional: true
+    min_qty: 0.0001
+    qty_precision: 6
+    params:
+      period: 20
+      volume_mult: 1.5
+      atr_trail_mult: 2.0
+
+  GLD:
+    enabled: true
+    asset_class: us_equity
+    # NOTE: ETF proxy for gold, NOT a futures contract.  See README.
+    strategy: trend_following
+    timeframe: 4Hour
+    fractional: false
+    min_qty: 1
+    params:
+      fast_ema: 50
+      slow_ema: 200
+      atr_trail_mult: 3.0
+
+  USO:
+    enabled: true
+    asset_class: us_equity
+    # NOTE: ETF proxy for crude oil, NOT a futures contract.  See README.
+    strategy: trend_following
+    timeframe: 4Hour
+    fractional: false
+    min_qty: 1
+    params:
+      fast_ema: 50
+      slow_ema: 200
+      atr_trail_mult: 3.0
+
+schedule:
+  # How often the outer loop wakes up to see which strategies are due.
+  tick_seconds: 30
+  # Per-timeframe signal cadence, in seconds.
+  intervals:
+    15Min: 900
+    1Hour: 3600
+    4Hour: 14400
+  # Rule 8: equity ETFs trade during US regular hours, crypto is 24/7.
+  equity_session_only: true
+  crypto_24_7: true
+  # How long to sleep when the US market is closed before re-checking.
+  closed_market_sleep_seconds: 300
+
+api:
+  max_retries: 5
+  backoff_base_seconds: 2.0
+  backoff_max_seconds: 60.0
+
+backtest:
+  default_months: 6
+  # Rule 10: fills happen on the bar *after* the signal bar.
+  fill_delay_bars: 1
+  fill_price: open
+
+telegram:
+  # Rule 12: dry-run by default.  A missing token prints a preview instead of
+  # raising.
+  dry_run: true
+  parse_mode: Markdown
+
+live_banner:
+  countdown_seconds: 10
+
+paths:
+  trades_csv: trades.csv
+  daily_pnl_csv: daily_pnl.csv
+  state_file: state.json
+  log_file: logs/bot.log
+  cache_dir: data/cache

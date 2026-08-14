@@ -360,7 +360,7 @@ class MarketData:
     ) -> pd.DataFrame | None:
         try:
             # Lazy import: pykrx stays optional for tests and offline runs.
-            from pykrx import stock
+            stock = _import_pykrx_stock()
         except ImportError:
             logger.info("pykrx is not installed; skipping daily fetch for %s", code)
             return None
@@ -383,7 +383,7 @@ class MarketData:
         if not self.allow_network:
             return None
         try:
-            from pykrx import stock
+            stock = _import_pykrx_stock()
 
             return stock.get_market_ticker_name(code)
         except Exception as exc:
@@ -395,7 +395,7 @@ class MarketData:
         if not self.allow_network:
             return None
         try:
-            from pykrx import stock
+            stock = _import_pykrx_stock()
 
             today = date.today().strftime("%Y%m%d")
             for name in (KOSPI, KOSDAQ):
@@ -404,6 +404,25 @@ class MarketData:
         except Exception as exc:
             logger.debug("market lookup failed for %s: %s", code, exc)
         return None
+
+
+def _import_pykrx_stock():
+    """Import ``pykrx.stock``, silencing its import-time login notice.
+
+    pykrx prints "KRX 로그인 실패: KRX_ID 또는 KRX_PW 환경 변수가 설정되지
+    않았습니다." to stdout the first time it is imported without those
+    variables. It reads like a failure but is not one: ``website/comm/webio.py``
+    falls back to an ordinary anonymous request when no session exists, which is
+    how pykrx has always fetched public KRX data. Only the import-time banner is
+    suppressed — real fetch errors still surface through the caller.
+    """
+    import contextlib
+    import io
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        from pykrx import stock
+
+    return stock
 
 
 def _normalise(frame: pd.DataFrame | None) -> pd.DataFrame | None:

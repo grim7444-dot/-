@@ -173,7 +173,9 @@ class KrxCalendar:
         network access; the caller writes the result into config.yaml.
         """
         # Lazy import: pykrx is only needed for this maintenance path.
-        from pykrx import stock
+        from data import _import_pykrx_stock
+
+        stock = _import_pykrx_stock()
 
         traded = {
             datetime.strptime(d, "%Y%m%d").date()

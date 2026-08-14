@@ -1,4 +1,8 @@
-# KRX 8-stock trading bot — runtime dependencies (Python >= 3.10)
+# KRX 8-stock trading bot - runtime dependencies (Python >= 3.10)
+#
+# Keep this file pure ASCII. pip reads it with the system locale codec, so on a
+# Korean Windows install (cp949) any non-ASCII byte here aborts the install with
+# a UnicodeDecodeError before a single package is fetched.
 pykrx>=1.0.45          # KRX daily OHLCV, listing names, business days
 pandas>=2.0.0
 numpy>=1.24.0

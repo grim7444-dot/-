@@ -351,6 +351,51 @@ def test_cli_paper_dry_run_never_submits(workdir, monkeypatch):
     assert captured["decision"].paper is True
 
 
+def test_check_command_never_submits_an_order(workdir, monkeypatch):
+    """`check` is the read-only probe used before pointing at a live account."""
+    import main
+
+    captured: dict[str, object] = {}
+    real_build = main.build_runtime
+
+    def spy(args, cli_live, force_dry_run=False):
+        rt = real_build(args, cli_live, force_dry_run)
+        captured["broker"] = rt.broker
+        captured["decision"] = rt.decision
+        return rt
+
+    monkeypatch.setattr(main, "build_runtime", spy)
+    # No credentials, so the probe reports it cannot connect and exits non-zero.
+    assert main.main(["check"]) == 1
+
+    broker = captured["broker"]
+    assert isinstance(broker, DryRunBroker)
+    assert broker.submitted == []
+    assert broker.cancelled == 0
+    assert broker.closed == 0
+
+
+def test_check_with_live_flag_still_needs_the_env(workdir, monkeypatch):
+    """`check --live` obeys the same gate as trading: no env, no live account."""
+    import main
+
+    captured: dict[str, object] = {}
+    real_build = main.build_runtime
+
+    def spy(args, cli_live, force_dry_run=False):
+        rt = real_build(args, cli_live, force_dry_run)
+        captured["decision"] = rt.decision
+        captured["credentials"] = rt.credentials
+        return rt
+
+    monkeypatch.setattr(main, "build_runtime", spy)
+    main.main(["check", "--live"])
+
+    assert captured["decision"].live is False
+    assert captured["decision"].endpoint == PAPER_ENDPOINT
+    assert captured["credentials"].loaded_for == "PAPER"
+
+
 def test_paper_subcommand_with_live_flag_still_needs_the_env(workdir):
     """`paper --live` counts as the CLI confirmation but not as the other two."""
     import main

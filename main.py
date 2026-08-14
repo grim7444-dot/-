@@ -37,6 +37,7 @@ from settings import (
     load_config,
     load_credentials,
     load_env,
+    mask_text,
     resolve_mode,
     setup_logging,
 )
@@ -634,6 +635,109 @@ def cmd_trade(args: argparse.Namespace, cli_live: bool) -> int:
     return 0
 
 
+def cmd_check(args: argparse.Namespace) -> int:
+    """Read-only connectivity probe. Places no orders, ever.
+
+    Everything the trading loop relies on is exercised here — token, account,
+    holdings, working orders, per-stock tradability and the intraday chart —
+    but only through GET-shaped calls. This is what makes it safe to point at a
+    live account: the endpoint paths and api-id codes in ``broker.py`` were
+    written from documentation and have never met a real account, and this is
+    the way to find that out without money on the line.
+    """
+    cli_live = bool(getattr(args, "live", False))
+    rt = build_runtime(args, cli_live=cli_live, force_dry_run=False)
+
+    print()
+    print("=" * 78)
+    print("  CONNECTION CHECK  —  READ ONLY, NO ORDERS ARE SENT".center(78))
+    print("=" * 78)
+    print(f"  Mode      : {rt.decision.label}")
+    print(f"  Endpoint  : {rt.decision.endpoint}")
+    print(f"  Credential: {rt.credentials.loaded_for} key set")
+    print(f"  Session   : {rt.calendar.phase().value}")
+    print("=" * 78)
+
+    if isinstance(rt.broker, DryRunBroker):
+        print(
+            "\n  No credentials loaded, so this is the simulated broker — nothing was\n"
+            f"  contacted. Put the {rt.decision.label} app key and secret in .env first.\n"
+        )
+        return 1
+
+    results: list[tuple[str, bool, str]] = []
+
+    def probe(label: str, fn) -> Any:
+        try:
+            value = fn()
+        except Exception as exc:
+            results.append((label, False, mask_text(str(exc))[:88]))
+            return None
+        results.append((label, True, ""))
+        return value
+
+    account = probe("인증 + 계좌조회", rt.broker.get_account)
+    holdings = probe(
+        "보유종목 조회",
+        rt.broker.get_holdings if hasattr(rt.broker, "get_holdings") else (lambda: {}),
+    )
+    open_orders = probe("미체결 주문 조회", rt.broker.open_order_codes)
+
+    for code in rt.universe:
+        label = f"종목정보 {code} {rt.name_of(code)}".strip()
+        probe(label, lambda c=code: rt.broker.get_stock_info(c))
+
+    # The intraday chart path has never run against a real account, and four of
+    # the eight stocks depend on it for every signal they produce.
+    end = datetime.now(KST)
+    for code, cfg in rt.universe.items():
+        timeframe = cfg.get("timeframe", "1Day")
+        if timeframe == "1Day":
+            continue
+        probe(
+            f"{timeframe} 차트 {code}",
+            lambda c=code, t=timeframe: rt.broker.get_chart(
+                c, t, months_to_start(1, end), end
+            ),
+        )
+
+    print()
+    for label, ok, detail in results:
+        mark = "  OK  " if ok else " FAIL "
+        line = f"  [{mark}] {label}"
+        print(line if ok else f"{line}\n           -> {detail}")
+
+    failed = [r for r in results if not r[1]]
+    print()
+    print("-" * 78)
+    if account is not None:
+        print(f"  Account equity : {account.equity:>16,.0f} KRW")
+        print(f"  Cash available : {account.cash:>16,.0f} KRW")
+        print(
+            f"  Risk per trade : {rt.risk.max_loss_per_trade(account.equity):>16,.0f} KRW"
+            f"   ({rt.risk.risk_pct:.0%})"
+        )
+        print(
+            f"  Risk, whole book: {rt.risk.max_portfolio_loss(account.equity):>15,.0f} KRW"
+            f"   ({rt.risk.max_total_risk_pct:.0%})"
+        )
+    if holdings:
+        print(f"  Broker holdings: {holdings}")
+    if open_orders:
+        print(f"  Working orders : {open_orders}")
+
+    print("-" * 78)
+    if failed:
+        print(f"  {len(failed)} check(s) FAILED — do not trade until these pass.")
+        print("  Most likely cause: an endpoint path or api-id in broker.py does not")
+        print("  match Kiwoom's current API. They are overridable in config.yaml")
+        print("  under kiwoom.endpoints / kiwoom.api_ids.")
+    else:
+        print("  All checks passed. No orders were sent.")
+    print("=" * 78)
+    return 1 if failed else 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     rt = build_runtime(args, cli_live=False, force_dry_run=True)
     state = rt.portfolio.state
@@ -748,6 +852,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--live", action="store_true", help="explicit live flag (the sub-command implies it)"
     )
 
+    chk = sub.add_parser(
+        "check", help="read-only connectivity probe against the broker (no orders)"
+    )
+    chk.add_argument(
+        "--live", action="store_true", help="probe the live account (still needs both env vars)"
+    )
+
     sub.add_parser("status", help="show state, positions and drawdown")
 
     stop = sub.add_parser("stop", help="halt trading and persist STOPPED")
@@ -773,6 +884,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "live":
         # The `live` sub-command is itself the explicit command-line request.
         return cmd_trade(args, cli_live=True)
+    if args.command == "check":
+        return cmd_check(args)
     if args.command == "status":
         return cmd_status(args)
     if args.command == "stop":

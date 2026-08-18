@@ -28,7 +28,7 @@ echo.
 echo ===============================================================
 echo   Running the connection check (READ ONLY, no orders)
 echo ===============================================================
-python main.py check
+python main.py check --live
 goto :done
 
 :failed

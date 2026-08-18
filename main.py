@@ -946,11 +946,25 @@ def cmd_check(args: argparse.Namespace) -> int:
         print("  AUTHENTICATION FAILED — nothing else could be tested.")
         print(f"  {auth_failure}")
         print()
-        print("  Likely causes, in order:")
-        print("    1. the key pair belongs to the other environment")
-        print("       (a mock key cannot authenticate against the live host, or vice versa)")
-        print("    2. the token request field names in broker.py do not match Kiwoom's")
-        print("    3. the key was revoked or re-issued")
+        if "8030" in auth_failure or "투자구분" in auth_failure:
+            # Kiwoom names this one exactly, so there is nothing to guess at.
+            other = "LIVE" if rt.decision.paper else "PAPER"
+            print(f"  Kiwoom says the key belongs to the {other} environment, but this")
+            print(f"  run used the {rt.decision.label} endpoint. The key and the endpoint")
+            print("  have to match. To use these keys against the live account:")
+            print()
+            print("      python main.py setup --live          (put the keys in the LIVE slots)")
+            print("      python main.py setup --enable-live   (open the gate, type the phrase)")
+            print("      python main.py check --live")
+            print()
+            print("  Run them one at a time, in that order. Every one of the three is")
+            print("  required; skipping any leaves the run on the mock account.")
+        else:
+            print("  Likely causes, in order:")
+            print("    1. the key pair belongs to the other environment")
+            print("       (a mock key cannot authenticate against the live host)")
+            print("    2. the token request field names in broker.py do not match Kiwoom's")
+            print("    3. the key was revoked or re-issued")
     elif failed:
         print(f"  {len(failed)} check(s) FAILED — do not trade until these pass.")
         print("  Most likely cause: an endpoint path or api-id in broker.py does not")

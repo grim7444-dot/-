@@ -51,6 +51,10 @@ DEFAULT_ENDPOINTS: dict[str, str] = {
 }
 
 DEFAULT_API_IDS: dict[str, str] = {
+    # Confirmed against Kiwoom's published sample code.
+    "account_list": "ka00001",   # 계좌번호조회
+    # Still unverified - correct these in config.yaml under kiwoom.api_ids
+    # against the portal's sample code before trading real money.
     "buy": "kt10000",
     "sell": "kt10001",
     "cancel": "kt10003",
@@ -60,6 +64,9 @@ DEFAULT_API_IDS: dict[str, str] = {
     "daily_chart": "ka10081",
     "stock_info": "ka10001",
 }
+
+#: How many continuation pages a single logical request may pull.
+MAX_CONTINUATION_PAGES = 20
 
 
 class BrokerError(RuntimeError):
@@ -370,13 +377,21 @@ class KiwoomBroker(BrokerBase):
 
     # -- transport ---------------------------------------------------------
 
-    def _call(
+    def _call_once(
         self,
         endpoint_key: str,
         api_id_key: str,
         body: Mapping[str, Any],
         description: str,
-    ) -> dict[str, Any]:
+        cont_yn: str = "N",
+        next_key: str = "",
+    ) -> tuple[dict[str, Any], str, str]:
+        """One request. Returns ``(payload, cont_yn, next_key)``.
+
+        Kiwoom paginates through response headers rather than the body: a
+        ``cont-yn`` of ``Y`` means more rows exist and ``next-key`` is the
+        cursor for them.
+        """
         import requests
 
         url = self.base_url + self.endpoints[endpoint_key]
@@ -387,10 +402,16 @@ class KiwoomBroker(BrokerBase):
                 "Content-Type": "application/json;charset=UTF-8",
                 "authorization": f"Bearer {self._access_token()}",
                 "api-id": self.api_ids[api_id_key],
+                "cont-yn": cont_yn,
+                "next-key": next_key,
             }
             response = requests.post(url, json=dict(body), headers=headers, timeout=self.timeout)
             response.raise_for_status()
-            return response.json()
+            return (
+                response.json(),
+                str(response.headers.get("cont-yn") or "N"),
+                str(response.headers.get("next-key") or ""),
+            )
 
         return with_retry(
             _request,
@@ -400,7 +421,62 @@ class KiwoomBroker(BrokerBase):
             description=description,
         )
 
+    def _call(
+        self,
+        endpoint_key: str,
+        api_id_key: str,
+        body: Mapping[str, Any],
+        description: str,
+    ) -> dict[str, Any]:
+        """Single page - for requests whose answer always fits in one."""
+        payload, _, _ = self._call_once(endpoint_key, api_id_key, body, description)
+        return payload
+
+    def _call_paged(
+        self,
+        endpoint_key: str,
+        api_id_key: str,
+        body: Mapping[str, Any],
+        description: str,
+    ) -> list[dict[str, Any]]:
+        """Follow ``cont-yn``/``next-key`` and return every page.
+
+        Charts and holdings can exceed one page, and stopping at the first one
+        silently truncates history - which would quietly shorten every
+        indicator lookback computed from it.
+        """
+        pages: list[dict[str, Any]] = []
+        cont_yn, next_key = "N", ""
+        for _ in range(MAX_CONTINUATION_PAGES):
+            payload, cont_yn, next_key = self._call_once(
+                endpoint_key, api_id_key, body, description, cont_yn, next_key
+            )
+            pages.append(payload)
+            if cont_yn != "Y" or not next_key:
+                break
+        else:
+            logger.warning(
+                "%s: stopped after %d pages with more data available",
+                description,
+                MAX_CONTINUATION_PAGES,
+            )
+        return pages
+
     # -- account -----------------------------------------------------------
+
+    def get_account_numbers(self) -> list[str]:
+        """계좌번호조회 (ka00001).
+
+        The lightest authenticated call Kiwoom exposes, and the only api-id
+        here confirmed against their published sample. That makes it the right
+        probe for "are the credentials and the endpoint actually working" -
+        it touches no positions and moves no money.
+        """
+        data = self._call("account", "account_list", {}, "get_account_numbers")
+        rows = data.get("acnt_list") or data.get("output") or []
+        if isinstance(rows, list):
+            return [str(r.get("accno") or r.get("acnt_no") or r).strip() for r in rows]
+        return []
 
     def get_account(self) -> AccountSnapshot:
         data = self._call(
@@ -444,10 +520,14 @@ class KiwoomBroker(BrokerBase):
         else:
             body["base_dt"] = end.strftime("%Y%m%d")
             key = "daily_chart"
-        data = self._call("chart", key, body, f"chart({code},{timeframe})")
-        rows = data.get("output") or next(
-            (v for v in data.values() if isinstance(v, list) and v), []
-        )
+        # Charts routinely span several pages; taking only the first would
+        # silently shorten every lookback computed from these bars.
+        rows: list[Mapping[str, Any]] = []
+        for page in self._call_paged("chart", key, body, f"chart({code},{timeframe})"):
+            rows.extend(
+                page.get("output")
+                or next((v for v in page.values() if isinstance(v, list) and v), [])
+            )
         if not rows:
             return None
         return _chart_frame(rows, intraday)

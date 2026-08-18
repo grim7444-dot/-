@@ -676,7 +676,15 @@ def cmd_check(args: argparse.Namespace) -> int:
         results.append((label, True, ""))
         return value
 
-    account = probe("인증 + 계좌조회", rt.broker.get_account)
+    # ka00001 is the one api-id confirmed against Kiwoom's published sample, so
+    # a failure here means credentials or endpoint, not a wrong TR code.
+    accounts = probe(
+        "인증 + 계좌번호조회 (ka00001)",
+        rt.broker.get_account_numbers
+        if hasattr(rt.broker, "get_account_numbers")
+        else (lambda: []),
+    )
+    account = probe("잔고조회", rt.broker.get_account)
     holdings = probe(
         "보유종목 조회",
         rt.broker.get_holdings if hasattr(rt.broker, "get_holdings") else (lambda: {}),
@@ -721,6 +729,8 @@ def cmd_check(args: argparse.Namespace) -> int:
             f"  Risk, whole book: {rt.risk.max_portfolio_loss(account.equity):>15,.0f} KRW"
             f"   ({rt.risk.max_total_risk_pct:.0%})"
         )
+    if accounts:
+        print(f"  Accounts       : {accounts}")
     if holdings:
         print(f"  Broker holdings: {holdings}")
     if open_orders:

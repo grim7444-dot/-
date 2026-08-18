@@ -792,8 +792,22 @@ def cmd_check(args: argparse.Namespace) -> int:
     print(f"  Mode      : {rt.decision.label}")
     print(f"  Endpoint  : {rt.decision.endpoint}")
     print(f"  Credential: {rt.credentials.loaded_for} key set")
+
+    # Length is the fastest way to spot a paste that swallowed extra text --
+    # a Kiwoom key is about 43 characters, and authentication fails with the
+    # same "App Key verification failed" message whatever the junk was.
+    app_len = len(rt.credentials.app_key.reveal())
+    secret_len = len(rt.credentials.secret_key.reveal())
+    suspicious = " <- NOT a plausible key length" if not (
+        20 <= app_len <= 120 and 20 <= secret_len <= 120
+    ) else ""
+    print(f"  Key length: app {app_len}, secret {secret_len}{suspicious}")
     print(f"  Session   : {rt.calendar.phase().value}")
     print("=" * 78)
+    if suspicious:
+        print()
+        print("  The stored key does not look like a Kiwoom key (~43 characters).")
+        print("  Run `python main.py setup` again and paste ONLY the key value.")
 
     if isinstance(rt.broker, DryRunBroker):
         print(

@@ -495,3 +495,58 @@ def test_manager_skips_when_atr_is_unavailable(portfolio, config):
     )
     assert result.skipped is True
     assert result.qty == 0
+
+
+# --------------------------------------------------------------------------
+# The broker may only touch the configured universe
+# --------------------------------------------------------------------------
+
+
+def test_kill_switch_leaves_unrelated_holdings_alone(config):
+    """A real account held 073240, which this bot never bought and must not sell."""
+    from broker import KiwoomBroker
+    from settings import Secret, resolve_mode
+    from settings import Credentials as Creds
+
+    decision = resolve_mode({}, cli_live=False)
+    credentials = Creds(
+        app_key=Secret("K" * 43),
+        secret_key=Secret("S" * 43),
+        account_no=Secret("12345678"),
+        telegram_token=Secret(""),
+        telegram_chat_id=Secret(""),
+        loaded_for="PAPER",
+    )
+    broker = KiwoomBroker(
+        decision, credentials, config, allowed_codes=list(config["universe"])
+    )
+
+    sold: list[str] = []
+    broker.get_holdings = lambda: {"002990": 21.0, "073240": 36.0}
+    broker.submit_order = lambda code, side, qty, **kw: sold.append(code)
+
+    assert broker.close_all_positions() == 1
+    assert sold == ["002990"]        # in the universe
+    assert "073240" not in sold      # not ours to sell
+
+
+def test_broker_refuses_orders_outside_the_universe(config):
+    from broker import BrokerError, KiwoomBroker
+    from settings import Secret, resolve_mode
+    from settings import Credentials as Creds
+
+    decision = resolve_mode({}, cli_live=False)
+    credentials = Creds(
+        app_key=Secret("K" * 43),
+        secret_key=Secret("S" * 43),
+        account_no=Secret("12345678"),
+        telegram_token=Secret(""),
+        telegram_chat_id=Secret(""),
+        loaded_for="PAPER",
+    )
+    broker = KiwoomBroker(
+        decision, credentials, config, allowed_codes=list(config["universe"])
+    )
+
+    with pytest.raises(BrokerError, match="not in this bot's configured universe"):
+        broker.submit_order("073240", LONG, 10)

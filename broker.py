@@ -25,7 +25,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Callable, Mapping, TypeVar
+from typing import Any, Callable, Iterable, Mapping, TypeVar
 
 import pandas as pd
 
@@ -318,6 +318,7 @@ class KiwoomBroker(BrokerBase):
         decision: ModeDecision,
         credentials: Credentials,
         config: Mapping[str, Any] | None = None,
+        allowed_codes: Iterable[str] | None = None,
     ) -> None:
         if not credentials.has_kiwoom:
             raise BrokerError(
@@ -344,6 +345,12 @@ class KiwoomBroker(BrokerBase):
         self.max_seconds = float(api_cfg.get("backoff_max_seconds", 60.0))
         self.timeout = float(api_cfg.get("timeout_seconds", 10.0))
         self.limiter = RateLimiter(float(api_cfg.get("calls_per_second", 4.0)))
+
+        # An account can hold stocks this bot knows nothing about. Every order
+        # path is fenced to the configured universe so the bot cannot sell
+        # someone's unrelated position -- most importantly in the kill switch,
+        # which would otherwise liquidate the whole account.
+        self.allowed_codes: set[str] = {str(c) for c in (allowed_codes or ())}
 
         self._token: str = ""
         self._token_expires: datetime | None = None
@@ -564,6 +571,11 @@ class KiwoomBroker(BrokerBase):
         is_exit: bool = False,
         note: str = "",
     ) -> OrderResult:
+        if self.allowed_codes and code not in self.allowed_codes:
+            raise BrokerError(
+                f"refusing to trade {code}: it is not in this bot's configured "
+                f"universe ({', '.join(sorted(self.allowed_codes))})"
+            )
         api_id_key = "buy" if side == LONG else "sell"
         body = {
             "dmst_stex_tp": "KRX",
@@ -633,13 +645,24 @@ class KiwoomBroker(BrokerBase):
         state file does not know about.
         """
         closed = 0
+        skipped: list[str] = []
         for code, qty in self.get_holdings().items():
+            if self.allowed_codes and code not in self.allowed_codes:
+                # Not ours to sell. The account may hold anything.
+                skipped.append(code)
+                continue
             try:
                 self.submit_order(code, SHORT, qty, is_exit=True, note="kill switch flatten")
                 closed += 1
             except BrokerError as exc:
                 logger.error("flatten failed for %s: %s", code, exc)
         logger.warning("closed %d position(s)", closed)
+        if skipped:
+            logger.warning(
+                "left %d holding(s) untouched, outside this bot's universe: %s",
+                len(skipped),
+                ", ".join(sorted(skipped)),
+            )
         return closed
 
 
@@ -714,4 +737,5 @@ def build_broker(
             decision.label,
         )
         return DryRunBroker(starting_equity=starting_equity, label="NO-CREDENTIALS")
-    return KiwoomBroker(decision, credentials, config)
+    universe = [str(c) for c in (config.get("universe") or {})]
+    return KiwoomBroker(decision, credentials, config, allowed_codes=universe)

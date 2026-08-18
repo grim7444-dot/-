@@ -160,11 +160,17 @@ def build_runtime(
     credentials = load_credentials(env, decision)
     broker = build_broker(decision, credentials, config, force_dry_run=force_dry_run)
     calendar = KrxCalendar.from_config(config)
+    # The mode label is what tells the portfolio whether its stored equity is
+    # comparable to this run's. A simulated broker reports the configured
+    # starting_equity no matter which endpoint was resolved, so "LIVE with a
+    # dry-run broker" must not share a label with "LIVE for real" -- otherwise
+    # the simulated peak carries over and reads as a crash.
+    mode_label = decision.label if not broker.dry_run else f"{decision.label}-SIM"
     portfolio = Portfolio(
         state_path=paths.get("state_file", "state.json"),
         trades_path=paths.get("trades_csv", "trades.csv"),
         daily_path=paths.get("daily_pnl_csv", "daily_pnl.csv"),
-        mode_label=decision.label,
+        mode_label=mode_label,
     )
     return Runtime(
         config=config,
@@ -633,7 +639,12 @@ def cmd_trade(args: argparse.Namespace, cli_live: bool) -> int:
     print(f"KRX session phase: {phase.value}")
 
     engine = TradingEngine(rt)
-    if getattr(args, "once", False) or force_dry_run:
+    watch = bool(getattr(args, "watch", False))
+    # --dry-run defaults to a single cycle so it stays a quick smoke test.
+    # --watch turns it into an all-day observation run: the same loop, the same
+    # signals, still sending nothing. That is the honest way to build trust in
+    # the signals before any real money follows them.
+    if getattr(args, "once", False) or (force_dry_run and not watch):
         engine.run_once()
     else:
         engine.run_forever()
@@ -1216,12 +1227,22 @@ def build_parser() -> argparse.ArgumentParser:
     paper.add_argument("--dry-run", action="store_true", help="print orders, send nothing")
     paper.add_argument("--once", action="store_true", help="run a single cycle and exit")
     paper.add_argument(
+        "--watch",
+        action="store_true",
+        help="keep looping; with --dry-run this observes all day without ordering",
+    )
+    paper.add_argument(
         "--live", action="store_true", help="request live trading (still needs both env vars)"
     )
 
     live = sub.add_parser("live", help="trade the live account (requires triple confirmation)")
     live.add_argument("--once", action="store_true", help="run a single cycle and exit")
     live.add_argument("--dry-run", action="store_true", help="print orders, send nothing")
+    live.add_argument(
+        "--watch",
+        action="store_true",
+        help="keep looping; with --dry-run this observes all day without ordering",
+    )
     live.add_argument(
         "--live", action="store_true", help="explicit live flag (the sub-command implies it)"
     )

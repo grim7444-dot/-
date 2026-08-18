@@ -193,3 +193,52 @@ def test_a_rejected_flatten_is_not_counted_as_closed(monkeypatch):
         lambda self: {"002990": Holding(code="002990", qty=21.0)},
     )
     assert broker.close_all_positions() == 0
+
+
+# ---------------------------------------------------------------------------
+# 4. a simulated broker never shares a mode label with a real one
+# ---------------------------------------------------------------------------
+
+
+def test_dry_run_broker_gets_its_own_mode_label(workdir, monkeypatch):
+    """`live --dry-run` must not stamp its 10,000,000 KRW onto LIVE."""
+    import main
+
+    captured: dict[str, object] = {}
+    real_build = main.build_runtime
+
+    def spy(args, cli_live, force_dry_run=False):
+        rt = real_build(args, cli_live, force_dry_run)
+        captured["portfolio"] = rt.portfolio
+        return rt
+
+    monkeypatch.setattr(main, "build_runtime", spy)
+    assert main.main(["paper", "--dry-run"]) == 0
+
+    portfolio = captured["portfolio"]
+    assert portfolio.mode_label.endswith("-SIM")
+
+
+def test_watch_flag_switches_dry_run_from_one_cycle_to_the_loop(workdir, monkeypatch):
+    """--dry-run alone is a smoke test; --dry-run --watch observes all day."""
+    import main
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        main.TradingEngine, "run_once", lambda self: calls.append("once")
+    )
+    monkeypatch.setattr(
+        main.TradingEngine, "run_forever", lambda self: calls.append("forever")
+    )
+
+    assert main.main(["paper", "--dry-run"]) == 0
+    assert calls == ["once"]
+
+    calls.clear()
+    assert main.main(["paper", "--dry-run", "--watch"]) == 0
+    assert calls == ["forever"]
+
+    calls.clear()
+    # --once always wins: it is the escape hatch that guarantees termination.
+    assert main.main(["paper", "--dry-run", "--watch", "--once"]) == 0
+    assert calls == ["once"]

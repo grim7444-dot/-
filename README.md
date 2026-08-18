@@ -73,7 +73,9 @@ python main.py profile --refresh-calendar # derive KRX holidays from pykrx
 python main.py backtest --months 6        # next-bar fills, costs included
 python main.py paper --dry-run            # one cycle, print orders, send nothing
 python main.py paper --once               # one cycle against the mock account
+python main.py live --dry-run --watch     # all-day observation, sends nothing
 python main.py live --once                # needs all three confirmations
+python main.py live                       # the real thing: banner, countdown, loop
 python main.py status                     # state, positions, drawdown, capacity
 python main.py stop --close-all           # cancel orders, flatten, persist STOPPED
 python main.py resume                     # clear STOPPED
@@ -305,6 +307,39 @@ enforces the hard stop itself rather than leaving it resting at the broker.
 Kiwoom also throttles TR calls, so every request passes through a rate limiter
 before the retry wrapper.
 
+**The stop only exists while the process runs.** Closing the window removes it.
+There is nothing resting at the broker to catch a gap, so an unattended
+position is an unprotected one.
+
+### Observation mode
+
+```bash
+python main.py live --dry-run --watch
+```
+
+The full loop — same cadence, same signals, same sizing, same pre-trade checks
+— against the simulated broker, sending nothing. Use it to watch what the bot
+would have done for a few sessions before letting it act. `--dry-run` on its
+own runs a single cycle and exits, which is the smoke test; `--watch` is what
+turns it into an all-day run.
+
+A simulated broker reports `starting_equity`, not the account's real value, so
+these runs are recorded under a separate `-SIM` mode label and their equity
+history never mixes with a real run's.
+
+### One session, start to finish
+
+| When (KST) | Command | What it is for |
+|---|---|---|
+| 08:40 | `python main.py check --live` | connectivity, balance, holdings — read-only |
+| 08:45 | `python report.py morning --dry-run` | equity, drawdown, open positions, capacity |
+| 08:55 | `python main.py live` | banner, 10s countdown, then the loop |
+| during | watch the console, or `tail -f logs/bot.log` | every decision is logged with a reason |
+| 15:30 | `Ctrl+C` | clean shutdown, records the day |
+| 15:35 | `python report.py evening --dry-run` | fills, realized P&L, recent days |
+
+`python main.py status` is safe to run at any time from a second window.
+
 ---
 
 ## Tests
@@ -313,7 +348,7 @@ before the retry wrapper.
 pytest -q
 ```
 
-214 tests, no network and no credentials required. `tests/conftest.py` scrubs
+244 tests, no network and no credentials required. `tests/conftest.py` scrubs
 `KIWOOM_*` from the environment before every test, so a real `.env` can never
 turn a test run into a live-trading attempt, and the broker double raises if
 anything tries to submit an order.

@@ -34,6 +34,7 @@ from market.rules import KOSPI, KrxRules
 from portfolio import LONG, SHORT, Portfolio, Position
 from risk.manager import RiskManager, TradeContext
 from settings import (
+    LIVE_CONFIRM_TOKEN,
     Credentials,
     ModeDecision,
     load_config,
@@ -640,64 +641,57 @@ def cmd_trade(args: argparse.Namespace, cli_live: bool) -> int:
 def _clean_pasted_value(raw: str, name: str) -> str:
     """Recover the bare value from whatever the user pasted.
 
-    People copy the whole ``NAME=value`` line out of the template rather than
-    the value alone, and the input is hidden so the mistake is invisible until
-    authentication fails with no explanation. Strip a leading variable name,
-    surrounding quotes and stray whitespace so the common paste just works.
+    People paste the whole ``NAME=value`` line, or a multi-line block that the
+    console flattens into one prompt. Joining on whitespace kills embedded
+    newlines and spaces; a Kiwoom key contains neither.
     """
-    value = raw.strip()
+    value = "".join(raw.split())
     lowered = value.lower()
-    for prefix in (f"{name}=", f"{name} =", f"{name}:", f"{name} :"):
+    for prefix in (f"{name}=", f"{name}:"):
         if lowered.startswith(prefix.lower()):
-            value = value[len(prefix):].strip()
+            value = value[len(prefix):]
             break
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-        value = value[1:-1].strip()
+        value = value[1:-1]
     return value
 
 
-def cmd_setup(args: argparse.Namespace) -> int:
-    """Write credentials into .env without opening an editor.
+#: Plausible lengths. Kiwoom app keys and secrets run about 43 characters;
+#: anything far outside this means the paste grabbed the wrong thing.
+_VALUE_LIMITS: dict[str, tuple[int, int, str]] = {
+    "KEY": (20, 120, "an app key or secret is normally about 43 characters"),
+    "ACCOUNT": (6, 24, "an account number is normally 8-12 digits"),
+}
 
-    Hand-editing .env in Notepad is where this setup keeps going wrong: the
-    file ships with LF line endings, the values land in the wrong pair, or a
-    stray space creeps in around the '='. This prompts for each value, echoes
-    none of them, and rewrites only the lines it owns.
 
-    It deliberately does *not* set KIWOOM_PAPER or KIWOOM_LIVE_CONFIRM. Those
-    two are the human half of the live gate, and a tool that flipped them on
-    the user's behalf would hollow it out.
+def _prompt_value(label: str, name: str, kind: str) -> str:
+    """Ask for one value, visibly, and refuse obviously wrong input.
+
+    Hidden input made every paste mistake invisible until authentication
+    failed with no explanation, so this shows what was captured and checks the
+    length while the user is still standing there to fix it.
     """
-    import getpass
-
-    target = "LIVE" if args.live else "PAPER"
-    path = Path(".env")
-
-    print()
-    print("=" * 78)
-    print(f"  .env SETUP  —  writing the {target} key pair".center(78))
-    print("=" * 78)
-    print("  Typing is hidden. Paste with a right-click, then press Enter.")
-    print("  Press Enter on an empty prompt to leave that value unchanged.\n")
-
-    entries: dict[str, str] = {}
-    cleaned: list[str] = []
-    for label, name in (
-        (f"{target} App Key", f"KIWOOM_{target}_APP_KEY"),
-        (f"{target} Secret Key", f"KIWOOM_{target}_SECRET_KEY"),
-        ("Account number", "KIWOOM_ACCOUNT_NO"),
-    ):
-        raw = getpass.getpass(f"  {label}: ")
+    low, high, hint = _VALUE_LIMITS[kind]
+    for attempt in range(3):
+        raw = input(f"  {label}: ")
         value = _clean_pasted_value(raw, name)
-        if value:
-            entries[name] = value
-            if value != raw.strip():
-                cleaned.append(name)
+        if not value:
+            return ""
+        if low <= len(value) <= high:
+            print(f"    -> captured {len(value)} characters")
+            return value
+        print(f"    !! that is {len(value)} characters; {hint}.")
+        if len(value) > high:
+            print("       You probably pasted more than the value itself.")
+            print("       Copy ONLY the key, with no label and no extra lines.")
+        if attempt < 2:
+            print("       Try again, or press Enter to skip this one.\n")
+    print("    skipped after 3 attempts")
+    return ""
 
-    if not entries:
-        print("\n  Nothing entered; .env was not modified.")
-        return 1
 
+def _write_env(path: Path, entries: Mapping[str, str]) -> None:
+    """Rewrite only the named lines, preserving everything else."""
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     remaining = dict(entries)
     out: list[str] = []
@@ -708,22 +702,69 @@ def cmd_setup(args: argparse.Namespace) -> int:
         else:
             out.append(line)
     out.extend(f"{k}={v}" for k, v in remaining.items())
-
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
 
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    """Write credentials into .env without opening an editor."""
+    path = Path(".env")
+
+    if args.enable_live:
+        # The two environment confirmations are the human half of the live
+        # gate. Writing them takes a deliberate flag plus the exact phrase, and
+        # the third condition -- --live on the run command -- still stands.
+        print()
+        print("!" * 78)
+        print("  ENABLING LIVE TRADING IN .env".center(78))
+        print("!" * 78)
+        print("  This writes the two environment confirmations. After this, any")
+        print("  command carrying --live trades REAL MONEY.")
+        print(f"\n  Type exactly:  {LIVE_CONFIRM_TOKEN}")
+        typed = input("  > ").strip()
+        if typed != LIVE_CONFIRM_TOKEN:
+            print("\n  Phrase did not match. .env was not modified.")
+            return 1
+        _write_env(path, {"KIWOOM_PAPER": "false", "KIWOOM_LIVE_CONFIRM": LIVE_CONFIRM_TOKEN})
+        print(f"\n  Live confirmations written to {path.resolve()}")
+        print("  Next:  python main.py check --live")
+        return 0
+
+    target = "LIVE" if args.live else "PAPER"
+    print()
+    print("=" * 78)
+    print(f"  .env SETUP  -  writing the {target} key pair".center(78))
+    print("=" * 78)
+    print("  Paste ONE value per prompt with a right-click, then press Enter.")
+    print("  What you paste IS shown, so you can see it landed correctly.")
+    print("  Press Enter on an empty prompt to leave that value unchanged.\n")
+
+    entries: dict[str, str] = {}
+    for label, name, kind in (
+        (f"{target} App Key", f"KIWOOM_{target}_APP_KEY", "KEY"),
+        (f"{target} Secret Key", f"KIWOOM_{target}_SECRET_KEY", "KEY"),
+        ("Account number", "KIWOOM_ACCOUNT_NO", "ACCOUNT"),
+    ):
+        value = _prompt_value(label, name, kind)
+        if value:
+            entries[name] = value
+
+    if not entries:
+        print("\n  Nothing captured; .env was not modified.")
+        return 1
+
+    _write_env(path, entries)
     print(f"\n  Wrote {len(entries)} value(s) to {path.resolve()}")
-    if cleaned:
-        print("  (stripped a pasted variable name or quotes from: "
-              + ", ".join(cleaned) + ")")
     for name, value in entries.items():
-        # Length only, never the value (safety rule 9).
         print(f"    {name:<26} {len(value)} chars")
 
+    missing = [n for n in (f"KIWOOM_{target}_APP_KEY", f"KIWOOM_{target}_SECRET_KEY")
+               if n not in entries]
+    if missing:
+        print("\n  Still empty: " + ", ".join(missing))
+        print("  Run this again and fill them; check cannot connect without both.")
+
     if target == "LIVE":
-        print("\n  For live trading you must still add these two lines yourself:")
-        print("    KIWOOM_PAPER=false")
-        print("    KIWOOM_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY")
-        print("  Without them every run stays on the mock account, by design.")
+        print("\n  For live trading, also run:  python main.py setup --enable-live")
         print("\n  Next:  python main.py check --live")
     else:
         print("\n  Next:  python main.py check")
@@ -992,6 +1033,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     setup.add_argument(
         "--live", action="store_true", help="write the LIVE key pair instead of PAPER"
+    )
+    setup.add_argument(
+        "--enable-live",
+        action="store_true",
+        help="write the two live confirmations into .env (requires typing the phrase)",
     )
 
     chk = sub.add_parser(

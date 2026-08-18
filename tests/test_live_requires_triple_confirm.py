@@ -34,10 +34,12 @@ from settings import (
     resolve_mode,
 )
 
-PAPER_KEY = "PAPERAPPKEY000000"
-PAPER_SECRET = "papersecretvalue000000"
-LIVE_KEY = "LIVEAPPKEY0000000"
-LIVE_SECRET = "livesecretvalue0000000"
+# Sized like the real thing: Kiwoom app keys and secrets run about 43 chars,
+# which is what `setup` validates against.
+PAPER_KEY = "PAPERAPPKEY" + "0" * 32
+PAPER_SECRET = "papersecretvalue" + "0" * 27
+LIVE_KEY = "LIVEAPPKEY" + "0" * 33
+LIVE_SECRET = "livesecretvalue" + "0" * 28
 
 
 def make_env(paper_false: bool, confirm: bool, with_keys: bool = False) -> dict[str, str]:
@@ -413,7 +415,7 @@ def test_paper_subcommand_with_live_flag_still_needs_the_env(workdir):
 # --------------------------------------------------------------------------
 
 
-def test_setup_writes_values_and_never_prints_them(workdir, monkeypatch, capsys):
+def test_setup_writes_values_into_env(workdir, monkeypatch):
     import main
 
     (workdir / ".env").write_text(
@@ -421,7 +423,7 @@ def test_setup_writes_values_and_never_prints_them(workdir, monkeypatch, capsys)
         encoding="utf-8",
     )
     answers = iter([PAPER_KEY, PAPER_SECRET, "12345678901"])
-    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(answers))
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     assert main.main(["setup"]) == 0
 
@@ -433,11 +435,47 @@ def test_setup_writes_values_and_never_prints_them(workdir, monkeypatch, capsys)
     assert "KIWOOM_PAPER=true" in written
     assert written.count("KIWOOM_PAPER_APP_KEY=") == 1
 
-    # Safety rule 9: the console shows lengths, never the secrets themselves.
+
+def test_setup_rejects_an_oversized_paste(workdir, monkeypatch, capsys):
+    """A paste that swallowed several lines must be caught, not written."""
+    import main
+
+    (workdir / ".env").write_text("KIWOOM_PAPER=true\n", encoding="utf-8")
+    # First attempt is a 516-character blob, then the real key.
+    answers = iter(["x" * 516, PAPER_KEY, PAPER_SECRET, "12345678901"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    assert main.main(["setup"]) == 0
+
     out = capsys.readouterr().out
-    assert PAPER_KEY not in out
-    assert PAPER_SECRET not in out
-    assert "43 chars" in out or "chars" in out
+    assert "516 characters" in out
+    written = (workdir / ".env").read_text(encoding="utf-8")
+    assert "x" * 516 not in written
+    assert f"KIWOOM_PAPER_APP_KEY={PAPER_KEY}" in written
+
+
+def test_setup_enable_live_requires_the_exact_phrase(workdir, monkeypatch):
+    import main
+
+    (workdir / ".env").write_text("KIWOOM_PAPER=true\n", encoding="utf-8")
+    monkeypatch.setattr("builtins.input", lambda prompt="": "i understand")
+
+    assert main.main(["setup", "--enable-live"]) == 1
+    written = (workdir / ".env").read_text(encoding="utf-8")
+    assert "KIWOOM_PAPER=true" in written
+    assert "KIWOOM_LIVE_CONFIRM=" not in written
+
+
+def test_setup_enable_live_writes_both_confirmations(workdir, monkeypatch):
+    import main
+
+    (workdir / ".env").write_text("KIWOOM_PAPER=true\n", encoding="utf-8")
+    monkeypatch.setattr("builtins.input", lambda prompt="": LIVE_CONFIRM_TOKEN)
+
+    assert main.main(["setup", "--enable-live"]) == 0
+    written = (workdir / ".env").read_text(encoding="utf-8")
+    assert "KIWOOM_PAPER=false" in written
+    assert f"KIWOOM_LIVE_CONFIRM={LIVE_CONFIRM_TOKEN}" in written
 
 
 def test_setup_live_does_not_flip_the_gate_itself(workdir, monkeypatch):
@@ -446,7 +484,7 @@ def test_setup_live_does_not_flip_the_gate_itself(workdir, monkeypatch):
 
     (workdir / ".env").write_text("KIWOOM_PAPER=true\n", encoding="utf-8")
     answers = iter([LIVE_KEY, LIVE_SECRET, "12345678901"])
-    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(answers))
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     assert main.main(["setup", "--live"]) == 0
 

@@ -395,9 +395,17 @@ def pre_trade_checks(ctx: TradeContext) -> CheckResult:
 class RiskManager:
     """Config-driven facade over the functions above."""
 
-    def __init__(self, config: Mapping[str, Any], portfolio: Portfolio) -> None:
+    def __init__(
+        self,
+        config: Mapping[str, Any],
+        portfolio: Portfolio,
+        calendar: Any | None = None,
+    ) -> None:
         self.config = config
         self.portfolio = portfolio
+        #: Optional KrxCalendar. Without it the kill switch cannot tell whether
+        #: a market order would even reach a book, so it flattens regardless.
+        self.calendar = calendar
         risk_cfg = config.get("risk") or {}
         self.risk_pct = float(risk_cfg.get("per_trade_pct", 0.01))
         self.max_drawdown_pct = float(risk_cfg.get("max_drawdown_pct", 0.10))
@@ -468,6 +476,22 @@ class RiskManager:
             broker.cancel_all_orders()
         except Exception as exc:
             logger.error("failed to cancel open orders during kill switch: %s", exc)
+
+        # Market orders sent outside continuous trading do not reach a book.
+        # Firing them anyway produces order IDs that never come back and a log
+        # that claims positions were closed when they were not.
+        if self.calendar is not None:
+            tradable, why = self.calendar.can_place_market_order()
+            if not tradable:
+                logger.critical(
+                    "kill switch could NOT flatten: %s. Positions are still open "
+                    "and unprotected; they will be closed at the next open, or "
+                    "close them by hand.",
+                    why,
+                )
+                self.portfolio.save()
+                return
+
         try:
             broker.close_all_positions()
         except Exception as exc:

@@ -603,6 +603,14 @@ class KiwoomBroker(BrokerBase):
         }
         data = self._call("order", api_id_key, body, f"submit_order({code})")
         order_id = str(data.get("ord_no") or "")
+        return_code = str(data.get("return_code", "0"))
+        if return_code not in ("0", "") or not order_id:
+            # An empty order number means the venue did not accept it. Logging
+            # "submitted" on that basis reports a fill that never happened.
+            raise BrokerError(
+                f"order for {code} was not accepted "
+                f"[return_code={return_code}] {data.get('return_msg', '(no message)')}"
+            )
         logger.info(
             "submitted %s %s x%s stop=%s id=%s",
             side,

@@ -334,6 +334,26 @@ class Portfolio:
         self.daily = DailyPnlLog(daily_path)
         self.mode_label = mode_label
         self.state = self.store.load()
+
+        # Equity figures are mode-specific. A dry run reports the configured
+        # starting_equity (10,000,000), and carrying that peak into a live
+        # account worth 573,000 reads as a 94% drawdown -- which fired the kill
+        # switch and liquidated the book on the first live run. Reset the
+        # equity history whenever the mode changes; the STOPPED flag and the
+        # positions survive, only the numbers that are not comparable go.
+        previous = self.state.mode
+        if previous and previous != mode_label:
+            logger.warning(
+                "mode changed %s -> %s; discarding equity history "
+                "(peak %.0f) because the two are not comparable",
+                previous,
+                mode_label,
+                self.state.peak_equity,
+            )
+            self.state.peak_equity = 0.0
+            self.state.last_equity = 0.0
+            self.state.day_start_equity = 0.0
+            self.state.day_start_date = ""
         self.state.mode = mode_label
 
     # -- positions ---------------------------------------------------------

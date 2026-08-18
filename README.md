@@ -94,7 +94,7 @@ python report.py evening --dry-run        # end-of-day wrap
 | 2 | Live requires **all three**: `KIWOOM_PAPER=false`, `KIWOOM_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY`, an explicit live request on the command line | `settings.resolve_mode`, `settings.load_credentials` | the full 8-row truth table |
 | 3 | Live start prints a red banner, balance, worst-case loss per trade *and* per portfolio, then a 10-second countdown. Every log line carries the mode | `main.print_live_banner`, `settings.setup_logging` | manual; `mode=` on every line of `logs/bot.log` |
 | 4 | Risk per trade = 1% of **current** equity. Quantity = `(equity × 0.01) ÷ stop distance`. Stop distance ≤ 0 → skip the order | `risk/manager.py::position_size` | `test_risk.py` |
-| 5 | 10% drawdown from peak → block new orders, cancel working orders, flatten, persist `STOPPED` | `risk/manager.py::RiskManager.trip_kill_switch` | `test_risk.py::test_kill_switch_stops_cancels_and_flattens` |
+| 5 | 10% drawdown from peak → block new orders, cancel working orders, flatten, persist `STOPPED`. The peak is per mode and the flatten only fires during continuous trading | `risk/manager.py::RiskManager.trip_kill_switch`, `portfolio.Portfolio.__init__` | `test_risk.py::test_kill_switch_stops_cancels_and_flattens`, `test_incident_regressions.py` |
 | 6 | `STOPPED` persists across restarts until a human runs `resume` | `portfolio.StateStore` + `state.json` | `test_risk.py::test_stopped_state_survives_a_restart` |
 | 7 | Before every order: tradability, session phase, minimum quantity, duplicate orders, available cash, **daily price limit** | `risk/manager.py::pre_trade_checks` | `test_risk.py` (one test per check) |
 | 8 | KRX session only — 09:00–15:30 KST, never during a call auction | `market/calendar.py` | `test_calendar.py` |
@@ -264,6 +264,27 @@ no earlier signal or fill moves.
 
 The drawdown kill switch applies during backtests too: at 10% below peak,
 trading halts for the rest of the period and the summary says so.
+
+### The peak equity is per mode
+
+Equity figures from different modes are not comparable. A dry run reports the
+configured `starting_equity`; a real account reports what it is worth. Carrying
+one peak into the other turns an ordinary account balance into an apparent
+crash — on the first live run of this bot, a 10,000,000 KRW dry-run peak left
+in `state.json` made a 573,390 KRW live account read as a 94% drawdown and
+tripped the kill switch on the opening cycle.
+
+So `Portfolio` discards `peak_equity`, `last_equity` and the day-start anchors
+whenever the mode label in `state.json` differs from the current one. Positions
+and the `STOPPED` flag survive — only the numbers that cannot be compared are
+dropped, and the discard is logged with the peak it threw away.
+
+Two related guards close the same hole from the other side: `trip_kill_switch`
+checks the session before flattening (a market order outside continuous trading
+reaches no order book, so it logs a `CRITICAL` telling you the positions are
+still open instead of pretending it closed them), and `KiwoomBroker.submit_order`
+treats an empty `ord_no` or a non-zero `return_code` as a rejection rather than
+a submission.
 
 ---
 

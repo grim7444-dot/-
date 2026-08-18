@@ -172,7 +172,7 @@ def build_runtime(
         credentials=credentials,
         broker=broker,
         portfolio=portfolio,
-        risk=RiskManager(config, portfolio),
+        risk=RiskManager(config, portfolio, calendar=calendar),
         market_data=MarketData(
             calendar=calendar,
             cache_dir=paths.get("cache_dir", "data/cache"),

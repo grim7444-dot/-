@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -661,8 +662,37 @@ def cmd_check(args: argparse.Namespace) -> int:
     if isinstance(rt.broker, DryRunBroker):
         print(
             "\n  No credentials loaded, so this is the simulated broker — nothing was\n"
-            f"  contacted. Put the {rt.decision.label} app key and secret in .env first.\n"
+            f"  contacted. This run reads the {rt.decision.label} key pair.\n"
         )
+        print("  -- What .env actually contains " + "-" * 46)
+        env = os.environ
+        for name in (
+            "KIWOOM_PAPER_APP_KEY",
+            "KIWOOM_PAPER_SECRET_KEY",
+            "KIWOOM_LIVE_APP_KEY",
+            "KIWOOM_LIVE_SECRET_KEY",
+            "KIWOOM_ACCOUNT_NO",
+        ):
+            value = env.get(name) or ""
+            # Length only — never the value itself (safety rule 9).
+            state = f"set, {len(value)} chars" if value else "EMPTY"
+            used = " <- this run uses these" if rt.decision.label in name else ""
+            print(f"  {name:<26} {state}{used}")
+        for name in ("KIWOOM_PAPER", "KIWOOM_LIVE_CONFIRM"):
+            value = env.get(name)
+            # These two are switches, not secrets, so the value is safe to show.
+            shown = repr(value) if value is not None else "not set"
+            print(f"  {name:<26} {shown}")
+
+        print()
+        if (env.get("KIWOOM_LIVE_APP_KEY") or "") and rt.decision.paper:
+            print("  The LIVE pair is filled but this run resolved to PAPER, so those")
+            print("  keys were deliberately not read. Either move them to the PAPER")
+            print("  variables, or supply all three live confirmations.")
+        else:
+            print(f"  Fill KIWOOM_{rt.decision.label}_APP_KEY and _SECRET_KEY in .env,")
+            print("  with no spaces around '=', then run this again.")
+        print("=" * 78)
         return 1
 
     results: list[tuple[str, bool, str]] = []

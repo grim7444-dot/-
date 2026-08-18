@@ -456,3 +456,27 @@ def test_setup_live_does_not_flip_the_gate_itself(workdir, monkeypatch):
     assert "KIWOOM_PAPER=true" in written
     assert "KIWOOM_PAPER=false" not in written
     assert "KIWOOM_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY" not in written
+
+
+@pytest.mark.parametrize(
+    "pasted",
+    [
+        "KIWOOM_PAPER_APP_KEY=" + PAPER_KEY,
+        "kiwoom_paper_app_key=" + PAPER_KEY,
+        "KIWOOM_PAPER_APP_KEY: " + PAPER_KEY,
+        f'"{PAPER_KEY}"',
+        f"'{PAPER_KEY}'",
+        f"  {PAPER_KEY}  ",
+    ],
+)
+def test_setup_recovers_the_value_from_a_pasted_line(pasted):
+    """Users paste the whole NAME=value line; hidden input hides the mistake."""
+    import main
+
+    assert main._clean_pasted_value(pasted, "KIWOOM_PAPER_APP_KEY") == PAPER_KEY
+
+
+def test_setup_leaves_an_ordinary_value_alone():
+    import main
+
+    assert main._clean_pasted_value(PAPER_KEY, "KIWOOM_PAPER_APP_KEY") == PAPER_KEY

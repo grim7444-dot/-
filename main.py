@@ -637,6 +637,25 @@ def cmd_trade(args: argparse.Namespace, cli_live: bool) -> int:
     return 0
 
 
+def _clean_pasted_value(raw: str, name: str) -> str:
+    """Recover the bare value from whatever the user pasted.
+
+    People copy the whole ``NAME=value`` line out of the template rather than
+    the value alone, and the input is hidden so the mistake is invisible until
+    authentication fails with no explanation. Strip a leading variable name,
+    surrounding quotes and stray whitespace so the common paste just works.
+    """
+    value = raw.strip()
+    lowered = value.lower()
+    for prefix in (f"{name}=", f"{name} =", f"{name}:", f"{name} :"):
+        if lowered.startswith(prefix.lower()):
+            value = value[len(prefix):].strip()
+            break
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
+    return value
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     """Write credentials into .env without opening an editor.
 
@@ -662,14 +681,18 @@ def cmd_setup(args: argparse.Namespace) -> int:
     print("  Press Enter on an empty prompt to leave that value unchanged.\n")
 
     entries: dict[str, str] = {}
+    cleaned: list[str] = []
     for label, name in (
         (f"{target} App Key", f"KIWOOM_{target}_APP_KEY"),
         (f"{target} Secret Key", f"KIWOOM_{target}_SECRET_KEY"),
         ("Account number", "KIWOOM_ACCOUNT_NO"),
     ):
-        value = getpass.getpass(f"  {label}: ").strip()
+        raw = getpass.getpass(f"  {label}: ")
+        value = _clean_pasted_value(raw, name)
         if value:
             entries[name] = value
+            if value != raw.strip():
+                cleaned.append(name)
 
     if not entries:
         print("\n  Nothing entered; .env was not modified.")
@@ -689,6 +712,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
 
     print(f"\n  Wrote {len(entries)} value(s) to {path.resolve()}")
+    if cleaned:
+        print("  (stripped a pasted variable name or quotes from: "
+              + ", ".join(cleaned) + ")")
     for name, value in entries.items():
         # Length only, never the value (safety rule 9).
         print(f"    {name:<26} {len(value)} chars")

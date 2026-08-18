@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# KRX 8-stock trading bot — configuration
+# KRX trading bot — configuration
 #
 # Nothing secret lives here. App keys and tokens are read from .env only.
 # ---------------------------------------------------------------------------
@@ -35,6 +35,10 @@ risk:
 # theme is allowed at a time. Single-member themes never block anything.
 themes:
   construction: ["002990", "228340"]      # 금호건설, 동양파일 (건설 + PHC파일)
+  # 금호타이어 shares a name with 금호건설 but not an owner: it was sold to
+  # Doublestar in 2018. Tyres track the auto cycle, construction does not, so
+  # they are deliberately separate themes.
+  auto_parts: ["073240"]                  # 금호타이어
   power_energy: ["006340", "009830"]      # 대원전선, 한화솔루션
   battery_materials: ["093370"]           # 후성
   shipbuilding: ["460930"]                # 현대힘스
@@ -132,6 +136,20 @@ universe:
       period: 20
       volume_mult: 1.5
       atr_trail_mult: 2.0
+
+  "073240":
+    name: 금호타이어
+    market: KOSPI
+    enabled: true
+    # Added to bring an existing holding under stop management. Verify the
+    # market tag with `python main.py profile` -- a wrong one mis-prices tax.
+    strategy: trend_following
+    timeframe: 1Day
+    min_qty: 1
+    params:
+      fast_ema: 50
+      slow_ema: 200
+      atr_trail_mult: 3.0
 
   "439960":
     name: 코스모로보틱스

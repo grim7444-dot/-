@@ -503,7 +503,12 @@ def test_manager_skips_when_atr_is_unavailable(portfolio, config):
 
 
 def test_kill_switch_leaves_unrelated_holdings_alone(config):
-    """A real account held 073240, which this bot never bought and must not sell."""
+    """An account can hold anything; the bot may only sell what it manages.
+
+    This came from a real check: the account held a stock outside the universe
+    and close_all_positions would have liquidated it. 005930 stands in for
+    that here, since it is not and will not be in the configured universe.
+    """
     from broker import KiwoomBroker
     from settings import Secret, resolve_mode
     from settings import Credentials as Creds
@@ -524,15 +529,16 @@ def test_kill_switch_leaves_unrelated_holdings_alone(config):
     from broker import Holding
 
     sold: list[str] = []
+    assert "005930" not in config["universe"], "test needs a code outside the universe"
     broker.get_holdings = lambda: {
         "002990": Holding("002990", 21.0, 24_000.0, 25_000.0),
-        "073240": Holding("073240", 36.0, 4_500.0, 4_600.0),
+        "005930": Holding("005930", 36.0, 4_500.0, 4_600.0),
     }
     broker.submit_order = lambda code, side, qty, **kw: sold.append(code)
 
     assert broker.close_all_positions() == 1
     assert sold == ["002990"]        # in the universe
-    assert "073240" not in sold      # not ours to sell
+    assert "005930" not in sold      # not ours to sell
 
 
 def test_broker_refuses_orders_outside_the_universe(config):
@@ -553,5 +559,6 @@ def test_broker_refuses_orders_outside_the_universe(config):
         decision, credentials, config, allowed_codes=list(config["universe"])
     )
 
+    assert "005930" not in config["universe"], "test needs a code outside the universe"
     with pytest.raises(BrokerError, match="not in this bot's configured universe"):
-        broker.submit_order("073240", LONG, 10)
+        broker.submit_order("005930", LONG, 10)

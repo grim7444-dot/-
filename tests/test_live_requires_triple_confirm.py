@@ -423,7 +423,7 @@ def test_setup_writes_values_into_env(workdir, monkeypatch):
         encoding="utf-8",
     )
     answers = iter([PAPER_KEY, PAPER_SECRET, "12345678901"])
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(answers))
 
     assert main.main(["setup"]) == 0
 
@@ -443,7 +443,7 @@ def test_setup_rejects_an_oversized_paste(workdir, monkeypatch, capsys):
     (workdir / ".env").write_text("KIWOOM_PAPER=true\n", encoding="utf-8")
     # First attempt is a 516-character blob, then the real key.
     answers = iter(["x" * 516, PAPER_KEY, PAPER_SECRET, "12345678901"])
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(answers))
 
     assert main.main(["setup"]) == 0
 
@@ -484,7 +484,7 @@ def test_setup_live_does_not_flip_the_gate_itself(workdir, monkeypatch):
 
     (workdir / ".env").write_text("KIWOOM_PAPER=true\n", encoding="utf-8")
     answers = iter([LIVE_KEY, LIVE_SECRET, "12345678901"])
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(answers))
 
     assert main.main(["setup", "--live"]) == 0
 
@@ -518,3 +518,22 @@ def test_setup_leaves_an_ordinary_value_alone():
     import main
 
     assert main._clean_pasted_value(PAPER_KEY, "KIWOOM_PAPER_APP_KEY") == PAPER_KEY
+
+
+def test_setup_preview_never_shows_the_whole_key(workdir, monkeypatch, capsys):
+    """A console transcript gets pasted into chat; the preview must not leak."""
+    import main
+
+    (workdir / ".env").write_text("KIWOOM_PAPER=true\n", encoding="utf-8")
+    answers = iter([PAPER_KEY, PAPER_SECRET, "12345678"])
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(answers))
+
+    assert main.main(["setup"]) == 0
+
+    out = capsys.readouterr().out
+    assert PAPER_KEY not in out
+    assert PAPER_SECRET not in out
+    # Enough of the ends survives to confirm the right value landed.
+    assert PAPER_KEY[:4] in out
+    assert PAPER_KEY[-4:] in out
+    assert "43 characters" in out

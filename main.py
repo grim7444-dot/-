@@ -664,21 +664,35 @@ _VALUE_LIMITS: dict[str, tuple[int, int, str]] = {
 }
 
 
-def _prompt_value(label: str, name: str, kind: str) -> str:
-    """Ask for one value, visibly, and refuse obviously wrong input.
+def _mask(value: str) -> str:
+    """A preview that proves the paste landed without printing the secret."""
+    if len(value) <= 12:
+        return "*" * len(value)
+    return f"{value[:4]}{'*' * (len(value) - 8)}{value[-4:]}"
 
-    Hidden input made every paste mistake invisible until authentication
-    failed with no explanation, so this shows what was captured and checks the
-    length while the user is still standing there to fix it.
+
+def _prompt_value(label: str, name: str, kind: str) -> str:
+    """Ask for one value and refuse obviously wrong input.
+
+    Input is hidden, because a console transcript gets pasted into chat and
+    support threads. What makes that safe is the feedback: the length is
+    checked against a real key and echoed with a masked preview, so a paste
+    that swallowed extra lines is caught here rather than surfacing later as
+    an unexplained authentication failure.
     """
+    import getpass
+
     low, high, hint = _VALUE_LIMITS[kind]
     for attempt in range(3):
-        raw = input(f"  {label}: ")
+        try:
+            raw = getpass.getpass(f"  {label} (typing is hidden): ")
+        except Exception:  # no tty, e.g. piped input
+            raw = input(f"  {label}: ")
         value = _clean_pasted_value(raw, name)
         if not value:
             return ""
         if low <= len(value) <= high:
-            print(f"    -> captured {len(value)} characters")
+            print(f"    -> captured {len(value)} characters: {_mask(value)}")
             return value
         print(f"    !! that is {len(value)} characters; {hint}.")
         if len(value) > high:
@@ -735,7 +749,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     print(f"  .env SETUP  -  writing the {target} key pair".center(78))
     print("=" * 78)
     print("  Paste ONE value per prompt with a right-click, then press Enter.")
-    print("  What you paste IS shown, so you can see it landed correctly.")
+    print("  Typing is hidden; a masked preview confirms what was captured.")
     print("  Press Enter on an empty prompt to leave that value unchanged.\n")
 
     entries: dict[str, str] = {}

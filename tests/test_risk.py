@@ -521,8 +521,13 @@ def test_kill_switch_leaves_unrelated_holdings_alone(config):
         decision, credentials, config, allowed_codes=list(config["universe"])
     )
 
+    from broker import Holding
+
     sold: list[str] = []
-    broker.get_holdings = lambda: {"002990": 21.0, "073240": 36.0}
+    broker.get_holdings = lambda: {
+        "002990": Holding("002990", 21.0, 24_000.0, 25_000.0),
+        "073240": Holding("073240", 36.0, 4_500.0, 4_600.0),
+    }
     broker.submit_order = lambda code, side, qty, **kw: sold.append(code)
 
     assert broker.close_all_positions() == 1

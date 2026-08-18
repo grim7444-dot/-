@@ -29,6 +29,8 @@ from typing import Any, Mapping, Sequence
 
 from broker import BrokerAuthError, BrokerBase, BrokerError, DryRunBroker, build_broker
 from data import MarketData, months_to_start, timeframe_delta, warmup_start
+from indicators import atr as atr_indicator
+from indicators import last_valid
 from market.calendar import KST, KrxCalendar
 from market.rules import KOSPI, KrxRules
 from portfolio import LONG, SHORT, Portfolio, Position
@@ -786,6 +788,133 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def cmd_adopt(args: argparse.Namespace) -> int:
+    """Bring existing broker holdings under the bot's management.
+
+    The bot only manages what is in ``state.json``; a stock bought by hand is
+    invisible to it, so it would happily buy the same name again. Adoption
+    writes those positions into state -- but the quantity was chosen by a
+    person, not by the sizing rule, so the risk it implies has to be measured
+    and shown rather than assumed to fit the 1% budget.
+    """
+    rt = build_runtime(args, cli_live=bool(getattr(args, "live", False)), force_dry_run=False)
+
+    if isinstance(rt.broker, DryRunBroker):
+        print("\n  No broker credentials loaded; nothing to adopt.")
+        return 1
+
+    try:
+        account = rt.broker.get_account()
+        holdings = rt.broker.get_holdings()
+    except BrokerError as exc:
+        print(f"\n  Could not read the account: {exc}")
+        return 1
+
+    print()
+    print("=" * 78)
+    print("  ADOPT EXISTING HOLDINGS".center(78))
+    print("=" * 78)
+    print(f"  Account equity : {account.equity:>14,.0f} KRW")
+    print(f"  Risk budget    : {rt.risk.max_loss_per_trade(account.equity):>14,.0f} KRW per position"
+          f"  ({rt.risk.risk_pct:.0%})")
+    print("=" * 78)
+
+    if not holdings:
+        print("\n  The account holds nothing. Nothing to adopt.")
+        return 0
+
+    foreign = {c: h for c, h in holdings.items() if c not in rt.universe}
+    mine = {c: h for c, h in holdings.items() if c in rt.universe}
+
+    if foreign:
+        print("\n  Left alone -- not in this bot's universe:")
+        for code, h in foreign.items():
+            print(f"    {code}   {h.qty:,.0f} sh @ {h.avg_price:,.0f}")
+        print("    The bot will never buy or sell these. To have it manage one,")
+        print("    add the code to `universe` in config.yaml first.")
+
+    if not mine:
+        print("\n  None of the holdings are in the universe; nothing to adopt.")
+        return 0
+
+    proposals: list[tuple[str, Position, float, float]] = []
+    print("\n  Proposed stops:")
+    for code, h in mine.items():
+        asset_cfg = rt.universe[code]
+        strategy = rt.strategies.get(code)
+        barset = rt.market_data.get_bars(
+            code=code,
+            timeframe=asset_cfg.get("timeframe", "1Day"),
+            lookback_bars=max((strategy.warmup if strategy else 30) + 30, 120),
+            market=rt.market_of(code),
+        )
+        atr_value = last_valid(atr_indicator(barset.bars, rt.risk.atr_period)) or 0.0
+        price = h.current_price or float(barset.bars["close"].iloc[-1])
+        if atr_value <= 0 or price <= 0:
+            print(f"    {code}: no ATR available, cannot place a stop -- skipped")
+            continue
+
+        distance = atr_value * rt.risk.hard_stop_atr_mult
+        stop = rt.rules.stop_price(price, distance, rt.market_of(code))
+        risk = (price - stop) * h.qty
+        risk_pct = risk / account.equity if account.equity else 0.0
+
+        label = f"{code} {rt.name_of(code)}".strip()
+        flag = "  OVER BUDGET" if risk_pct > rt.risk.risk_pct else ""
+        print(f"\n    {label}")
+        print(f"      holding    : {h.qty:,.0f} sh, avg {h.avg_price:,.0f}, now {price:,.0f}")
+        print(f"      ATR({rt.risk.atr_period})     : {atr_value:,.0f}")
+        print(f"      stop at    : {stop:,.0f}   ({distance:,.0f} below current)")
+        print(f"      risk       : {risk:,.0f} KRW = {risk_pct:.2%} of equity{flag}")
+
+        proposals.append((code, Position(
+            symbol=code,
+            side=LONG,
+            qty=h.qty,
+            entry_price=h.avg_price or price,
+            stop_price=stop,
+            stop_distance=distance,
+            strategy=(strategy.name if strategy else ""),
+            entry_time=str(datetime.now(KST)),
+        ), risk, risk_pct))
+
+    if not proposals:
+        print("\n  Nothing could be adopted.")
+        return 1
+
+    total_risk = sum(p[2] for p in proposals)
+    print("\n" + "-" * 78)
+    print(f"  Total risk if adopted: {total_risk:,.0f} KRW = "
+          f"{total_risk / account.equity:.2%} of equity"
+          f"   (portfolio cap {rt.risk.max_total_risk_pct:.0%})")
+    over = [p for p in proposals if p[3] > rt.risk.risk_pct]
+    if over:
+        print()
+        print("  Some positions risk more than the per-trade budget. That is what")
+        print("  holding a size the sizing rule did not choose costs. Your options:")
+        print("    - adopt anyway, and the stop caps the loss at the figure above")
+        print("    - sell part of the position by hand first, then adopt")
+        print("    - leave it unmanaged and trade it yourself")
+
+    if not args.yes:
+        print()
+        answer = input("  Adopt these positions into state.json? [yes/no] ").strip().lower()
+        if answer not in ("yes", "y"):
+            print("\n  Nothing was written.")
+            return 1
+
+    for code, position, _, _ in proposals:
+        rt.portfolio.open_position(position)
+    rt.portfolio.mark_equity(account.equity)
+
+    print(f"\n  Adopted {len(proposals)} position(s) into {rt.portfolio.store.path}")
+    print("  The bot will now manage their stops and exits, and will not buy them again.")
+    print("\n  Next:  python main.py status")
+    print("=" * 78)
+    return 0
+
+
 def cmd_check(args: argparse.Namespace) -> int:
     """Read-only connectivity probe. Places no orders, ever.
 
@@ -937,7 +1066,14 @@ def cmd_check(args: argparse.Namespace) -> int:
     if accounts:
         print(f"  Accounts       : {accounts}")
     if holdings:
-        print(f"  Broker holdings: {holdings}")
+        print("  Broker holdings:")
+        for code, h in holdings.items():
+            known = "" if code in rt.universe else "   <- NOT in this bot's universe"
+            label = f"{code} {rt.name_of(code)}".strip()
+            print(
+                f"    {label:<22} {h.qty:>10,.0f} sh @ {h.avg_price:>10,.0f}"
+                f"  now {h.current_price:>10,.0f}{known}"
+            )
     if open_orders:
         print(f"  Working orders : {open_orders}")
 
@@ -1102,6 +1238,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="write the two live confirmations into .env (requires typing the phrase)",
     )
 
+    adopt = sub.add_parser(
+        "adopt", help="bring existing broker holdings under the bot's management"
+    )
+    adopt.add_argument("--live", action="store_true", help="read the live account")
+    adopt.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+
     chk = sub.add_parser(
         "check", help="read-only connectivity probe against the broker (no orders)"
     )
@@ -1136,6 +1278,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return cmd_trade(args, cli_live=True)
     if args.command == "setup":
         return cmd_setup(args)
+    if args.command == "adopt":
+        return cmd_adopt(args)
     if args.command == "check":
         return cmd_check(args)
     if args.command == "status":

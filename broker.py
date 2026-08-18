@@ -103,6 +103,22 @@ class StockInfo:
     min_qty: float = 1.0
 
 
+@dataclass(frozen=True)
+class Holding:
+    """A position the account actually holds, as the broker reports it."""
+
+    code: str
+    qty: float
+    avg_price: float = 0.0
+    current_price: float = 0.0
+    #: Field names present in the broker row, for diagnosing a parse miss.
+    raw_fields: tuple[str, ...] = ()
+
+    @property
+    def market_value(self) -> float:
+        return self.qty * (self.current_price or self.avg_price)
+
+
 @dataclass
 class OrderResult:
     code: str
@@ -621,18 +637,33 @@ class KiwoomBroker(BrokerBase):
         logger.warning("cancelled %d open order(s)", count)
         return count
 
-    def get_holdings(self) -> dict[str, float]:
-        """Codes and quantities the account actually holds."""
+    def get_holdings(self) -> dict[str, Holding]:
+        """What the account actually holds, with average and current price."""
         data = self._call(
             "account", "balance", {"qry_tp": "1", "dmst_stex_tp": "KRX"}, "get_holdings"
         )
         rows = data.get("output") or data.get("acnt_evlt_remn_indv_tot") or []
-        holdings: dict[str, float] = {}
+        holdings: dict[str, Holding] = {}
         for row in rows:
             code = str(row.get("stk_cd") or "").strip().lstrip("A")
             qty = _to_float(row.get("rmnd_qty") or row.get("hldg_qty"))
-            if code and qty > 0:
-                holdings[code] = qty
+            if not code or qty <= 0:
+                continue
+            holdings[code] = Holding(
+                code=code,
+                qty=qty,
+                # Field names vary by TR revision; raw_fields exposes what was
+                # actually present so a miss is diagnosable rather than silent.
+                avg_price=abs(
+                    _to_float(
+                        row.get("pur_pric") or row.get("buy_uv") or row.get("pchs_avg_pric")
+                    )
+                ),
+                current_price=abs(
+                    _to_float(row.get("cur_prc") or row.get("prpr") or row.get("evlt_pric"))
+                ),
+                raw_fields=tuple(sorted(str(k) for k in row)),
+            )
         return holdings
 
     def close_all_positions(self) -> int:
@@ -646,13 +677,15 @@ class KiwoomBroker(BrokerBase):
         """
         closed = 0
         skipped: list[str] = []
-        for code, qty in self.get_holdings().items():
+        for code, holding in self.get_holdings().items():
             if self.allowed_codes and code not in self.allowed_codes:
                 # Not ours to sell. The account may hold anything.
                 skipped.append(code)
                 continue
             try:
-                self.submit_order(code, SHORT, qty, is_exit=True, note="kill switch flatten")
+                self.submit_order(
+                    code, SHORT, holding.qty, is_exit=True, note="kill switch flatten"
+                )
                 closed += 1
             except BrokerError as exc:
                 logger.error("flatten failed for %s: %s", code, exc)

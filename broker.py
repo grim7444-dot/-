@@ -76,6 +76,15 @@ class BrokerError(RuntimeError):
         super().__init__(mask_text(str(message)))
 
 
+class BrokerAuthError(BrokerError):
+    """Authentication failed permanently.
+
+    Wrong credentials or a wrong request shape produce the same answer every
+    time, so retrying only burns minutes before reporting the same thing. This
+    is raised past the retry wrapper and stops the caller immediately.
+    """
+
+
 @dataclass(frozen=True)
 class AccountSnapshot:
     equity: float
@@ -151,6 +160,9 @@ def with_retry(
     while True:
         try:
             return fn()
+        except BrokerAuthError:
+            # Permanent: the same request will fail the same way next time.
+            raise
         except Exception as exc:
             attempt += 1
             if attempt > max_retries:
@@ -368,7 +380,15 @@ class KiwoomBroker(BrokerBase):
         )
         token = data.get("token") or data.get("access_token") or ""
         if not token:
-            raise BrokerError("token response contained no access token")
+            # Report what Kiwoom actually said. Field names only, never values,
+            # since one of those fields may be a token on a later API revision.
+            code = data.get("return_code", data.get("rt_cd", "?"))
+            message = data.get("return_msg", data.get("msg1", "")) or "(no message)"
+            keys = ", ".join(sorted(str(k) for k in data)) or "(empty response)"
+            raise BrokerAuthError(
+                f"token request rejected by {self.base_url} "
+                f"[return_code={code}] {message} | response fields: {keys}"
+            )
         self._token = token
         # Refresh a minute early rather than racing the expiry.
         self._token_expires = now + timedelta(seconds=int(data.get("expires_in", 3600)) - 60)

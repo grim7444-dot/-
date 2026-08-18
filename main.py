@@ -27,7 +27,7 @@ from pathlib import Path
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
-from broker import BrokerBase, BrokerError, DryRunBroker, build_broker
+from broker import BrokerAuthError, BrokerBase, BrokerError, DryRunBroker, build_broker
 from data import MarketData, months_to_start, timeframe_delta, warmup_start
 from market.calendar import KST, KrxCalendar
 from market.rules import KOSPI, KrxRules
@@ -832,10 +832,21 @@ def cmd_check(args: argparse.Namespace) -> int:
         return 1
 
     results: list[tuple[str, bool, str]] = []
+    auth_failure: str | None = None
 
     def probe(label: str, fn) -> Any:
+        nonlocal auth_failure
+        if auth_failure is not None:
+            # Once the token is refused every later probe fails identically;
+            # running them just repeats the same error a dozen times.
+            results.append((label, False, "skipped: authentication failed"))
+            return None
         try:
             value = fn()
+        except BrokerAuthError as exc:
+            auth_failure = mask_text(str(exc))
+            results.append((label, False, auth_failure[:200]))
+            return None
         except Exception as exc:
             results.append((label, False, mask_text(str(exc))[:88]))
             return None
@@ -903,7 +914,16 @@ def cmd_check(args: argparse.Namespace) -> int:
         print(f"  Working orders : {open_orders}")
 
     print("-" * 78)
-    if failed:
+    if auth_failure:
+        print("  AUTHENTICATION FAILED — nothing else could be tested.")
+        print(f"  {auth_failure}")
+        print()
+        print("  Likely causes, in order:")
+        print("    1. the key pair belongs to the other environment")
+        print("       (a mock key cannot authenticate against the live host, or vice versa)")
+        print("    2. the token request field names in broker.py do not match Kiwoom's")
+        print("    3. the key was revoked or re-issued")
+    elif failed:
         print(f"  {len(failed)} check(s) FAILED — do not trade until these pass.")
         print("  Most likely cause: an endpoint path or api-id in broker.py does not")
         print("  match Kiwoom's current API. They are overridable in config.yaml")

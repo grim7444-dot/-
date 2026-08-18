@@ -23,6 +23,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
@@ -636,6 +637,74 @@ def cmd_trade(args: argparse.Namespace, cli_live: bool) -> int:
     return 0
 
 
+def cmd_setup(args: argparse.Namespace) -> int:
+    """Write credentials into .env without opening an editor.
+
+    Hand-editing .env in Notepad is where this setup keeps going wrong: the
+    file ships with LF line endings, the values land in the wrong pair, or a
+    stray space creeps in around the '='. This prompts for each value, echoes
+    none of them, and rewrites only the lines it owns.
+
+    It deliberately does *not* set KIWOOM_PAPER or KIWOOM_LIVE_CONFIRM. Those
+    two are the human half of the live gate, and a tool that flipped them on
+    the user's behalf would hollow it out.
+    """
+    import getpass
+
+    target = "LIVE" if args.live else "PAPER"
+    path = Path(".env")
+
+    print()
+    print("=" * 78)
+    print(f"  .env SETUP  —  writing the {target} key pair".center(78))
+    print("=" * 78)
+    print("  Typing is hidden. Paste with a right-click, then press Enter.")
+    print("  Press Enter on an empty prompt to leave that value unchanged.\n")
+
+    entries: dict[str, str] = {}
+    for label, name in (
+        (f"{target} App Key", f"KIWOOM_{target}_APP_KEY"),
+        (f"{target} Secret Key", f"KIWOOM_{target}_SECRET_KEY"),
+        ("Account number", "KIWOOM_ACCOUNT_NO"),
+    ):
+        value = getpass.getpass(f"  {label}: ").strip()
+        if value:
+            entries[name] = value
+
+    if not entries:
+        print("\n  Nothing entered; .env was not modified.")
+        return 1
+
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    remaining = dict(entries)
+    out: list[str] = []
+    for line in lines:
+        key = line.split("=", 1)[0].strip() if "=" in line else ""
+        if key in remaining:
+            out.append(f"{key}={remaining.pop(key)}")
+        else:
+            out.append(line)
+    out.extend(f"{k}={v}" for k, v in remaining.items())
+
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+    print(f"\n  Wrote {len(entries)} value(s) to {path.resolve()}")
+    for name, value in entries.items():
+        # Length only, never the value (safety rule 9).
+        print(f"    {name:<26} {len(value)} chars")
+
+    if target == "LIVE":
+        print("\n  For live trading you must still add these two lines yourself:")
+        print("    KIWOOM_PAPER=false")
+        print("    KIWOOM_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY")
+        print("  Without them every run stays on the mock account, by design.")
+        print("\n  Next:  python main.py check --live")
+    else:
+        print("\n  Next:  python main.py check")
+    print("=" * 78)
+    return 0
+
+
 def cmd_check(args: argparse.Namespace) -> int:
     """Read-only connectivity probe. Places no orders, ever.
 
@@ -892,6 +961,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--live", action="store_true", help="explicit live flag (the sub-command implies it)"
     )
 
+    setup = sub.add_parser(
+        "setup", help="write the app key and secret into .env (no editor needed)"
+    )
+    setup.add_argument(
+        "--live", action="store_true", help="write the LIVE key pair instead of PAPER"
+    )
+
     chk = sub.add_parser(
         "check", help="read-only connectivity probe against the broker (no orders)"
     )
@@ -924,6 +1000,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "live":
         # The `live` sub-command is itself the explicit command-line request.
         return cmd_trade(args, cli_live=True)
+    if args.command == "setup":
+        return cmd_setup(args)
     if args.command == "check":
         return cmd_check(args)
     if args.command == "status":

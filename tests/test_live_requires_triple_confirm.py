@@ -406,3 +406,53 @@ def test_paper_subcommand_with_live_flag_still_needs_the_env(workdir):
     decision = resolve_mode({}, cli_live=bool(args.live))
     assert decision.live is False
     assert decision.demoted is True
+
+
+# --------------------------------------------------------------------------
+# `setup` writes credentials without leaking them
+# --------------------------------------------------------------------------
+
+
+def test_setup_writes_values_and_never_prints_them(workdir, monkeypatch, capsys):
+    import main
+
+    (workdir / ".env").write_text(
+        "KIWOOM_PAPER_APP_KEY=\nKIWOOM_PAPER_SECRET_KEY=\nKIWOOM_PAPER=true\n",
+        encoding="utf-8",
+    )
+    answers = iter([PAPER_KEY, PAPER_SECRET, "12345678901"])
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(answers))
+
+    assert main.main(["setup"]) == 0
+
+    written = (workdir / ".env").read_text(encoding="utf-8")
+    assert f"KIWOOM_PAPER_APP_KEY={PAPER_KEY}" in written
+    assert f"KIWOOM_PAPER_SECRET_KEY={PAPER_SECRET}" in written
+    assert "KIWOOM_ACCOUNT_NO=12345678901" in written
+    # Existing unrelated lines survive, and nothing is duplicated.
+    assert "KIWOOM_PAPER=true" in written
+    assert written.count("KIWOOM_PAPER_APP_KEY=") == 1
+
+    # Safety rule 9: the console shows lengths, never the secrets themselves.
+    out = capsys.readouterr().out
+    assert PAPER_KEY not in out
+    assert PAPER_SECRET not in out
+    assert "43 chars" in out or "chars" in out
+
+
+def test_setup_live_does_not_flip_the_gate_itself(workdir, monkeypatch):
+    """Writing the LIVE keys must not also grant the two env confirmations."""
+    import main
+
+    (workdir / ".env").write_text("KIWOOM_PAPER=true\n", encoding="utf-8")
+    answers = iter([LIVE_KEY, LIVE_SECRET, "12345678901"])
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(answers))
+
+    assert main.main(["setup", "--live"]) == 0
+
+    written = (workdir / ".env").read_text(encoding="utf-8")
+    assert f"KIWOOM_LIVE_APP_KEY={LIVE_KEY}" in written
+    # The human half of the gate is untouched.
+    assert "KIWOOM_PAPER=true" in written
+    assert "KIWOOM_PAPER=false" not in written
+    assert "KIWOOM_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY" not in written

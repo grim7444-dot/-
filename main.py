@@ -296,6 +296,24 @@ class TradingEngine:
         if barset.synthetic:
             logger.warning("%s: SYNTHETIC bars in use - signals are illustrative only", label)
 
+        # Every decision below reads the last bar as if it were the present:
+        # the entry signal, the trailing stop, the hard-stop comparison. Bars
+        # that stopped days ago make all three answer a question about the
+        # past. Skipping loses a cycle; acting on them can sell at a level the
+        # stock left behind.
+        if not rt.market_data.is_current(bars, timeframe):
+            held = " A POSITION IS OPEN and is not being managed this cycle." if (
+                rt.portfolio.get(code) is not None
+            ) else ""
+            logger.error(
+                "%s: bars end at %s and are not current [%s] - skipping.%s",
+                label,
+                str(bars.index[-1])[:16],
+                barset.source,
+                held,
+            )
+            return
+
         price = float(bars["close"].iloc[-1])
         position = rt.portfolio.get(code)
 

@@ -16,7 +16,7 @@ defects lined up to make that possible, and each gets a test here:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -386,3 +386,76 @@ def test_a_fully_invested_account_derives_no_cash():
         tot_evlt_amt="000000000273960",
     )
     assert _account_broker(payload).get_account().cash == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 8. stale bars are not treated as the present
+# ---------------------------------------------------------------------------
+
+
+def _daily_frame(last_day, rows=5):
+    import pandas as pd
+
+    index = pd.DatetimeIndex(
+        [last_day - timedelta(days=i) for i in reversed(range(rows))], name="timestamp"
+    )
+    return pd.DataFrame(
+        {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1000.0},
+        index=index,
+    )
+
+
+def _market_data(tmp_path):
+    from data import MarketData
+    from market.calendar import KrxCalendar
+
+    return MarketData(calendar=KrxCalendar(), cache_dir=tmp_path / "cache")
+
+
+def test_daily_bars_ending_yesterday_are_current(tmp_path):
+    md = _market_data(tmp_path)
+    now = datetime(2026, 8, 19, 11, 0, tzinfo=KST)          # a Wednesday
+    frame = _daily_frame(datetime(2026, 8, 18))             # Tuesday's close
+    assert md.is_current(frame, "1Day", now) is True
+
+
+def test_daily_bars_three_sessions_old_are_not_current(tmp_path):
+    md = _market_data(tmp_path)
+    now = datetime(2026, 8, 19, 11, 0, tzinfo=KST)
+    # This is what a real run produced: a cache that stopped on the 14th while
+    # the strategy went on deciding as though it were the 19th.
+    frame = _daily_frame(datetime(2026, 8, 14))
+    assert md.is_current(frame, "1Day", now) is False
+
+
+def test_a_weekend_does_not_make_friday_stale(tmp_path):
+    md = _market_data(tmp_path)
+    monday = datetime(2026, 8, 17, 10, 0, tzinfo=KST)
+    friday = _daily_frame(datetime(2026, 8, 14))
+    assert md.is_current(friday, "1Day", monday) is True
+
+
+def test_intraday_bars_get_a_two_interval_grace(tmp_path):
+    import pandas as pd
+
+    md = _market_data(tmp_path)
+    now = datetime(2026, 8, 19, 11, 30, tzinfo=KST)
+    index = pd.DatetimeIndex(
+        [datetime(2026, 8, 19, h, tzinfo=KST) for h in (9, 10, 11)], name="timestamp"
+    )
+    fresh = pd.DataFrame(
+        {"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0}, index=index
+    )
+    assert md.is_current(fresh, "60Min", now) is True
+
+    stale = fresh.copy()
+    stale.index = pd.DatetimeIndex(
+        [datetime(2026, 8, 18, h, tzinfo=KST) for h in (13, 14, 15)], name="timestamp"
+    )
+    assert md.is_current(stale, "60Min", now) is False
+
+
+def test_an_empty_frame_is_never_current(tmp_path):
+    from data import empty_frame
+
+    assert _market_data(tmp_path).is_current(empty_frame(), "1Day") is False

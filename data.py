@@ -302,7 +302,13 @@ class MarketData:
             cached = read_cache(self.cache_dir, code, timeframe)
             if cached is not None:
                 window = cached.loc[(cached.index >= start) & (cached.index <= end)]
-                if len(window) >= (lookback_bars or 1):
+                # Enough bars is not the same as current bars. A cache that
+                # satisfied the count check was short-circuiting every live
+                # fetch, so a daily strategy kept deciding on bars that ended
+                # days earlier while reporting them as good data.
+                if len(window) >= (lookback_bars or 1) and self.is_current(
+                    window, timeframe, end
+                ):
                     return BarSet(code, timeframe, _tail(window, lookback_bars), "cache", market)
 
         frame, source = self._fetch_live(code, timeframe, start, end, market)
@@ -328,30 +334,64 @@ class MarketData:
 
     # -- live sources ------------------------------------------------------
 
+    def is_current(
+        self, frame: pd.DataFrame, timeframe: str, end: datetime | None = None
+    ) -> bool:
+        """Do these bars run up to the most recent bar that should exist?
+
+        Daily bars are current when the last one falls on or after the last
+        completed session; today's own bar is not final until the close, so it
+        is not required. Intraday bars get a two-interval grace, which covers
+        the gap between one bar closing and the next being published.
+        """
+        if frame is None or frame.empty:
+            return False
+        end = end or datetime.now(KST)
+        last = frame.index[-1]
+        if getattr(last, "tzinfo", None) is None:
+            last = last.tz_localize(KST) if hasattr(last, "tz_localize") else last
+        if is_intraday(timeframe):
+            try:
+                return (end - last) <= timeframe_delta(timeframe) * 2
+            except TypeError:  # naive/aware mismatch we could not repair
+                return True
+        expected = self.calendar.previous_business_day(end.date())
+        return last.date() >= expected
+
     def _fetch_live(
         self, code: str, timeframe: str, start: datetime, end: datetime, market: str
     ) -> tuple[pd.DataFrame | None, Source]:
         if not self.allow_network:
             return None, "synthetic"
         if is_intraday(timeframe):
-            return self._fetch_intraday(code, timeframe, start, end), "broker"
-        return self._fetch_pykrx_daily(code, start, end), "pykrx"
+            return self._fetch_broker(code, timeframe, start, end), "broker"
+        frame = self._fetch_pykrx_daily(code, start, end)
+        if frame is not None and not frame.empty:
+            return frame, "pykrx"
+        # KRX's own endpoints go down, and pykrx then returns nothing at all.
+        # Kiwoom serves daily bars over the same chart call the intraday
+        # stocks already use, so there is a second source to try before
+        # falling back to a cache that may be stale or to invented numbers.
+        logger.info("pykrx returned nothing for %s; trying the broker chart", code)
+        return self._fetch_broker(code, "1Day", start, end), "broker"
 
-    def _fetch_intraday(
+    def _fetch_broker(
         self, code: str, timeframe: str, start: datetime, end: datetime
     ) -> pd.DataFrame | None:
-        """Minute bars come from the broker - pykrx does not serve them."""
+        """Bars from the broker's chart call.
+
+        Minute bars have no other source -- pykrx does not serve them -- and
+        daily bars come through here when pykrx is unreachable.
+        """
         if self.intraday_provider is None:
             logger.info(
-                "no intraday provider configured; %s %s cannot be fetched live",
-                code,
-                timeframe,
+                "no broker configured; %s %s cannot be fetched live", code, timeframe
             )
             return None
         try:
             frame = self.intraday_provider.get_chart(code, timeframe, start, end)
         except Exception as exc:
-            logger.warning("intraday fetch failed for %s %s: %s", code, timeframe, exc)
+            logger.warning("broker chart fetch failed for %s %s: %s", code, timeframe, exc)
             return None
         return _normalise(frame)
 

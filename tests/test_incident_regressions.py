@@ -16,6 +16,7 @@ defects lined up to make that possible, and each gets a test here:
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 import pytest
@@ -562,3 +563,85 @@ def test_a_missing_market_field_does_not_confirm_itself(tmp_path, monkeypatch):
 
     md = _market_data_with(_StubProvider(info), tmp_path)
     assert md.get_market("460930") is None
+
+
+# ---------------------------------------------------------------------------
+# 10. a full cycle actually runs
+# ---------------------------------------------------------------------------
+
+
+class _ErrorCollector(logging.Handler):
+    """Collects ERROR records from the bot's own logger.
+
+    Two things defeat the obvious approaches. `setup_logging` sets
+    propagate = False on the `bot` logger, so pytest's caplog -- which hangs
+    its handler off root -- sees nothing; and it calls handlers.clear(), so a
+    handler attached before the run is gone by the time anything is logged.
+    Earlier versions of this test using each approach passed with the bug
+    still present.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.ERROR)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+    def attach_after_setup(self, module, monkeypatch) -> None:
+        """Re-attach once the module under test has configured logging."""
+        real_setup = module.setup_logging
+
+        def setup_then_attach(*args, **kwargs):
+            real_setup(*args, **kwargs)
+            logging.getLogger("bot").addHandler(self)
+
+        monkeypatch.setattr(module, "setup_logging", setup_then_attach)
+
+
+def test_one_full_cycle_raises_nothing_for_any_stock(workdir, monkeypatch):
+    """The loop swallows per-stock exceptions, so only a test can see them.
+
+    A live run skipped all nine stocks with `NameError: name 'timeframe' is
+    not defined` -- caught by `except Exception`, logged, and stepped over.
+    Every unit test passed, because none of them ran a cycle.
+    """
+    import main
+
+    collector = _ErrorCollector()
+    collector.attach_after_setup(main, monkeypatch)
+    try:
+        assert main.main(["paper", "--once"]) == 0
+    finally:
+        logging.getLogger("bot").removeHandler(collector)
+
+    problems = [
+        f"{r.name}: {r.getMessage()}"
+        for r in collector.records
+        if "unexpected error" in r.getMessage() or r.exc_info is not None
+    ]
+    assert not problems, "a full cycle logged errors:\n" + "\n".join(problems)
+
+
+def test_every_configured_stock_is_reached_in_a_cycle(workdir, monkeypatch):
+    """A stock silently missing from the cycle is a stock with no stop."""
+    import main
+
+    seen: list[str] = []
+    original = main.TradingEngine._process_code
+
+    def spy(self, code, *args, **kwargs):
+        seen.append(code)
+        return original(self, code, *args, **kwargs)
+
+    monkeypatch.setattr(main.TradingEngine, "_process_code", spy)
+    assert main.main(["paper", "--once"]) == 0
+
+    from settings import load_config
+
+    configured = {
+        str(c)
+        for c, cfg in (load_config(None).get("universe") or {}).items()
+        if cfg.get("enabled", True)
+    }
+    assert set(seen) == configured

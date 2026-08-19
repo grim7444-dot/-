@@ -278,9 +278,10 @@ class TradingEngine:
         strategy = rt.strategies[code]
         label = f"{code} {rt.name_of(code)}".strip()
 
+        timeframe = str(asset_cfg.get("timeframe", "1Day"))
         barset = rt.market_data.get_bars(
             code=code,
-            timeframe=asset_cfg.get("timeframe", "1Day"),
+            timeframe=timeframe,
             lookback_bars=max(strategy.warmup + 60, 260),
             market=market,
         )
@@ -301,7 +302,7 @@ class TradingEngine:
         # that stopped days ago make all three answer a question about the
         # past. Skipping loses a cycle; acting on them can sell at a level the
         # stock left behind.
-        if not rt.market_data.is_current(bars, timeframe):
+        if not rt.market_data.is_current(bars, barset.timeframe):
             held = " A POSITION IS OPEN and is not being managed this cycle." if (
                 rt.portfolio.get(code) is not None
             ) else ""

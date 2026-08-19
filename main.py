@@ -790,6 +790,18 @@ def cmd_study_bounce(args: argparse.Namespace) -> int:
         pattern=args.pattern,
     )
     print()
+    if getattr(args, "rank", None):
+        from study import format_selection_study
+
+        print(
+            format_selection_study(
+                stats,
+                cost_pct=cost_pct,
+                top_n=args.rank,
+                min_events=args.min_events,
+            )
+        )
+        return 0
     print(
         format_bounce_study(
             stats,
@@ -1545,6 +1557,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="which rule to measure. drop: N down sessions then a bounce. "
              "strong-close: the configured close_auction entry. volume-spike, "
              "ma-cross, new-high: common ideas, same standard",
+    )
+    study.add_argument(
+        "--rank",
+        type=int,
+        metavar="N",
+        help="rank stocks on the first half of the history and report how the "
+             "top N did on the second -- the only honest way to ask which "
+             "stocks are worth selecting",
+    )
+    study.add_argument(
+        "--min-events",
+        type=int,
+        default=5,
+        help="events a stock needs in the selection window to be ranked (default: 5)",
     )
     study.add_argument(
         "--market",

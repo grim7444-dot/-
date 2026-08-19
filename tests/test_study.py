@@ -668,3 +668,91 @@ def test_every_pattern_is_reachable_and_titled():
         )
         if name != "drop":
             assert title in report, name
+
+
+# ---------------------------------------------------------------------------
+# Stock selection, checked out of sample
+# ---------------------------------------------------------------------------
+
+
+def _stock(code, early_returns, late_returns, split_day=15):
+    """A stock whose events straddle a split date."""
+    events = []
+    for i, r in enumerate(early_returns):
+        events.append(_event_on(f"2026-01-{1 + i:02d}", r))
+    for i, r in enumerate(late_returns):
+        events.append(_event_on(f"2026-02-{1 + i:02d}", r))
+    return BounceStats(code=code, name=code, sessions=700, events=events)
+
+
+def test_selection_that_does_not_carry_over_is_called_noise():
+    """Last period's winners are next period's average -- say so."""
+    from study import format_selection_study
+
+    # Five stocks whose early scores differ wildly and whose late scores do not.
+    stats = [
+        _stock("000001", [0.10] * 6, [0.00] * 6),
+        _stock("000002", [0.08] * 6, [0.00] * 6),
+        _stock("000003", [0.00] * 6, [0.00] * 6),
+        _stock("000004", [-0.08] * 6, [0.00] * 6),
+        _stock("000005", [-0.10] * 6, [0.00] * 6),
+    ]
+    report = format_selection_study(stats, cost_pct=0.0038, top_n=2, min_events=5)
+    assert "The ranking was noise" in report
+
+
+def test_selection_that_carries_over_is_reported_as_worth_a_look():
+    from study import format_selection_study
+
+    stats = [
+        _stock("000001", [0.10] * 6, [0.06] * 6),
+        _stock("000002", [0.09] * 6, [0.05] * 6),
+        _stock("000003", [-0.05] * 6, [-0.05] * 6),
+        _stock("000004", [-0.08] * 6, [-0.06] * 6),
+    ]
+    report = format_selection_study(stats, cost_pct=0.0038, top_n=2, min_events=5)
+    assert "worth a second look" in report
+
+
+def test_an_edge_smaller_than_costs_is_not_worth_acting_on():
+    from study import format_selection_study
+
+    stats = [
+        _stock("000001", [0.10] * 6, [0.0020] * 6),
+        _stock("000002", [0.09] * 6, [0.0020] * 6),
+        _stock("000003", [-0.05] * 6, [0.0000] * 6),
+        _stock("000004", [-0.08] * 6, [0.0000] * 6),
+    ]
+    report = format_selection_study(stats, cost_pct=0.0038, top_n=2, min_events=5)
+    assert "Not worth acting on" in report
+
+
+def test_stocks_with_too_few_events_are_not_ranked():
+    """A stock with two lucky events is not a stock with a record."""
+    from study import format_selection_study
+
+    stats = [
+        _stock("000001", [0.50] * 2, [0.0] * 2),      # spectacular, and ineligible
+        _stock("000002", [0.01] * 6, [0.0] * 6),
+        _stock("000003", [0.02] * 6, [0.0] * 6),
+    ]
+    report = format_selection_study(stats, cost_pct=0.0038, top_n=2, min_events=5)
+    assert "Eligible         : 2 stocks" in report
+    assert "000001" not in report.split("Top 2")[1].split("Out of sample")[0]
+
+
+def test_no_eligible_stock_says_so_rather_than_ranking_anyway():
+    from study import format_selection_study
+
+    stats = [_stock("000001", [0.1] * 2, [0.0] * 2)]
+    report = format_selection_study(stats, cost_pct=0.0038, top_n=5, min_events=5)
+    assert "nothing" in report and "to select on" in report
+
+
+def test_no_events_at_all_is_not_an_error():
+    from study import format_selection_study
+
+    report = format_selection_study(
+        [BounceStats(code="X", name="x", sessions=700)], cost_pct=0.0038
+    )
+    assert "nothing to rank" in report

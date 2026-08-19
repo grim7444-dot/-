@@ -915,3 +915,149 @@ def run_bounce_study(
                 stats.events = finder(code, barset.bars)
         out.append(stats)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Which stocks, if any, are worth selecting
+# ---------------------------------------------------------------------------
+
+
+def _split_date(stats: Sequence[BounceStats]):
+    """The date that divides the events into two halves of equal count."""
+    dates = sorted(
+        getattr(e.trigger_date, "date", lambda: e.trigger_date)()
+        for s in stats
+        for e in s.events
+    )
+    return dates[len(dates) // 2] if dates else None
+
+
+def _half(stats: BounceStats, split, early: bool) -> list[BounceEvent]:
+    out = []
+    for e in stats.events:
+        day = getattr(e.trigger_date, "date", lambda: e.trigger_date)()
+        if (day < split) if early else (day >= split):
+            out.append(e)
+    return out
+
+
+def _mean_to_open(events: Sequence[BounceEvent], cost_pct: float) -> float:
+    if not events:
+        return 0.0
+    return sum(e.to_open_pct - cost_pct for e in events) / len(events)
+
+
+def format_selection_study(
+    stats: Sequence[BounceStats],
+    cost_pct: float,
+    top_n: int = 10,
+    min_events: int = 5,
+) -> str:
+    """Pick the best stocks on the first half; see how they do on the second.
+
+    Ranking 300 stocks by past return and trading the top ten will always
+    produce a good-looking list, because with 300 tries something scores well
+    by chance alone. The only way to know whether the ranking meant anything
+    is to choose from data the test never sees -- so selection happens on the
+    earlier half of the history and the verdict comes from the later half,
+    compared against what every stock did over that same later period.
+
+    If the chosen ten beat the field out of sample, stock selection works
+    here. If they land on the field average, the ranking was noise and the
+    right number of stocks to select is all of them.
+    """
+    width = 100
+    lines = ["=" * width, "WHICH STOCKS, IF ANY".center(width), "=" * width, ""]
+
+    split = _split_date(stats)
+    if split is None:
+        lines += ["  No events at all, so nothing to rank.", "=" * width]
+        return "\n".join(lines)
+
+    scored = []
+    for s in stats:
+        early = _half(s, split, early=True)
+        late = _half(s, split, early=False)
+        if len(early) >= min_events:
+            scored.append((s, early, late, _mean_to_open(early, cost_pct)))
+
+    lines.append(f"  Selection window : events before {split}")
+    lines.append(f"  Test window      : events from {split}")
+    lines.append(
+        f"  Eligible         : {len(scored)} stocks with at least {min_events} "
+        "events in the selection window"
+    )
+    lines.append("")
+
+    if not scored:
+        lines += [
+            f"  No stock had {min_events} events before {split}, so there is nothing",
+            "  to select on. A longer history or a looser rule would be needed.",
+            "=" * width,
+        ]
+        return "\n".join(lines)
+
+    scored.sort(key=lambda row: row[3], reverse=True)
+    chosen = scored[:top_n]
+
+    lines.append(f"  -- Top {len(chosen)} by the selection window " + "-" * (width - 40))
+    lines.append(
+        f"  {'code':<8} {'name':<14} {'sel n':>6} {'sel mean':>10}"
+        f" {'test n':>7} {'test mean':>10}"
+    )
+    lines.append("  " + "-" * (width - 4))
+    for s, early, late, score in chosen:
+        test = _mean_to_open(late, cost_pct) if late else float("nan")
+        shown = f"{test:+10.2%}" if late else f"{'-':>10}"
+        lines.append(
+            f"  {s.code:<8} {(s.name or '')[:13]:<14} {len(early):>6d} "
+            f"{score:>+10.2%} {len(late):>7d} {shown}"
+        )
+
+    chosen_late = [e for _, _, late, _ in chosen for e in late]
+    field_late = [e for s in stats for e in _half(s, split, early=False)]
+    chosen_mean = _mean_to_open(chosen_late, cost_pct)
+    field_mean = _mean_to_open(field_late, cost_pct)
+
+    lines += ["", "  " + "-" * (width - 4)]
+    lines.append("  Out of sample, in the test window:")
+    lines.append(
+        f"    the {len(chosen)} chosen stocks : {chosen_mean:+.2%} "
+        f"over {len(chosen_late)} events"
+    )
+    lines.append(
+        f"    every stock            : {field_mean:+.2%} "
+        f"over {len(field_late)} events"
+    )
+    lines.append("")
+
+    edge = chosen_mean - field_mean
+    if not chosen_late:
+        lines.append("  The chosen stocks produced no events in the test window, so the")
+        lines.append("  selection cannot be checked at all.")
+    elif edge <= 0:
+        lines.append(
+            f"  Selecting made it {abs(edge):.2%} WORSE than taking the whole field."
+        )
+        lines.append(
+            "  The ranking was noise: last period's best stocks are not next"
+        )
+        lines.append(
+            "  period's. Picking stocks by past performance does not work here."
+        )
+    elif edge < 0.005:
+        lines.append(
+            f"  Selecting gained {edge:+.2%} over the field -- smaller than the"
+        )
+        lines.append(
+            f"  {cost_pct:.2%} it costs to trade at all. Not worth acting on."
+        )
+    else:
+        lines.append(
+            f"  Selecting gained {edge:+.2%} over the field out of sample. That is"
+        )
+        lines.append(
+            "  worth a second look -- rerun over a different split before trusting it."
+        )
+    lines.append("=" * width)
+    return "\n".join(lines)

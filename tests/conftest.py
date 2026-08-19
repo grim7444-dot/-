@@ -4,7 +4,7 @@ Two things matter for every test in this suite:
 
 * the process environment is scrubbed of ``KIWOOM_*`` so a developer's real
   ``.env`` can never turn a test into a live-trading attempt;
-* nothing touches the network — bars come from the deterministic synthetic
+* nothing touches the network - bars come from the deterministic synthetic
   generator and the broker is always a dry-run double.
 """
 

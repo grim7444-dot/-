@@ -1,4 +1,4 @@
-"""KRX market rules — tick sizes, daily price limits and asymmetric costs.
+"""KRX market rules - tick sizes, daily price limits and asymmetric costs.
 
 These are the three places where a US-shaped assumption silently breaks on a
 Korean venue: an off-grid price is rejected, a limit-locked stock cannot be
@@ -53,7 +53,7 @@ def test_kospi_tick_ladder(price, expected):
     [(1_500, 1), (3_000, 5), (12_000, 10), (30_000, 50), (80_000, 100), (600_000, 100)],
 )
 def test_kosdaq_tick_ladder(price, expected):
-    """KOSDAQ tops out at a 100 KRW tick — it does not have the 500/1000 rungs."""
+    """KOSDAQ tops out at a 100 KRW tick - it does not have the 500/1000 rungs."""
     assert tick_size(price, KOSDAQ) == expected
 
 

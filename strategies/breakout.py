@@ -2,7 +2,7 @@
 
 Track the 20-period high and low.  A close above the *prior* 20-period high
 goes long, a close below the *prior* 20-period low goes short (or closes a
-long) — but only when volume is at least 1.5x its own 20-period average.  The
+long) - but only when volume is at least 1.5x its own 20-period average.  The
 volume filter is what separates a real breakout from a drifting wick.
 
 Positions carry a 2x ATR trailing stop on top of the mandatory 1% hard stop.

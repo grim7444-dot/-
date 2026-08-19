@@ -3,7 +3,7 @@
 Safety rule 10: a signal produced on bar ``i`` can only be filled from bar
 ``i+1`` onwards. This is enforced structurally, in two layers:
 
-1. ``Strategy.evaluate`` is handed ``bars.iloc[:i+1]`` — a future bar is simply
+1. ``Strategy.evaluate`` is handed ``bars.iloc[:i+1]`` - a future bar is simply
    not reachable from inside a strategy;
 2. an actionable signal schedules a *pending order* whose execution index is
    ``i+1``, and the fill price is that bar's **open** (never bar ``i``'s
@@ -69,7 +69,7 @@ class Fill:
     fill_index: int
     signal_time: pd.Timestamp | None
     fill_time: pd.Timestamp
-    #: Close of the signal bar — recorded so tests can prove we did not fill there.
+    #: Close of the signal bar - recorded so tests can prove we did not fill there.
     signal_close: float
     price: float
     qty: float
@@ -318,7 +318,7 @@ class Backtester:
                     halted = True
                     halt_time = timestamp
                     halt_reason = status.describe()
-                    logger.warning("backtest kill switch tripped at %s — %s", timestamp, halt_reason)
+                    logger.warning("backtest kill switch tripped at %s - %s", timestamp, halt_reason)
                     for held, pos in list(positions.items()):
                         held_frame = frames[held]
                         held_index = max(
@@ -661,7 +661,7 @@ def format_result(
     if result.synthetic_data:
         lines.append("")
         lines.append("!" * width)
-        lines.append("  SYNTHETIC DATA — no live source and no cache were available.")
+        lines.append("  SYNTHETIC DATA - no live source and no cache were available.")
         lines.append("  These bars were generated locally. The numbers below are a")
         lines.append("  pipeline demonstration, NOT a claim about real performance.")
         lines.append("!" * width)

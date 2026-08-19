@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""KRX 8-stock trading bot — command line entry point.
+"""KRX 8-stock trading bot - command line entry point.
 
     python main.py profile
     python main.py backtest --months 6
@@ -42,6 +42,7 @@ from settings import (
     load_config,
     load_credentials,
     load_env,
+    make_console_tolerant,
     mask_text,
     resolve_mode,
     setup_logging,
@@ -94,7 +95,7 @@ def print_live_banner(
     """Safety rule 3: warning, balance, worst-case loss, then a countdown."""
     bar = "!" * 78
     print(_c(bar, BOLD, RED))
-    print(_c("  *** LIVE TRADING — REAL MONEY IS AT RISK ***".center(78), BOLD, RED))
+    print(_c("  *** LIVE TRADING - REAL MONEY IS AT RISK ***".center(78), BOLD, RED))
     print(_c(bar, BOLD, RED))
     print(_c(f"  Endpoint                  : {endpoint}", RED))
     print(_c(f"  Account equity            : {account_equity:>16,.0f} KRW", RED))
@@ -102,7 +103,7 @@ def print_live_banner(
     print(_c(f"  Max loss, whole portfolio : {max_portfolio_loss:>16,.0f} KRW", RED))
     print(_c("  Every order carries a hard stop at the per-trade amount.", RED))
     print(_c(bar, BOLD, RED))
-    print(_c(f"  Starting in {countdown_seconds} seconds — press Ctrl-C to abort.", BOLD, YELLOW))
+    print(_c(f"  Starting in {countdown_seconds} seconds - press Ctrl-C to abort.", BOLD, YELLOW))
     for remaining in range(countdown_seconds, 0, -1):
         sys.stdout.write(_c(f"\r  {remaining:>2d} ...  ", YELLOW))
         sys.stdout.flush()
@@ -230,13 +231,13 @@ class TradingEngine:
 
         rt.portfolio.mark_equity(account.equity)
 
-        # Rules 5/6 — the kill switch is evaluated before anything else.
+        # Rules 5/6 - the kill switch is evaluated before anything else.
         status = rt.risk.check_drawdown(account.equity)
         if status.breached and not rt.portfolio.stopped:
             rt.risk.trip_kill_switch(status, rt.broker)
         if rt.portfolio.stopped:
             logger.warning(
-                "bot is STOPPED (%s) — no new orders. Run `python main.py resume` to clear.",
+                "bot is STOPPED (%s) - no new orders. Run `python main.py resume` to clear.",
                 rt.portfolio.state.stopped_reason,
             )
             return
@@ -286,14 +287,14 @@ class TradingEngine:
         bars = barset.bars
         if len(bars) < strategy.warmup:
             logger.info(
-                "%s: only %d bars, strategy needs %d to warm up — holding",
+                "%s: only %d bars, strategy needs %d to warm up - holding",
                 label,
                 len(bars),
                 strategy.warmup,
             )
             return
         if barset.synthetic:
-            logger.warning("%s: SYNTHETIC bars in use — signals are illustrative only", label)
+            logger.warning("%s: SYNTHETIC bars in use - signals are illustrative only", label)
 
         price = float(bars["close"].iloc[-1])
         position = rt.portfolio.get(code)
@@ -309,7 +310,7 @@ class TradingEngine:
             stop = position.effective_stop()
             if (position.is_long and price <= stop) or (position.is_short and price >= stop):
                 logger.warning(
-                    "%s: STOP HIT at %s (stop %s) — closing", label, f"{price:,.0f}", f"{stop:,.0f}"
+                    "%s: STOP HIT at %s (stop %s) - closing", label, f"{price:,.0f}", f"{stop:,.0f}"
                 )
                 self._submit_exit(
                     code, position, price, "stop hit", open_orders, asset_cfg,
@@ -319,7 +320,7 @@ class TradingEngine:
 
         signal = strategy.evaluate(bars, position)
         logger.info(
-            "%s [%s] %s — %s (close=%s)",
+            "%s [%s] %s - %s (close=%s)",
             label,
             asset_cfg.get("timeframe", "?"),
             signal.action.value,
@@ -395,7 +396,7 @@ class TradingEngine:
         )
         checks = rt.risk.pre_trade_checks(ctx)
         if not checks.passed:
-            logger.warning("%s: exit blocked — %s", code, checks.describe())
+            logger.warning("%s: exit blocked - %s", code, checks.describe())
             return
         result = rt.broker.submit_order(
             code=code, side=ctx.side, qty=position.qty, is_exit=True, note=f"exit: {reason}"
@@ -403,7 +404,7 @@ class TradingEngine:
         if result.submitted:
             rt.portfolio.close_position(code, exit_price=price, exit_reason=reason)
         else:
-            logger.info("%s: exit simulated only — position left untouched in state", code)
+            logger.info("%s: exit simulated only - position left untouched in state", code)
 
     def _submit_entry(
         self,
@@ -425,7 +426,7 @@ class TradingEngine:
 
         allowed, reason = rt.risk.can_open_new(code, side, equity=account.equity)
         if not allowed:
-            logger.warning("%s: entry blocked — %s", label, reason)
+            logger.warning("%s: entry blocked - %s", label, reason)
             return
 
         capacity = rt.risk.capacity(account.equity)
@@ -440,7 +441,7 @@ class TradingEngine:
         )
         if not sizing.ok:
             # Rule 4: a non-positive stop distance means no order at all.
-            logger.warning("%s: order skipped — %s", label, sizing.reason)
+            logger.warning("%s: order skipped - %s", label, sizing.reason)
             return
 
         at_limit, limit_reason = self._price_limit_state(bars, market, price)
@@ -461,7 +462,7 @@ class TradingEngine:
         )
         checks = rt.risk.pre_trade_checks(ctx)
         if not checks.passed:
-            logger.warning("%s: entry blocked — %s", label, checks.describe())
+            logger.warning("%s: entry blocked - %s", label, checks.describe())
             return
 
         stop = rt.rules.stop_price(price, sizing.stop_distance, market)
@@ -492,7 +493,7 @@ class TradingEngine:
                 )
             )
         else:
-            logger.info("%s: order simulated only (dry run) — nothing sent", label)
+            logger.info("%s: order simulated only (dry run) - nothing sent", label)
 
     # -- loops -------------------------------------------------------------
 
@@ -522,12 +523,12 @@ class TradingEngine:
                         self.mark_ran(code, now)
                 if self.rt.portfolio.stopped:
                     logger.error(
-                        "STOPPED state reached — exiting loop. Run `python main.py resume`."
+                        "STOPPED state reached - exiting loop. Run `python main.py resume`."
                     )
                     return
                 time.sleep(self.tick_seconds)
         except KeyboardInterrupt:
-            logger.info("interrupted by user — shutting down cleanly")
+            logger.info("interrupted by user - shutting down cleanly")
             self.rt.portfolio.record_day(self.rt.portfolio.state.last_equity)
 
 
@@ -929,8 +930,8 @@ def cmd_adopt(args: argparse.Namespace) -> int:
 def cmd_check(args: argparse.Namespace) -> int:
     """Read-only connectivity probe. Places no orders, ever.
 
-    Everything the trading loop relies on is exercised here — token, account,
-    holdings, working orders, per-stock tradability and the intraday chart —
+    Everything the trading loop relies on is exercised here - token, account,
+    holdings, working orders, per-stock tradability and the intraday chart -
     but only through GET-shaped calls. This is what makes it safe to point at a
     live account: the endpoint paths and api-id codes in ``broker.py`` were
     written from documentation and have never met a real account, and this is
@@ -941,7 +942,7 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     print()
     print("=" * 78)
-    print("  CONNECTION CHECK  —  READ ONLY, NO ORDERS ARE SENT".center(78))
+    print("  CONNECTION CHECK  -  READ ONLY, NO ORDERS ARE SENT".center(78))
     print("=" * 78)
     print(f"  Mode      : {rt.decision.label}")
     print(f"  Endpoint  : {rt.decision.endpoint}")
@@ -965,7 +966,7 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     if isinstance(rt.broker, DryRunBroker):
         print(
-            "\n  No credentials loaded, so this is the simulated broker — nothing was\n"
+            "\n  No credentials loaded, so this is the simulated broker - nothing was\n"
             f"  contacted. This run reads the {rt.decision.label} key pair.\n"
         )
         print("  -- What .env actually contains " + "-" * 46)
@@ -978,7 +979,7 @@ def cmd_check(args: argparse.Namespace) -> int:
             "KIWOOM_ACCOUNT_NO",
         ):
             value = env.get(name) or ""
-            # Length only — never the value itself (safety rule 9).
+            # Length only - never the value itself (safety rule 9).
             state = f"set, {len(value)} chars" if value else "EMPTY"
             used = " <- this run uses these" if rt.decision.label in name else ""
             print(f"  {name:<26} {state}{used}")
@@ -1115,7 +1116,7 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     print("-" * 78)
     if auth_failure:
-        print("  AUTHENTICATION FAILED — nothing else could be tested.")
+        print("  AUTHENTICATION FAILED - nothing else could be tested.")
         print(f"  {auth_failure}")
         print()
         if "8030" in auth_failure or "투자구분" in auth_failure:
@@ -1138,7 +1139,7 @@ def cmd_check(args: argparse.Namespace) -> int:
             print("    2. the token request field names in broker.py do not match Kiwoom's")
             print("    3. the key was revoked or re-issued")
     elif failed:
-        print(f"  {len(failed)} check(s) FAILED — do not trade until these pass.")
+        print(f"  {len(failed)} check(s) FAILED - do not trade until these pass.")
         print("  Most likely cause: an endpoint path or api-id in broker.py does not")
         print("  match Kiwoom's current API. They are overridable in config.yaml")
         print("  under kiwoom.endpoints / kiwoom.api_ids.")
@@ -1309,6 +1310,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    make_console_tolerant()
     parser = build_parser()
     args = parser.parse_args(argv)
 

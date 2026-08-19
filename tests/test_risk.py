@@ -1,4 +1,4 @@
-"""Safety rules 4-7 — sizing, hard stops, kill switch, portfolio caps, pre-trade checks."""
+"""Safety rules 4-7 - sizing, hard stops, kill switch, portfolio caps, pre-trade checks."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def _pos(code: str, side: str = LONG, qty: float = 10, entry: float = 20_000.0,
 
 
 # --------------------------------------------------------------------------
-# Rule 4 — one ATR of adverse movement costs exactly 1% of equity
+# Rule 4 - one ATR of adverse movement costs exactly 1% of equity
 # --------------------------------------------------------------------------
 
 
@@ -85,7 +85,7 @@ def test_sizing_scales_with_current_equity():
 
 
 # --------------------------------------------------------------------------
-# Rule 4 — a non-positive stop distance skips the order
+# Rule 4 - a non-positive stop distance skips the order
 # --------------------------------------------------------------------------
 
 
@@ -169,7 +169,7 @@ def test_hard_stop_loss_equals_the_risk_budget():
 
 
 # --------------------------------------------------------------------------
-# Rules 5/6 — the drawdown kill switch
+# Rules 5/6 - the drawdown kill switch
 # --------------------------------------------------------------------------
 
 
@@ -240,7 +240,7 @@ def test_resume_reanchors_the_drawdown_peak(portfolio):
 
 
 # --------------------------------------------------------------------------
-# Portfolio caps — 6% total, 6 positions
+# Portfolio caps - 6% total, 6 positions
 # --------------------------------------------------------------------------
 
 
@@ -371,7 +371,7 @@ def test_manager_wires_the_theme_filter_from_config(portfolio, config):
 
 
 # --------------------------------------------------------------------------
-# Rule 7 — pre-trade checks
+# Rule 7 - pre-trade checks
 # --------------------------------------------------------------------------
 
 

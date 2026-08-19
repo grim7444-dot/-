@@ -286,3 +286,57 @@ def test_balance_fields_are_kept_for_diagnosis_without_nested_payloads():
     )
     broker.get_account()
     assert broker.last_balance_fields == {"tot_evlt_amt": "273,960", "entr": "0"}
+
+
+# ---------------------------------------------------------------------------
+# 6. a cp949 console cannot abort a command
+# ---------------------------------------------------------------------------
+
+
+def test_sources_hold_no_characters_a_korean_console_cannot_encode():
+    """The check died on its own title line: cp949 has no em dash."""
+    import pathlib
+
+    offenders: list[str] = []
+    root = pathlib.Path(__file__).resolve().parents[1]
+    for path in sorted(root.rglob("*.py")):
+        if any(part in {".venv", "__pycache__"} for part in path.parts):
+            continue
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            for char in line:
+                if ord(char) < 128:
+                    continue
+                try:
+                    char.encode("cp949")
+                except UnicodeEncodeError:
+                    offenders.append(
+                        f"{path.relative_to(root)}:{lineno} {char!r} (U+{ord(char):04X})"
+                    )
+    assert not offenders, "characters cp949 cannot encode:\n" + "\n".join(offenders)
+
+
+def test_make_console_tolerant_survives_a_replaced_stream(monkeypatch):
+    """pytest swaps stdout for an object without reconfigure(); do not crash."""
+    import io
+
+    from settings import make_console_tolerant
+
+    monkeypatch.setattr("sys.stdout", io.StringIO())
+    monkeypatch.setattr("sys.stderr", io.StringIO())
+    make_console_tolerant()
+
+
+def test_make_console_tolerant_sets_a_forgiving_error_handler(monkeypatch, tmp_path):
+    from settings import make_console_tolerant
+
+    target = tmp_path / "out.txt"
+    with open(target, "w", encoding="cp949") as handle:
+        monkeypatch.setattr("sys.stdout", handle)
+        monkeypatch.setattr("sys.stderr", handle)
+        make_console_tolerant()
+        # Built from its code point so this file stays cp949-clean itself.
+        print("em dash: " + chr(0x2014) + " done")  # unguarded, this raises
+
+    assert "done" in target.read_text(encoding="cp949")

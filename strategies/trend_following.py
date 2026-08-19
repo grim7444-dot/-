@@ -5,8 +5,8 @@ below closes it and (when shorting is enabled) opens a short.  Positions carry
 a 3x ATR trailing stop on top of the mandatory 1% hard stop.
 
 GLD and USO are **ETF proxies** for gold and crude oil, not futures contracts.
-Their bars carry ETF mechanics — expense ratios, and for USO the roll cost of
-the front-month futures it holds — so a signal here is a signal on the ETF,
+Their bars carry ETF mechanics - expense ratios, and for USO the roll cost of
+the front-month futures it holds - so a signal here is a signal on the ETF,
 not on the underlying commodity.  See README.
 """
 

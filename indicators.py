@@ -2,7 +2,7 @@
 
 Every function here is a pure transformation of an OHLCV frame into a Series
 aligned on the same index.  The value at position ``i`` is computed from bars
-``0..i`` only — never from bar ``i+1``.  Strategies that need a *prior* level
+``0..i`` only - never from bar ``i+1``.  Strategies that need a *prior* level
 (for example "did we break the previous 20-bar high?") must call ``.shift(1)``
 explicitly at the call site so the intent is visible in the strategy code.
 """

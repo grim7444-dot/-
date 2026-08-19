@@ -1,11 +1,11 @@
-"""Safety rule 10 — a signal bar can never be its own fill bar.
+"""Safety rule 10 - a signal bar can never be its own fill bar.
 
 Three independent angles:
 
 1. every signal-driven fill lands on ``signal_index + 1``;
 2. the fill price is the next bar's open (adjusted for slippage), and is not
    the signal bar's close;
-3. rewriting future bars leaves past signals untouched — the strategies
+3. rewriting future bars leaves past signals untouched - the strategies
    genuinely cannot see forward.
 
 Rule 11 is covered at the bottom: costs are charged and reported, and the

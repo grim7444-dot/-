@@ -7,14 +7,14 @@ touch ``os.environ`` for credentials.
 Kiwoom issues **separate app keys for the mock and live environments**, which
 lets this bot go one step further than a shared-key broker: when the gate
 resolves to paper, :func:`load_credentials` does not read the live key at all.
-A mis-assembled URL therefore still cannot reach a live account — the
+A mis-assembled URL therefore still cannot reach a live account - the
 credential simply is not in memory.
 
 Safety rules implemented here:
-  * Rule 1  — with no environment at all we always resolve to the mock endpoint.
-  * Rule 2  — live trading requires *three* independent confirmations.
-  * Rule 3  — the resolved mode is attached to every log line.
-  * Rule 9  — credentials come from ``.env`` only and are masked everywhere.
+  * Rule 1  - with no environment at all we always resolve to the mock endpoint.
+  * Rule 2  - live trading requires *three* independent confirmations.
+  * Rule 3  - the resolved mode is attached to every log line.
+  * Rule 9  - credentials come from ``.env`` only and are masked everywhere.
 """
 
 from __future__ import annotations
@@ -97,6 +97,29 @@ class Secret:
 
     def __format__(self, spec: str) -> str:
         return REDACTED
+
+
+def make_console_tolerant() -> None:
+    """Stop an unencodable character from aborting a command mid-report.
+
+    On a Korean Windows install stdout defaults to cp949, and redirecting it to
+    a file drops the console's own fallbacks. One em dash in a banner then
+    raises ``UnicodeEncodeError`` from ``print`` and kills a command that had
+    already done its real work -- the connection check died on its own title
+    line, after a successful update, having tested nothing.
+
+    Sources here stay ASCII apart from Korean labels, which cp949 encodes
+    fine. This is the backstop for whatever slips through: an unrepresentable
+    character is worth losing, the run is not.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:  # already replaced, e.g. by a test capture
+            continue
+        try:
+            reconfigure(errors="backslashreplace")
+        except (ValueError, OSError):
+            pass
 
 
 def _secret_values(env: Mapping[str, str] | None = None) -> list[str]:
@@ -196,7 +219,7 @@ def resolve_mode(
        ``--live``), passed here as ``cli_live=True``.
 
     Any missing condition demotes the run to paper and records a human readable
-    reason. This function is pure — no I/O, no globals, no logging — which is
+    reason. This function is pure - no I/O, no globals, no logging - which is
     what makes the triple-confirmation test exhaustive and cheap.
     """
     env = os.environ if env is None else env
@@ -284,7 +307,7 @@ def load_credentials(
     env: Mapping[str, str] | None = None,
     decision: ModeDecision | None = None,
 ) -> Credentials:
-    """Load the key set matching *decision* — and only that key set.
+    """Load the key set matching *decision* - and only that key set.
 
     This is the extra safety layer Kiwoom's split keys make possible: on a
     paper run the live app key is never read out of the environment, so no

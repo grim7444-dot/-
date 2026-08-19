@@ -1,4 +1,4 @@
-"""Safety rule 2 — the live-trading gate.
+"""Safety rule 2 - the live-trading gate.
 
 Live trading requires all three of:
 
@@ -6,8 +6,8 @@ Live trading requires all three of:
   2. ``KIWOOM_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY``
   3. an explicit live request on the command line
 
-These tests walk every one of the eight combinations. Exactly one of them —
-all three present — may open the live path; the other seven must resolve to
+These tests walk every one of the eight combinations. Exactly one of them -
+all three present - may open the live path; the other seven must resolve to
 the mock endpoint, and the three that asked for live must say why they were
 demoted.
 

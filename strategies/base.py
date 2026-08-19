@@ -2,7 +2,7 @@
 
 A strategy is handed a *window* of bars that ends at the bar being evaluated
 and returns a :class:`Signal`.  It never sees a future bar, it never places an
-order and it never knows how big the account is — sizing and execution are the
+order and it never knows how big the account is - sizing and execution are the
 job of ``risk/manager.py`` and ``broker.py``.
 
 That split is what makes the no-lookahead guarantee structural rather than a
@@ -48,7 +48,7 @@ class Signal:
     symbol: str
     action: Action
     reason: str = ""
-    #: Close of the signal bar.  Reference only — it is NOT a fill price.
+    #: Close of the signal bar.  Reference only - it is NOT a fill price.
     price_ref: float = 0.0
     atr: float = 0.0
     #: Distance from entry to the hard stop, in price units.

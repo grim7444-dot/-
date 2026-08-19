@@ -1,7 +1,7 @@
 """Universe profiling.
 
-``python main.py profile`` measures what each stock actually *is* — volatility,
-liquidity, trend persistence, and how the names move together — and suggests a
+``python main.py profile`` measures what each stock actually *is* - volatility,
+liquidity, trend persistence, and how the names move together - and suggests a
 strategy for each. That is more reliable than assigning strategies from a
 company's name or sector, and it doubles as a verification pass: the official
 listing name and market come back from the data source, so a wrong code or a
@@ -69,7 +69,7 @@ class StockProfile:
     def suggested_strategy(self) -> str:
         """Pick a strategy from measured behaviour, not from the company name."""
         if not self.has_enough_history:
-            return "breakout (short params — insufficient history)"
+            return "breakout (short params - insufficient history)"
         if self.trend_strength >= 0.55:
             return "trend_following"
         if self.atr_pct >= 0.035:
@@ -134,7 +134,7 @@ def profile_stock(
     prof.trend_strength = _trend_strength(bars["close"])
 
     if barset.synthetic:
-        prof.notes.append("SYNTHETIC bars — figures are illustrative only")
+        prof.notes.append("SYNTHETIC bars - figures are illustrative only")
     if not prof.has_enough_history:
         prof.notes.append(
             f"only {prof.bars} bars, strategy needs {prof.warmup_needed} to warm up"
@@ -147,7 +147,7 @@ def profile_stock(
     if prof.market_mismatch:
         prof.notes.append(
             f"market mismatch: config says {prof.configured_market}, "
-            f"listing says {prof.resolved_market} — this changes the transaction tax"
+            f"listing says {prof.resolved_market} - this changes the transaction tax"
         )
     return prof
 
@@ -213,7 +213,7 @@ def format_profiles(
         ]
         if high:
             lines.append("")
-            lines.append("  Pairs above 0.7 — consider grouping these under one theme:")
+            lines.append("  Pairs above 0.7 - consider grouping these under one theme:")
             for a, b, value in high:
                 lines.append(f"    {a} / {b}: {value:+.2f}")
 

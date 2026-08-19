@@ -9,7 +9,7 @@ exist:
 ``KiwoomBroker``    the real adapter, speaking Kiwoom's REST API. Its base URL
                     and its credentials both come from
                     :class:`settings.ModeDecision`, and on a paper run the live
-                    app key was never loaded — so there is no code path that
+                    app key was never loaded - so there is no code path that
                     reaches a live account without the triple confirmation.
 
 Kiwoom throttles TR calls per second, so every request goes through a rate
@@ -188,7 +188,7 @@ def with_retry(
             delay = min(base_seconds * (2 ** (attempt - 1)), max_seconds)
             delay += random.uniform(0, delay * 0.1)  # jitter
             logger.warning(
-                "%s failed (attempt %d/%d): %s — retrying in %.1fs",
+                "%s failed (attempt %d/%d): %s - retrying in %.1fs",
                 description,
                 attempt,
                 max_retries,
@@ -298,7 +298,7 @@ class DryRunBroker(BrokerBase):
         )
         self.submitted.append(result)
         logger.info(
-            "[%s] would submit %s %s x%s stop=%s (%s) — NOT sent",
+            "[%s] would submit %s %s x%s stop=%s (%s) - NOT sent",
             self.label,
             side,
             code,
@@ -310,12 +310,12 @@ class DryRunBroker(BrokerBase):
 
     def cancel_all_orders(self) -> int:
         self.cancelled += 1
-        logger.info("[%s] would cancel all open orders — NOT sent", self.label)
+        logger.info("[%s] would cancel all open orders - NOT sent", self.label)
         return 0
 
     def close_all_positions(self) -> int:
         self.closed += 1
-        logger.info("[%s] would close all positions — NOT sent", self.label)
+        logger.info("[%s] would close all positions - NOT sent", self.label)
         return 0
 
 
@@ -585,7 +585,7 @@ class KiwoomBroker(BrokerBase):
     def get_chart(
         self, code: str, timeframe: str, start: datetime, end: datetime
     ) -> pd.DataFrame | None:
-        """Intraday/daily bars from Kiwoom — pykrx cannot serve minute data."""
+        """Intraday/daily bars from Kiwoom - pykrx cannot serve minute data."""
         intraday = timeframe.endswith("Min")
         body: dict[str, Any] = {"stk_cd": code, "upd_stkpc_tp": "1"}
         if intraday:
@@ -821,7 +821,7 @@ def build_broker(
         return DryRunBroker(starting_equity=starting_equity, label="DRY-RUN")
     if not credentials.has_kiwoom:
         logger.warning(
-            "no Kiwoom %s credentials found in .env — falling back to the dry-run broker",
+            "no Kiwoom %s credentials found in .env - falling back to the dry-run broker",
             decision.label,
         )
         return DryRunBroker(starting_equity=starting_equity, label="NO-CREDENTIALS")

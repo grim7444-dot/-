@@ -2,22 +2,22 @@
 
 Safety rules enforced here:
 
-* **Rule 4** — every order risks exactly 1% of *current* equity. Quantity is
+* **Rule 4** - every order risks exactly 1% of *current* equity. Quantity is
   ``(equity x risk_pct) / stop_distance``; a non-positive stop distance means
   the order is skipped rather than sized on a guess.
-* **Rule 5** — a 10% drawdown from peak equity blocks new orders, cancels
+* **Rule 5** - a 10% drawdown from peak equity blocks new orders, cancels
   working orders, flattens positions and persists ``STOPPED``.
-* **Rule 6** — ``STOPPED`` is sticky: only an explicit ``resume`` clears it.
-* **Rule 7** — tradability, session phase, minimum quantity, duplicate orders,
+* **Rule 6** - ``STOPPED`` is sticky: only an explicit ``resume`` clears it.
+* **Rule 7** - tradability, session phase, minimum quantity, duplicate orders,
   available cash and the daily price limit are all checked before anything
   is sent.
 
 Two gates exist here that the US version did not need, because this portfolio
 is eight individual small/mid caps rather than five broad instruments:
 
-* a **portfolio risk cap** — 1% per position across 8 names would put 8% at
+* a **portfolio risk cap** - 1% per position across 8 names would put 8% at
   risk simultaneously, so total open risk and position count are both capped;
-* a **theme filter** — two names in the same theme are, in practice, one bet
+* a **theme filter** - two names in the same theme are, in practice, one bet
   sized twice, so only one position per theme is allowed.
 
 The sizing maths is deliberately plain: because the hard stop sits exactly one
@@ -48,7 +48,7 @@ class SizingResult:
     """Outcome of a position-sizing calculation."""
 
     qty: float
-    #: Unrounded quantity — a 1-ATR move against this loses exactly risk_amount.
+    #: Unrounded quantity - a 1-ATR move against this loses exactly risk_amount.
     qty_exact: float
     stop_distance: float
     risk_amount: float
@@ -86,7 +86,7 @@ def position_size(
     """Size an order so a 1-ATR adverse move costs ``equity * risk_pct``.
 
     ``risk_budget`` optionally caps the money at risk below the per-trade
-    amount — used when the portfolio-wide risk cap has partial room left.
+    amount - used when the portfolio-wide risk cap has partial room left.
     """
     stop_distance = float(atr) * float(hard_stop_atr_mult)
     risk_amount = float(equity) * float(risk_pct)
@@ -312,7 +312,7 @@ class TradeContext:
     qty: float
     price: float
     tradable: bool = True
-    #: True only during continuous trading — auctions and closed count as False.
+    #: True only during continuous trading - auctions and closed count as False.
     session_ok: bool = True
     session_reason: str = ""
     min_qty: float = 1.0
@@ -345,7 +345,7 @@ def pre_trade_checks(ctx: TradeContext) -> CheckResult:
     if not ctx.tradable:
         failures.append(f"{ctx.code} is not tradable (suspended or delisted)")
 
-    # 2. Session phase — continuous trading only, never a call auction.
+    # 2. Session phase - continuous trading only, never a call auction.
     checks["session"] = bool(ctx.session_ok)
     if not ctx.session_ok:
         failures.append(ctx.session_reason or f"{ctx.code}: market not in continuous trading")
@@ -468,7 +468,7 @@ class RiskManager:
     def trip_kill_switch(self, status: DrawdownStatus, broker: Any) -> None:
         """Rule 5: block, cancel, flatten, persist STOPPED."""
         reason = f"drawdown kill switch: {status.describe()}"
-        logger.critical("KILL SWITCH TRIPPED — %s", reason)
+        logger.critical("KILL SWITCH TRIPPED - %s", reason)
         # Order matters: stop first so a crash mid-teardown still leaves the
         # bot in STOPPED rather than RUNNING.
         self.portfolio.stop(reason)

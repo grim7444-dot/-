@@ -2,12 +2,12 @@
 
 Resolution order for every request:
 
-1. a CSV cache under ``data/cache/`` — fast, offline, reproducible;
-2. a live source — **pykrx** for daily bars, the **broker's chart API** for
+1. a CSV cache under ``data/cache/`` - fast, offline, reproducible;
+2. a live source - **pykrx** for daily bars, the **broker's chart API** for
    intraday bars (pykrx does not serve minute data);
 3. a deterministic synthetic generator.
 
-Step 3 exists so the whole pipeline — backtest, sizing, reporting, tests — can
+Step 3 exists so the whole pipeline - backtest, sizing, reporting, tests - can
 be exercised with no credentials and no network. Whenever synthetic bars are
 used the caller is told loudly and every report that consumed them is stamped
 ``SYNTHETIC DATA``.
@@ -48,7 +48,7 @@ _SYNTHETIC_SIGMA = {"15Min": 0.004, "30Min": 0.006, "60Min": 0.009, "1Day": 0.03
 
 
 class IntradayProvider(Protocol):
-    """Anything that can serve minute bars — in practice, the broker."""
+    """Anything that can serve minute bars - in practice, the broker."""
 
     def get_chart(
         self, code: str, timeframe: str, start: datetime, end: datetime
@@ -87,7 +87,7 @@ def is_intraday(timeframe: str) -> bool:
 
 
 def bars_per_year(timeframe: str) -> float:
-    """Approximate bars in a calendar year — used to annualise."""
+    """Approximate bars in a calendar year - used to annualise."""
     if not is_intraday(timeframe):
         return 245.0
     session_seconds = 6.5 * 3600  # 09:00-15:30
@@ -319,7 +319,7 @@ class MarketData:
 
         self._used_synthetic = True
         logger.warning(
-            "SYNTHETIC DATA in use for %s %s — results are illustrative only", code, timeframe
+            "SYNTHETIC DATA in use for %s %s - results are illustrative only", code, timeframe
         )
         frame = generate_synthetic_bars(
             code, timeframe, start, end, self.calendar, synthetic_start_price
@@ -340,7 +340,7 @@ class MarketData:
     def _fetch_intraday(
         self, code: str, timeframe: str, start: datetime, end: datetime
     ) -> pd.DataFrame | None:
-        """Minute bars come from the broker — pykrx does not serve them."""
+        """Minute bars come from the broker - pykrx does not serve them."""
         if self.intraday_provider is None:
             logger.info(
                 "no intraday provider configured; %s %s cannot be fetched live",
@@ -414,7 +414,7 @@ def _import_pykrx_stock():
     variables. It reads like a failure but is not one: ``website/comm/webio.py``
     falls back to an ordinary anonymous request when no session exists, which is
     how pykrx has always fetched public KRX data. Only the import-time banner is
-    suppressed — real fetch errors still surface through the caller.
+    suppressed - real fetch errors still surface through the caller.
     """
     import contextlib
     import io

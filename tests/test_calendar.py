@@ -1,4 +1,4 @@
-"""KRX session calendar — business days, session phases and auction safety.
+"""KRX session calendar - business days, session phases and auction safety.
 
 The load-bearing rule here is that a market order must never be sent into a
 call auction, where there is no continuous order book and the execution price
@@ -179,5 +179,5 @@ def test_seconds_until_open_is_positive_when_closed(calendar):
 
 
 def test_naive_datetimes_are_treated_as_kst(calendar):
-    """A naive timestamp must not silently be read as UTC — that is 9 hours off."""
+    """A naive timestamp must not silently be read as UTC - that is 9 hours off."""
     assert calendar.phase(datetime(2025, 1, 2, 11, 0)) is SessionPhase.CONTINUOUS

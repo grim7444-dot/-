@@ -4,7 +4,7 @@
     python report.py morning --dry-run
     python report.py evening --dry-run
 
-Safety rule 12: Telegram sending is dry-run by default — you have to pass
+Safety rule 12: Telegram sending is dry-run by default - you have to pass
 ``--send`` to deliver anything. With no bot token configured the report is
 printed as a console preview instead of raising.
 
@@ -26,6 +26,7 @@ from settings import (
     load_config,
     load_credentials,
     load_env,
+    make_console_tolerant,
     mask_text,
     resolve_mode,
 )
@@ -57,7 +58,7 @@ def send_telegram(
         reason = "dry-run" if dry_run else "no Telegram credentials configured"
         print()
         print("=" * 60)
-        print(f"  TELEGRAM PREVIEW ({reason} — nothing was sent)")
+        print(f"  TELEGRAM PREVIEW ({reason} - nothing was sent)")
         print("=" * 60)
         print(text)
         print("=" * 60)
@@ -120,7 +121,7 @@ def build_morning_report(
     capacity = risk.capacity(state.last_equity)
 
     lines = [
-        f"*Morning report* — {today.isoformat()}",
+        f"*Morning report* - {today.isoformat()}",
         f"Mode: `{mode_label}`   Status: `{state.status}`",
         f"KRX today: {'open' if calendar.is_business_day(today) else 'CLOSED'}"
         f"   (session 09:00-15:30 KST)",
@@ -182,7 +183,7 @@ def build_evening_report(
     state = portfolio.state
 
     lines = [
-        f"*Evening report* — {day.isoformat()}",
+        f"*Evening report* - {day.isoformat()}",
         f"Mode: `{mode_label}`   Status: `{state.status}`",
         DIVIDER,
         f"Trades closed : {len(rows)}",
@@ -255,6 +256,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    make_console_tolerant()
     args = build_parser().parse_args(argv)
     config, credentials, portfolio, risk, decision = _load(args)
 

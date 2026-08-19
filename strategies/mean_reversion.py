@@ -5,7 +5,7 @@ Go long when price sits ``entry_sigma`` standard deviations *below* the mean,
 short when it sits the same distance *above*, and flatten as soon as price
 comes back to the mean.
 
-SPY uses 1.5 sigma.  QQQ uses 1.8 sigma — it is the more volatile of the two,
+SPY uses 1.5 sigma.  QQQ uses 1.8 sigma - it is the more volatile of the two,
 so the band is widened to keep the entry count comparable rather than letting
 QQQ trade on ordinary noise.
 """

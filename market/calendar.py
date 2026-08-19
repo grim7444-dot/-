@@ -1,18 +1,18 @@
 """KRX session calendar.
 
 Korean equities trade one continuous session, which makes scheduling simpler
-than the US bot's split of 24/7 crypto against a regular session — but the
+than the US bot's split of 24/7 crypto against a regular session - but the
 session has *phases*, and one of them matters for order safety:
 
-    08:30–09:00   opening call auction   (주문 접수, 단일가 결정)
-    09:00–15:30   continuous trading     (정규장)
-    15:20–15:30   closing call auction   (종가 단일가)
+    08:30-09:00   opening call auction   (주문 접수, 단일가 결정)
+    09:00-15:30   continuous trading     (정규장)
+    15:20-15:30   closing call auction   (종가 단일가)
 
 During a call auction there is no continuous order book, so a market order's
 execution price is not predictable. The bot refuses to send market orders in
 those windows and waits for continuous trading.
 
-Holidays cannot be derived from a rule — Korea's calendar includes lunar
+Holidays cannot be derived from a rule - Korea's calendar includes lunar
 holidays, substitute holidays and ad-hoc closures. They are supplied through
 ``config.yaml`` and can be refreshed from pykrx when a network is available.
 With neither source the calendar degrades to weekends-only and says so, rather
@@ -72,7 +72,7 @@ class KrxCalendar:
                     logger.warning("ignoring unparseable holiday entry: %r", item)
         if not parsed:
             logger.warning(
-                "no KRX holiday list configured — only weekends will be treated as "
+                "no KRX holiday list configured - only weekends will be treated as "
                 "closed. Run `python main.py profile --refresh-calendar` with network "
                 "access, or fill krx.holidays in config.yaml."
             )

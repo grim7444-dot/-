@@ -134,7 +134,7 @@ class TradingCosts:
     """Commission and tax assumptions, in basis points of notional.
 
     Buying pays commission only.  Selling pays commission **and** transaction
-    tax, so ``sell_cost_bps`` is materially larger than ``buy_cost_bps`` — the
+    tax, so ``sell_cost_bps`` is materially larger than ``buy_cost_bps`` - the
     asymmetry that makes high-turnover strategies expensive here.
     """
 
@@ -175,7 +175,7 @@ class TradingCosts:
         return price * (1.0 + bps) if buying else price * (1.0 - bps)
 
     def round_trip_bps(self, market: str = KOSPI) -> float:
-        """What a full in-and-out costs before slippage — the hurdle rate."""
+        """What a full in-and-out costs before slippage - the hurdle rate."""
         return self.buy_cost_bps(market) + self.sell_cost_bps(market)
 
     def describe(self) -> str:
@@ -184,7 +184,7 @@ class TradingCosts:
             f"sell tax KOSPI {self.sell_tax_bps.get(KOSPI, 0):.1f}bps / "
             f"KOSDAQ {self.sell_tax_bps.get(KOSDAQ, 0):.1f}bps, "
             f"slippage {self.slippage_bps:.1f}bps "
-            f"(round trip ≈ {self.round_trip_bps():.1f}bps + slippage)"
+            f"(round trip ~ {self.round_trip_bps():.1f}bps + slippage)"
         )
 
 

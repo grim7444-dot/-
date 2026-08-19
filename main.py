@@ -540,7 +540,20 @@ class TradingEngine:
 def cmd_profile(args: argparse.Namespace) -> int:
     from universe_profile import format_profiles, run_profile
 
-    rt = build_runtime(args, cli_live=False, force_dry_run=True)
+    # pykrx serves daily bars, but minute bars only come from the broker -- so
+    # without one, every 60-minute stock profiles on synthetic data and the
+    # numbers mean nothing. Profiling reads charts and places no orders, which
+    # is why --live is offered here at all.
+    cli_live = bool(getattr(args, "live", False))
+    rt = build_runtime(args, cli_live=cli_live, force_dry_run=not cli_live)
+
+    intraday = [c for c, cfg in rt.universe.items() if cfg.get("timeframe") != "1Day"]
+    if intraday and rt.broker.dry_run:
+        print(
+            f"\n  No broker connected, so the {len(intraday)} intraday stocks "
+            f"({', '.join(intraday)})\n  will profile on SYNTHETIC bars. "
+            "Use `python main.py profile --live` for real ones."
+        )
 
     if args.refresh_calendar:
         end = date.today()
@@ -1240,6 +1253,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     prof = sub.add_parser("profile", help="measure the universe and suggest strategies")
     prof.add_argument("--months", type=int, default=6, help="months of history (default: 6)")
+    prof.add_argument(
+        "--live",
+        action="store_true",
+        help="read intraday charts from the live account (read-only, no orders)",
+    )
     prof.add_argument(
         "--refresh-calendar",
         action="store_true",

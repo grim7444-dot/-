@@ -43,11 +43,20 @@ class StockProfile:
     bars: int = 0
     source: str = ""
     last_close: float = 0.0
+    atr_abs: float = 0.0
     atr_pct: float = 0.0
+    #: Median (high - low) / close over the last 20 bars. ATR counts gaps and
+    #: this does not, so a large split between them says the volatility lives
+    #: in the overnight jump rather than in the session -- and a huge split
+    #: says the bars are wrong.
+    median_range_pct: float = 0.0
+    first_bar: str = ""
+    last_bar: str = ""
     daily_turnover: float = 0.0
     trend_strength: float = 0.0
     warmup_needed: int = 0
     tick: int = 0
+    recent: pd.DataFrame | None = None
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -124,9 +133,18 @@ def profile_stock(
     prof.last_close = float(bars["close"].iloc[-1])
     prof.tick = rules.tick_size(prof.last_close, prof.configured_market)
 
+    prof.first_bar = str(bars.index[0])[:16]
+    prof.last_bar = str(bars.index[-1])[:16]
+    prof.recent = bars.tail(5)
+
     atr_series = atr_indicator(bars, 14).dropna()
     if not atr_series.empty and prof.last_close > 0:
-        prof.atr_pct = float(atr_series.iloc[-1]) / prof.last_close
+        prof.atr_abs = float(atr_series.iloc[-1])
+        prof.atr_pct = prof.atr_abs / prof.last_close
+
+    spans = ((bars["high"] - bars["low"]) / bars["close"]).tail(20).dropna()
+    if not spans.empty:
+        prof.median_range_pct = float(spans.median())
 
     turnover = (bars["close"] * bars["volume"]).tail(60)
     prof.daily_turnover = float(turnover.mean()) if not turnover.empty else 0.0
@@ -135,6 +153,16 @@ def profile_stock(
 
     if barset.synthetic:
         prof.notes.append("SYNTHETIC bars - figures are illustrative only")
+    # Position size is (equity x 1%) / ATR, so an ATR that is too large by a
+    # factor of three buys a third of the shares it should -- and one that is
+    # too small buys three times too many. It is the single number most worth
+    # checking against the broker's own chart before trading.
+    if prof.atr_pct >= 0.08 and not barset.synthetic:
+        prof.notes.append(
+            f"ATR is {prof.atr_pct:.1%} of price ({prof.atr_abs:,.0f} KRW) - high "
+            f"for a daily bar. Compare against the same chart in the Kiwoom app "
+            f"before trading; sizing divides by this number"
+        )
     if not prof.has_enough_history:
         prof.notes.append(
             f"only {prof.bars} bars, strategy needs {prof.warmup_needed} to warm up"
@@ -183,7 +211,7 @@ def format_profiles(
 
     header = (
         f"  {'code':<8} {'name':<14} {'mkt':<6} {'bars':>6} {'close':>11} "
-        f"{'ATR%':>7} {'turnover':>14} {'trend':>7}  suggested"
+        f"{'ATR':>9} {'ATR%':>7} {'range%':>7} {'turnover':>14} {'trend':>7}  suggested"
     )
     lines.append(header)
     lines.append("  " + "-" * (width - 4))
@@ -191,7 +219,8 @@ def format_profiles(
         name = (p.resolved_name or p.configured_name or "")[:13]
         lines.append(
             f"  {p.code:<8} {name:<14} {(p.resolved_market or p.configured_market):<6} "
-            f"{p.bars:>6d} {p.last_close:>11,.0f} {p.atr_pct:>6.2%} "
+            f"{p.bars:>6d} {p.last_close:>11,.0f} {p.atr_abs:>9,.0f} "
+            f"{p.atr_pct:>6.2%} {p.median_range_pct:>6.2%} "
             f"{p.daily_turnover:>14,.0f} {p.trend_strength:>7.2f}  {p.suggested_strategy()}"
         )
 
@@ -201,6 +230,30 @@ def format_profiles(
         for p in flagged:
             for note in p.notes:
                 lines.append(f"  {p.code}: {note}")
+
+    # Everything above is derived. These are the numbers the derivation used,
+    # printed so they can be read straight off the broker's own chart -- the
+    # only way to tell a stock that really moves 16% a day from bars that are
+    # wrong. Five rows per stock is short enough to actually check.
+    with_bars = [p for p in profiles if p.recent is not None and not p.recent.empty]
+    if with_bars:
+        lines += ["", "  -- Last 5 bars (compare against the Kiwoom chart) "
+                  + "-" * (width - 54)]
+        for p in with_bars:
+            name = (p.resolved_name or p.configured_name or "")[:13]
+            lines.append(
+                f"  {p.code} {name}   [{p.source}]   {p.first_bar} .. {p.last_bar}"
+            )
+            lines.append(
+                f"      {'when':<17}{'open':>10}{'high':>10}{'low':>10}"
+                f"{'close':>10}{'high-low':>11}"
+            )
+            for when, row in p.recent.iterrows():
+                lines.append(
+                    f"      {str(when)[:16]:<17}{row['open']:>10,.0f}"
+                    f"{row['high']:>10,.0f}{row['low']:>10,.0f}"
+                    f"{row['close']:>10,.0f}{row['high'] - row['low']:>11,.0f}"
+                )
 
     if not correlations.empty:
         lines += ["", "  -- Return correlation " + "-" * (width - 26)]

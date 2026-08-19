@@ -33,6 +33,7 @@ from indicators import atr as atr_indicator
 from indicators import last_valid
 from market.calendar import KST, KrxCalendar
 from market.rules import KOSPI, KrxRules
+from market.session_rules import SessionRules
 from portfolio import LONG, SHORT, Portfolio, Position
 from risk.manager import RiskManager, TradeContext
 from settings import (
@@ -206,6 +207,15 @@ class TradingEngine:
         self.tick_seconds = int(schedule.get("tick_seconds", 30))
         self.closed_sleep = int(schedule.get("closed_market_sleep_seconds", 300))
         self._next_due: dict[str, float] = {}
+        # Parsed once at construction so a malformed window fails at start-up
+        # rather than at 15:19 on the one day it matters.
+        self._session_rules: dict[str, SessionRules] = {
+            code: SessionRules.from_config(rt.universe.get(code, {}))
+            for code in rt.strategies
+        }
+
+    def session_rules(self, code: str) -> SessionRules:
+        return self._session_rules.get(code, SessionRules())
 
     def interval_for(self, code: str) -> int:
         timeframe = self.rt.universe.get(code, {}).get("timeframe", "1Day")
@@ -351,6 +361,21 @@ class TradingEngine:
                 )
                 return
 
+        # Time-based rules outrank the strategy in both directions: a day
+        # trade is closed before the auction whatever the chart says, and an
+        # overnight position is closed the next morning as planned.
+        rules = self.session_rules(code)
+        now = datetime.now(KST)
+        if position is not None:
+            due, why = rules.exit_due(now, position.entry_date())
+            if due:
+                logger.warning("%s: TIME EXIT - %s", label, why)
+                self._submit_exit(
+                    code, position, price, why, open_orders, asset_cfg,
+                    session_ok, session_reason,
+                )
+                return
+
         signal = strategy.evaluate(bars, position)
         logger.info(
             "%s [%s] %s - %s (close=%s)",
@@ -369,6 +394,11 @@ class TradingEngine:
                 code, position, price, signal.reason, open_orders, asset_cfg,
                 session_ok, session_reason,
             )
+            return
+
+        allowed, why = rules.entry_allowed(now)
+        if not allowed:
+            logger.info("%s: entry outside its window - %s", label, why)
             return
 
         self._submit_entry(

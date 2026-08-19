@@ -24,6 +24,9 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+# market.calendar imports only the standard library, so this cannot cycle.
+from market.calendar import KST
+
 logger = logging.getLogger("bot.portfolio")
 
 LONG = "LONG"
@@ -109,6 +112,29 @@ class Position:
 
     def unrealized(self, price: float) -> float:
         return (price - self.entry_price) * self.qty * self.direction
+
+    def entry_date(self) -> "date | None":
+        """The KRX session this position was opened in, if it is known.
+
+        Used to tell an overnight hold that has reached its planned morning
+        exit from one that was opened minutes ago, after that time of day had
+        already passed. ``entry_time`` is free-form text on purpose -- it has
+        been written by several code paths -- so this parses defensively and
+        answers None rather than guessing a date it cannot read.
+        """
+        raw = (self.entry_time or "").strip()
+        if not raw:
+            return None
+        try:
+            moment = datetime.fromisoformat(raw)
+        except ValueError:
+            try:
+                return date.fromisoformat(raw[:10])
+            except ValueError:
+                return None
+        if moment.tzinfo is not None:
+            moment = moment.astimezone(KST)
+        return moment.date()
 
     def effective_stop(self) -> float:
         """The stop actually in force: the tighter of hard stop and trail."""

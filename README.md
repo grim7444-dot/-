@@ -1,7 +1,8 @@
-# KRX 8-Stock Trading Bot
+# KRX 9-Stock Trading Bot
 
-A paper-first trading bot for eight KRX-listed stocks, built on the **Kiwoom
-REST API** and Python 3.10+.
+A paper-first trading bot for nine KRX-listed stocks, built on the **Kiwoom
+REST API** and Python 3.10+. Five are day traded on three-minute bars; four are
+bought into the close and sold the next morning.
 
 **Paper trading is the default and the fallback.** Live trading requires three
 independent confirmations; miss any one and the run is demoted to paper with
@@ -17,32 +18,81 @@ the reason printed. See [Safety rules](#safety-rules).
 
 | Code | Name | Market | Timeframe | Strategy | Theme |
 |---|---|---|---|---|---|
-| 009830 | 한화솔루션 | KOSPI | daily | EMA trend (50/200) | power_energy |
-| 002990 | 금호건설 | KOSPI | daily | EMA trend (50/200) | construction |
-| 093370 | 후성 | KOSPI | daily | EMA trend (50/200) | battery_materials |
-| 006340 | 대원전선 | KOSPI | daily | EMA trend (50/200) | power_energy |
-| 460930 | 현대힘스 | KOSDAQ | 60 min | Volume breakout (20) | shipbuilding |
-| 101730 | 위메이드맥스 | KOSDAQ | 60 min | Volume breakout (20) | game |
-| 228340 | 동양파일 | KOSDAQ | 60 min | Volume breakout (20) | construction |
-| 439960 | 코스모로보틱스 | KOSDAQ | 60 min | Volume breakout (**10**) | robotics |
+| 009830 | 한화솔루션 | KOSPI | 3 min | Day trade (단타) | power_energy |
+| 002990 | 금호건설 | KOSPI | 3 min | Day trade (단타) | construction |
+| 093370 | 후성 | KOSPI | 3 min | Day trade (단타) | battery_materials |
+| 006340 | 대원전선 | KOSPI | 3 min | Day trade (단타) | power_energy |
+| 073240 | 금호타이어 | KOSPI | 3 min | Day trade (단타) | auto_parts |
+| 460930 | 현대힘스 | KOSDAQ | daily | Close trade (종가매매) | shipbuilding |
+| 101730 | 위메이드맥스 | KOSDAQ | daily | Close trade (종가매매) | game |
+| 228340 | 동양파일 | KOSDAQ | daily | Close trade (종가매매) | construction |
+| 439960 | 코스모로보틱스 | KOSDAQ | daily | Close trade (종가매매) | robotics |
+
+The split is by measured volatility, not by sector. `profile --live` put the
+first five above 8% daily ATR; an intraday move that size clears the ~0.38%
+round trip of commission, transaction tax and slippage. The other four barely
+would, so for them the move worth having is the overnight one -- and their
+smaller daily range also means a smaller gap, which matters a great deal for a
+position nothing is watching.
 
 Names and market tags in `config.yaml` are a starting point — **verify them**
 with `python main.py profile`, which reads the official listing data. A wrong
 `market` tag mis-prices the transaction tax.
 
-### Two entries that need explaining
+### Day trading (단타)
 
-**439960 코스모로보틱스 listed on 2026-05-11.** With roughly three months of
-history it cannot warm up a 200-period lookback, so it runs a shortened
-10-period breakout instead. `profile` reports bar counts against each
-strategy's warm-up requirement, and the bot holds rather than trading a
-half-computed indicator. Revisit the parameters once it has a year behind it.
+Three-minute bars. A close above the prior 20-bar high on 1.5x volume enters,
+but only while the price is above the session's own VWAP -- a break made below
+it is usually a bounce inside a decline. Exit is a 1.5 ATR trail, losing VWAP,
+or the flat-out time, whichever comes first.
 
-**Mean reversion ships disabled.** It is implemented and tested, but it is not
-assigned to any stock. On an index, −1.5σ tends to revert; on an individual
-small cap it can be the start of a repricing, and unlike an index a single
-stock can be suspended, diluted or delisted. Turn it on per-stock in
-`config.yaml` if you want it.
+Entries run 09:15-14:30. The opening minutes are skipped because the spread is
+widest there and no channel has formed yet; the afternoon cut-off leaves room
+before the flat-out.
+
+**Every day-trade position is closed at 15:10**, ten minutes before the closing
+auction. A position still open when the auction starts cannot be sold at a
+predictable price, and the next continuous session is the following morning --
+so surviving the close turns a day trade into an unhedged overnight hold.
+`SessionRules` refuses at construction to accept a flat-out time inside the
+auction, so this cannot be misconfigured quietly.
+
+A cost gate sits in front of every entry. A round trip pays commission both
+ways, transaction tax on the sell and slippage on both fills -- 0.38% at the
+assumptions in `config.yaml`. The gate compares that to the move a winning
+trade *keeps*, which is on the scale of the trail distance rather than of one
+bar, and refuses stocks too quiet to clear it twice over.
+
+### Close trading (종가매매)
+
+Buy in the last continuous minutes (15:15-15:19) when the stock closes in the
+top 30% of its range, above its 20-day EMA, on 1.2x its usual volume. Sell the
+next morning at 09:05 unconditionally -- not on a signal, on the clock.
+
+**Nothing protects these positions overnight.** Kiwoom holds no resting stop
+order, so the hard stop exists only while the bot process runs, and between the
+close and the next open it does not. A stock that gaps through its stop opens
+the position at whatever the auction decides, and no amount of code changes
+that. It is the reason the quietest four names got this strategy rather than
+the liveliest.
+
+`hold_overnight` is what stops such a position being sold seconds after it is
+opened: 15:16 is past 09:05, and without knowing which session the position was
+opened in, the exit rule would fire immediately.
+
+### Mean reversion ships disabled
+
+It is implemented and tested, but not assigned to any stock. On an index, -1.5σ
+tends to revert; on an individual small cap it can be the start of a repricing,
+and unlike an index a single stock can be suspended, diluted or delisted. Turn
+it on per-stock in `config.yaml` if you want it.
+
+### 439960 코스모로보틱스 listed on 2026-05-11
+
+With roughly three months of history it cannot warm up a 200-period lookback,
+which is why it no longer runs a trend system. Close trading needs 20 days.
+`profile` reports bar counts against each strategy's warm-up requirement, and
+the bot holds rather than trading a half-computed indicator.
 
 ---
 
@@ -99,7 +149,7 @@ python report.py evening --dry-run        # end-of-day wrap
 | 5 | 10% drawdown from peak → block new orders, cancel working orders, flatten, persist `STOPPED`. The peak is per mode and the flatten only fires during continuous trading | `risk/manager.py::RiskManager.trip_kill_switch`, `portfolio.Portfolio.__init__` | `test_risk.py::test_kill_switch_stops_cancels_and_flattens`, `test_incident_regressions.py` |
 | 6 | `STOPPED` persists across restarts until a human runs `resume` | `portfolio.StateStore` + `state.json` | `test_risk.py::test_stopped_state_survives_a_restart` |
 | 7 | Before every order: tradability, session phase, minimum quantity, duplicate orders, available cash, **daily price limit** | `risk/manager.py::pre_trade_checks` | `test_risk.py` (one test per check) |
-| 8 | KRX session only — 09:00–15:30 KST, never during a call auction | `market/calendar.py` | `test_calendar.py` |
+| 8 | KRX session only — 09:00–15:30 KST, never during a call auction. Day trades are flat by 15:10; entry windows and forced exits are checked against the clock, not the chart | `market/calendar.py`, `market/session_rules.py` | `test_calendar.py`, `test_intraday_strategies.py` |
 | 9 | App keys come from `.env` only and never reach logs, exception messages or reports | `settings.Secret`, `SecretFilter`, `install_exception_masking` | canary test; secrets render as `***REDACTED***` |
 | 10 | Backtest fills start on the bar **after** the signal bar | `backtest.Backtester` | `test_no_lookahead.py` |
 | 11 | Commission, transaction tax and slippage live in `config.yaml` and print with every result | `market/rules.py::TradingCosts` | `test_krx_rules.py`, `test_no_lookahead.py` |
@@ -348,7 +398,7 @@ history never mixes with a real run's.
 pytest -q
 ```
 
-244 tests, no network and no credentials required. `tests/conftest.py` scrubs
+305 tests, no network and no credentials required. `tests/conftest.py` scrubs
 `KIWOOM_*` from the environment before every test, so a real `.env` can never
 turn a test run into a live-trading attempt, and the broker double raises if
 anything tries to submit an order.

@@ -15,13 +15,17 @@ from typing import Any, Mapping
 
 from strategies.base import Action, Signal, Strategy
 from strategies.breakout import Breakout
+from strategies.close_auction import CloseAuction
 from strategies.mean_reversion import MeanReversion
+from strategies.scalping import Scalping
 from strategies.trend_following import TrendFollowing
 
 STRATEGY_CLASSES: dict[str, type[Strategy]] = {
     "mean_reversion": MeanReversion,
     "breakout": Breakout,
     "trend_following": TrendFollowing,
+    "scalping": Scalping,
+    "close_auction": CloseAuction,
 }
 
 __all__ = [
@@ -29,7 +33,9 @@ __all__ = [
     "Signal",
     "Strategy",
     "Breakout",
+    "CloseAuction",
     "MeanReversion",
+    "Scalping",
     "TrendFollowing",
     "STRATEGY_CLASSES",
     "build_strategy",

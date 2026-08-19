@@ -36,6 +36,10 @@ Source = Literal["cache", "pykrx", "broker", "synthetic"]
 
 #: Supported timeframe labels mapped to their bar duration.
 TIMEFRAMES: dict[str, timedelta] = {
+    "1Min": timedelta(minutes=1),
+    "3Min": timedelta(minutes=3),
+    "5Min": timedelta(minutes=5),
+    "10Min": timedelta(minutes=10),
     "15Min": timedelta(minutes=15),
     "30Min": timedelta(minutes=30),
     "60Min": timedelta(hours=1),
@@ -44,7 +48,16 @@ TIMEFRAMES: dict[str, timedelta] = {
 
 #: Rough per-bar volatility for the synthetic generator. Korean small/mid caps
 #: are livelier than US index ETFs, so these are wider than the US bot's.
-_SYNTHETIC_SIGMA = {"15Min": 0.004, "30Min": 0.006, "60Min": 0.009, "1Day": 0.030}
+_SYNTHETIC_SIGMA = {
+    "1Min": 0.0012,
+    "3Min": 0.002,
+    "5Min": 0.0026,
+    "10Min": 0.0034,
+    "15Min": 0.004,
+    "30Min": 0.006,
+    "60Min": 0.009,
+    "1Day": 0.030,
+}
 
 
 #: Market labels seen from Kiwoom, mapped to the two boards. Anything not

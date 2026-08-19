@@ -53,118 +53,162 @@ themes:
 # official listing data — a wrong `market` mis-prices the transaction tax.
 # ---------------------------------------------------------------------------
 universe:
+  # --- Day trading (단타), 3-minute bars -----------------------------------
+  # Assigned by measured volatility, not by sector: `profile` put these five
+  # above the 8% daily-ATR line, which is what makes an intraday move large
+  # enough to clear the ~0.38% round trip of commission, tax and slippage.
+  #
+  # entry_window keeps entries out of the opening minutes, where the spread is
+  # widest and no channel has formed yet, and stops them well before the
+  # flat-out. force_exit_at closes every position at 15:10, ten minutes before
+  # the closing auction -- a position still open when the auction starts
+  # cannot be sold at a predictable price and becomes an overnight hold.
   "009830":
     name: 한화솔루션
     market: KOSPI
     enabled: true
-    strategy: trend_following
-    timeframe: 1Day
+    strategy: scalping
+    timeframe: 3Min
     min_qty: 1
+    entry_window: ["09:15", "14:30"]
+    force_exit_at: "15:10"
     params:
-      fast_ema: 50
-      slow_ema: 200
-      atr_trail_mult: 3.0
+      period: 20
+      volume_mult: 1.5
+      atr_trail_mult: 1.5
 
   "002990":
     name: 금호건설
     market: KOSPI
     enabled: true
-    strategy: trend_following
-    timeframe: 1Day
+    strategy: scalping
+    timeframe: 3Min
     min_qty: 1
+    entry_window: ["09:15", "14:30"]
+    force_exit_at: "15:10"
     params:
-      fast_ema: 50
-      slow_ema: 200
-      atr_trail_mult: 3.0
+      period: 20
+      volume_mult: 1.5
+      atr_trail_mult: 1.5
 
   "093370":
     name: 후성
     market: KOSPI
     enabled: true
-    strategy: trend_following
-    timeframe: 1Day
+    strategy: scalping
+    timeframe: 3Min
     min_qty: 1
+    entry_window: ["09:15", "14:30"]
+    force_exit_at: "15:10"
     params:
-      fast_ema: 50
-      slow_ema: 200
-      atr_trail_mult: 3.0
+      period: 20
+      volume_mult: 1.5
+      atr_trail_mult: 1.5
 
   "006340":
     name: 대원전선
     market: KOSPI
     enabled: true
-    strategy: trend_following
-    timeframe: 1Day
+    strategy: scalping
+    timeframe: 3Min
     min_qty: 1
+    entry_window: ["09:15", "14:30"]
+    force_exit_at: "15:10"
     params:
-      fast_ema: 50
-      slow_ema: 200
-      atr_trail_mult: 3.0
+      period: 20
+      volume_mult: 1.5
+      atr_trail_mult: 1.5
 
+  "073240":
+    name: 금호타이어
+    market: KOSPI
+    enabled: true
+    strategy: scalping
+    timeframe: 3Min
+    min_qty: 1
+    entry_window: ["09:15", "14:30"]
+    force_exit_at: "15:10"
+    params:
+      period: 20
+      volume_mult: 1.5
+      atr_trail_mult: 1.5
+
+  # --- Close-based trading (종가매매), daily bars ---------------------------
+  # The four quietest names. Their intraday range barely clears the round trip,
+  # so the move worth having is the overnight one -- and a smaller daily range
+  # also means a smaller gap, which matters because NOTHING protects these
+  # positions between the close and the next open. Kiwoom holds no resting
+  # stop order and the bot is not running, so a gap through the stop is taken
+  # in full at the opening auction.
+  #
+  # Entry is 15:15-15:19, the last continuous-trading minutes; the exit is the
+  # next morning at 09:05, five minutes after the open, unconditionally.
   "460930":
     name: 현대힘스
     market: KOSDAQ
     enabled: true
-    strategy: breakout
-    timeframe: 60Min
+    strategy: close_auction
+    timeframe: 1Day
     min_qty: 1
+    entry_window: ["15:15", "15:19"]
+    force_exit_at: "09:05"
+    hold_overnight: true
     params:
-      period: 20
-      volume_mult: 1.5
+      trend_ema: 20
+      volume_mult: 1.2
+      close_strength: 0.7
       atr_trail_mult: 2.0
 
   "101730":
     name: 위메이드맥스
     market: KOSDAQ
     enabled: true
-    strategy: breakout
-    timeframe: 60Min
+    strategy: close_auction
+    timeframe: 1Day
     min_qty: 1
+    entry_window: ["15:15", "15:19"]
+    force_exit_at: "09:05"
+    hold_overnight: true
     params:
-      period: 20
-      volume_mult: 1.5
+      trend_ema: 20
+      volume_mult: 1.2
+      close_strength: 0.7
       atr_trail_mult: 2.0
 
   "228340":
     name: 동양파일
     market: KOSDAQ
     enabled: true
-    strategy: breakout
-    timeframe: 60Min
-    min_qty: 1
-    params:
-      period: 20
-      volume_mult: 1.5
-      atr_trail_mult: 2.0
-
-  "073240":
-    name: 금호타이어
-    market: KOSPI
-    enabled: true
-    # Added to bring an existing holding under stop management. Verify the
-    # market tag with `python main.py profile` -- a wrong one mis-prices tax.
-    strategy: trend_following
+    strategy: close_auction
     timeframe: 1Day
     min_qty: 1
+    entry_window: ["15:15", "15:19"]
+    force_exit_at: "09:05"
+    hold_overnight: true
     params:
-      fast_ema: 50
-      slow_ema: 200
-      atr_trail_mult: 3.0
+      trend_ema: 20
+      volume_mult: 1.2
+      close_strength: 0.7
+      atr_trail_mult: 2.0
 
   "439960":
     name: 코스모로보틱스
     market: KOSDAQ
     enabled: true
-    # Listed 2026-05-11. With only ~3 months of history a 200-period lookback
-    # cannot warm up, so this one runs shortened parameters until enough bars
-    # accumulate. Revisit once it has a year of trading behind it.
+    # Listed 2026-05-11, so a 200-day lookback cannot warm up. close_auction
+    # needs only 20 days, which this has -- one reason it suits a young
+    # listing better than the trend system it used to run.
     listed_on: "2026-05-11"
-    strategy: breakout
-    timeframe: 60Min
+    strategy: close_auction
+    timeframe: 1Day
     min_qty: 1
+    entry_window: ["15:15", "15:19"]
+    force_exit_at: "09:05"
+    hold_overnight: true
     params:
-      period: 10
-      volume_mult: 1.5
+      trend_ema: 20
+      volume_mult: 1.2
+      close_strength: 0.7
       atr_trail_mult: 2.0
 
 # ---------------------------------------------------------------------------
@@ -232,9 +276,13 @@ api:
 
 schedule:
   # How often the outer loop wakes to see which strategies are due.
-  tick_seconds: 30
+  tick_seconds: 20
   intervals:
+    3Min: 180
     60Min: 3600
+    # Daily strategies are looked at once a day for a *signal*. An open
+    # position is re-checked every tick regardless -- see TradingEngine.
+    # due_codes -- because the hard stop lives in the loop and nowhere else.
     1Day: 86400
   # How long to sleep when KRX is closed before re-checking.
   closed_market_sleep_seconds: 300

@@ -661,13 +661,24 @@ def _engine(workdir):
     return main.TradingEngine(main.build_runtime(args, cli_live=False, force_dry_run=True))
 
 
+#: A stock configured on daily bars. Picked by timeframe rather than hardcoded,
+#: so reassigning strategies in config.yaml cannot quietly turn these into
+#: tests of something else.
+def _a_daily_code(engine) -> str:
+    for code in engine.rt.strategies:
+        if engine.rt.universe.get(code, {}).get("timeframe") == "1Day":
+            return code
+    raise AssertionError("no daily stock configured")
+
+
 def test_a_daily_stock_is_due_once_a_day_when_flat(workdir):
     engine = _engine(workdir)
+    code = _a_daily_code(engine)
     now = 1000.0
-    assert "009830" in engine.due_codes(now)      # first look
-    engine.mark_ran("009830", now)
+    assert code in engine.due_codes(now)      # first look
+    engine.mark_ran(code, now)
     # A daily stock's signal cadence is 24h; an hour later it is not due.
-    assert "009830" not in engine.due_codes(now + 3600)
+    assert code not in engine.due_codes(now + 3600)
 
 
 def test_a_daily_stock_with_a_position_is_due_every_tick(workdir):
@@ -675,13 +686,14 @@ def test_a_daily_stock_with_a_position_is_due_every_tick(workdir):
     from portfolio import LONG, Position
 
     engine = _engine(workdir)
+    code = _a_daily_code(engine)
     now = 1000.0
-    engine.mark_ran("009830", now)
-    assert "009830" not in engine.due_codes(now + 3600)
+    engine.mark_ran(code, now)
+    assert code not in engine.due_codes(now + 3600)
 
     engine.rt.portfolio.open_position(
         Position(
-            symbol="009830",
+            symbol=code,
             side=LONG,
             qty=1,
             entry_price=34_600.0,
@@ -689,5 +701,5 @@ def test_a_daily_stock_with_a_position_is_due_every_tick(workdir):
             stop_distance=3_200.0,
         )
     )
-    assert "009830" in engine.due_codes(now + 30)
-    assert "009830" in engine.due_codes(now + 3600)
+    assert code in engine.due_codes(now + 30)
+    assert code in engine.due_codes(now + 3600)

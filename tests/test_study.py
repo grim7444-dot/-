@@ -263,3 +263,42 @@ def test_the_report_warns_about_searching_for_a_good_parameter_set():
         down_days=3, drop_pct=0.2, cost_pct=0.0038, limit_down=False,
     )
     assert "Every parameter set tried raises the bar" in report
+
+
+# ---------------------------------------------------------------------------
+# Out-of-sample code lists
+# ---------------------------------------------------------------------------
+
+
+def test_codes_parse_from_however_they_were_pasted():
+    from study import parse_codes
+
+    dotted = "096770.058470.001210.399720"
+    assert parse_codes(dotted) == ["096770", "058470", "001210", "399720"]
+    assert parse_codes("096770, 058470") == ["096770", "058470"]
+    assert parse_codes("096770\n058470  001210") == ["096770", "058470", "001210"]
+
+
+def test_a_leading_zero_lost_by_a_spreadsheet_is_restored():
+    from study import parse_codes
+
+    assert parse_codes("5930,660") == ["005930", "000660"]
+
+
+def test_codes_run_together_with_no_separator_are_split_by_six():
+    from study import parse_codes
+
+    assert parse_codes("096770058470") == ["096770", "058470"]
+
+
+def test_duplicates_are_dropped_so_one_stock_cannot_vote_twice():
+    from study import parse_codes
+
+    assert parse_codes("096770.058470.096770") == ["096770", "058470"]
+
+
+def test_empty_input_yields_no_codes():
+    from study import parse_codes
+
+    assert parse_codes("") == []
+    assert parse_codes("   ") == []

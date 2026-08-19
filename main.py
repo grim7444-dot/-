@@ -696,10 +696,23 @@ def cmd_study_bounce(args: argparse.Namespace) -> int:
     this happen a lot" and "this happens more often than not" are different
     claims, and only one of them can be checked.
     """
-    from study import format_bounce_study, run_bounce_study
+    from study import format_bounce_study, parse_codes, run_bounce_study
 
     cli_live = bool(getattr(args, "live", False))
     rt = build_runtime(args, cli_live=cli_live, force_dry_run=not cli_live)
+
+    universe: Mapping[str, Mapping[str, Any]] = rt.universe
+    codes = parse_codes(getattr(args, "codes", "") or "")
+    if codes:
+        # Testing the rule on stocks it was not chosen on is the only check
+        # that separates a real pattern from a parameter search that happened
+        # to fit nine names. Names come from the broker; nothing here is
+        # configured, and nothing here is ever ordered.
+        universe = {
+            code: {"name": rt.market_data.get_name(code) or "", "market": KOSPI}
+            for code in codes
+        }
+        print(f"\nOut-of-sample: {len(codes)} codes not in config.yaml", flush=True)
 
     costs = rt.config.get("costs") or {}
     tax = max(float(v) for v in (costs.get("sell_tax_bps") or {"x": 0.0}).values())
@@ -715,7 +728,7 @@ def cmd_study_bounce(args: argparse.Namespace) -> int:
         flush=True,
     )
     stats = run_bounce_study(
-        rt.universe,
+        universe,
         rt.market_data,
         months=args.months,
         down_days=args.down_days,
@@ -1456,6 +1469,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit-down",
         action="store_true",
         help="require every day to close at the -30%% limit instead of --drop",
+    )
+    study.add_argument(
+        "--codes",
+        default="",
+        help="test these codes instead of the configured universe, e.g. "
+             "096770,058470 (an out-of-sample check: same rule, different stocks)",
     )
     study.add_argument(
         "--live", action="store_true", help="read bars through the live account"

@@ -405,6 +405,36 @@ def _verdict(
     return lines
 
 
+def parse_codes(raw: str) -> list[str]:
+    """Split a pasted list of KRX codes on whatever separated them.
+
+    People paste these with dots, commas, spaces or newlines between them, and
+    sometimes with a leading zero dropped by a spreadsheet. Codes are six
+    digits, so a shorter run of digits is padded rather than rejected.
+    """
+    import re
+
+    out: list[str] = []
+    for chunk in re.split(r"[^0-9]+", raw or ""):
+        if not chunk:
+            continue
+        if len(chunk) > 6:
+            # A run this long is several codes with nothing between them.
+            for i in range(0, len(chunk), 6):
+                piece = chunk[i : i + 6]
+                if piece:
+                    out.append(piece.zfill(6))
+            continue
+        out.append(chunk.zfill(6))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for code in out:
+        if code not in seen:
+            seen.add(code)
+            unique.append(code)
+    return unique
+
+
 def run_bounce_study(
     universe: Mapping[str, Mapping[str, Any]],
     market_data,

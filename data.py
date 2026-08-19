@@ -339,10 +339,14 @@ class MarketData:
     ) -> bool:
         """Do these bars run up to the most recent bar that should exist?
 
-        Daily bars are current when the last one falls on or after the last
-        completed session; today's own bar is not final until the close, so it
-        is not required. Intraday bars get a two-interval grace, which covers
-        the gap between one bar closing and the next being published.
+        Daily bars must reach today once continuous trading has begun, because
+        the loop reads the last close as the current price -- yesterday's close
+        prices a stop against a level the stock has already left. Outside the
+        session the last completed day is enough; today's bar does not exist
+        yet before 09:00, and demanding it would block every pre-open run.
+
+        Intraday bars get a two-interval grace, which covers the gap between
+        one bar closing and the next being published.
         """
         if frame is None or frame.empty:
             return False
@@ -355,7 +359,10 @@ class MarketData:
                 return (end - last) <= timeframe_delta(timeframe) * 2
             except TypeError:  # naive/aware mismatch we could not repair
                 return True
-        expected = self.calendar.previous_business_day(end.date())
+        if self.calendar.is_open(end):
+            expected = end.date()
+        else:
+            expected = self.calendar.previous_business_day(end.date())
         return last.date() >= expected
 
     def _fetch_live(
@@ -418,20 +425,43 @@ class MarketData:
         )
         return _normalise(frame)
 
+    def _broker_stock_info(self, code: str):
+        """What the broker knows about a listing, if a broker is connected.
+
+        KRX's own ticker endpoints have been returning non-JSON, which leaves
+        pykrx unable to resolve a single name -- and with no name resolved,
+        the config-vs-listing comparison that catches a wrong market tag never
+        runs. Kiwoom answers the same question over an endpoint the connection
+        check already exercises.
+        """
+        provider = self.intraday_provider
+        if provider is None or not hasattr(provider, "get_stock_info"):
+            return None
+        try:
+            return provider.get_stock_info(code)
+        except Exception as exc:
+            logger.debug("broker stock info failed for %s: %s", code, exc)
+            return None
+
     def get_name(self, code: str) -> str | None:
-        """Official listing name, when pykrx is reachable."""
+        """Official listing name from pykrx, or failing that the broker."""
         if not self.allow_network:
             return None
         try:
             stock = _import_pykrx_stock()
 
-            return stock.get_market_ticker_name(code)
+            name = stock.get_market_ticker_name(code)
+            if name:
+                return str(name)
         except Exception as exc:
             logger.debug("name lookup failed for %s: %s", code, exc)
+        info = self._broker_stock_info(code)
+        if info is None or not info.name:
             return None
+        return str(info.name).strip() or None
 
     def get_market(self, code: str) -> str | None:
-        """KOSPI or KOSDAQ, when pykrx is reachable."""
+        """KOSPI or KOSDAQ from pykrx, or failing that the broker."""
         if not self.allow_network:
             return None
         try:
@@ -443,6 +473,16 @@ class MarketData:
                     return name
         except Exception as exc:
             logger.debug("market lookup failed for %s: %s", code, exc)
+        info = self._broker_stock_info(code)
+        if info is None:
+            return None
+        # Kiwoom labels the market in its own vocabulary; only map what is
+        # unambiguous rather than guessing and mis-pricing the transaction tax.
+        raw = str(info.market or "").strip().upper()
+        if raw in {KOSPI, "0", "코스피", "유가증권"}:
+            return KOSPI
+        if raw in {KOSDAQ, "10", "코스닥"}:
+            return KOSDAQ
         return None
 
 

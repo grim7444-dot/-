@@ -412,11 +412,19 @@ def _market_data(tmp_path):
     return MarketData(calendar=KrxCalendar(), cache_dir=tmp_path / "cache")
 
 
-def test_daily_bars_ending_yesterday_are_current(tmp_path):
+def test_daily_bars_ending_yesterday_are_stale_during_the_session(tmp_path):
+    """The loop prices stops off the last close, so it has to be today's."""
     md = _market_data(tmp_path)
-    now = datetime(2026, 8, 19, 11, 0, tzinfo=KST)          # a Wednesday
-    frame = _daily_frame(datetime(2026, 8, 18))             # Tuesday's close
-    assert md.is_current(frame, "1Day", now) is True
+    trading = datetime(2026, 8, 19, 11, 0, tzinfo=KST)      # Wednesday, open
+    assert md.is_current(_daily_frame(datetime(2026, 8, 18)), "1Day", trading) is False
+    assert md.is_current(_daily_frame(datetime(2026, 8, 19)), "1Day", trading) is True
+
+
+def test_daily_bars_ending_yesterday_are_current_before_the_open(tmp_path):
+    """Today's bar does not exist yet at 08:40; demanding it blocks the run."""
+    md = _market_data(tmp_path)
+    pre_open = datetime(2026, 8, 19, 8, 40, tzinfo=KST)
+    assert md.is_current(_daily_frame(datetime(2026, 8, 18)), "1Day", pre_open) is True
 
 
 def test_daily_bars_three_sessions_old_are_not_current(tmp_path):
@@ -429,10 +437,13 @@ def test_daily_bars_three_sessions_old_are_not_current(tmp_path):
 
 
 def test_a_weekend_does_not_make_friday_stale(tmp_path):
+    """Saturday and Sunday are not missed sessions."""
     md = _market_data(tmp_path)
-    monday = datetime(2026, 8, 17, 10, 0, tzinfo=KST)
     friday = _daily_frame(datetime(2026, 8, 14))
-    assert md.is_current(friday, "1Day", monday) is True
+    saturday = datetime(2026, 8, 15, 12, 0, tzinfo=KST)
+    monday_pre_open = datetime(2026, 8, 17, 8, 0, tzinfo=KST)
+    assert md.is_current(friday, "1Day", saturday) is True
+    assert md.is_current(friday, "1Day", monday_pre_open) is True
 
 
 def test_intraday_bars_get_a_two_interval_grace(tmp_path):
@@ -459,3 +470,71 @@ def test_an_empty_frame_is_never_current(tmp_path):
     from data import empty_frame
 
     assert _market_data(tmp_path).is_current(empty_frame(), "1Day") is False
+
+
+# ---------------------------------------------------------------------------
+# 9. names and markets resolve from the broker when KRX will not answer
+# ---------------------------------------------------------------------------
+
+
+class _StubProvider:
+    def __init__(self, info):
+        self._info = info
+
+    def get_chart(self, code, timeframe, start, end):
+        return None
+
+    def get_stock_info(self, code):
+        return self._info
+
+
+def _market_data_with(provider, tmp_path):
+    from data import MarketData
+    from market.calendar import KrxCalendar
+
+    return MarketData(
+        calendar=KrxCalendar(), cache_dir=tmp_path / "cache", intraday_provider=provider
+    )
+
+
+def test_market_tag_falls_back_to_the_broker(tmp_path, monkeypatch):
+    """A wrong market tag mis-prices the transaction tax, so it must be checked."""
+    import data as data_module
+    from broker import StockInfo
+    from market.rules import KOSDAQ
+
+    # pykrx unreachable, exactly as KRX has been answering.
+    monkeypatch.setattr(
+        data_module, "_import_pykrx_stock", lambda: (_ for _ in ()).throw(RuntimeError("KRX down"))
+    )
+    provider = _StubProvider(StockInfo(code="460930", name="현대힘스", market="10"))
+    md = _market_data_with(provider, tmp_path)
+
+    assert md.get_name("460930") == "현대힘스"
+    assert md.get_market("460930") == KOSDAQ
+
+
+def test_an_unrecognised_market_label_resolves_to_nothing(tmp_path, monkeypatch):
+    """Guessing here would mis-price tax; None just leaves the config alone."""
+    import data as data_module
+    from broker import StockInfo
+
+    monkeypatch.setattr(
+        data_module, "_import_pykrx_stock", lambda: (_ for _ in ()).throw(RuntimeError("KRX down"))
+    )
+    provider = _StubProvider(StockInfo(code="460930", name="", market="KONEX?"))
+    md = _market_data_with(provider, tmp_path)
+
+    assert md.get_market("460930") is None
+    assert md.get_name("460930") is None
+
+
+def test_no_broker_means_no_resolution_rather_than_an_error(tmp_path, monkeypatch):
+    import data as data_module
+
+    monkeypatch.setattr(
+        data_module, "_import_pykrx_stock", lambda: (_ for _ in ()).throw(RuntimeError("KRX down"))
+    )
+    md = _market_data_with(None, tmp_path)
+    assert md.get_name("460930") is None
+    assert md.get_market("460930") is None

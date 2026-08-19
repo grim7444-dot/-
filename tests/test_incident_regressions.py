@@ -507,7 +507,9 @@ def test_market_tag_falls_back_to_the_broker(tmp_path, monkeypatch):
     monkeypatch.setattr(
         data_module, "_import_pykrx_stock", lambda: (_ for _ in ()).throw(RuntimeError("KRX down"))
     )
-    provider = _StubProvider(StockInfo(code="460930", name="현대힘스", market="10"))
+    provider = _StubProvider(
+        StockInfo(code="460930", name="현대힘스", market="10", market_raw="10")
+    )
     md = _market_data_with(provider, tmp_path)
 
     assert md.get_name("460930") == "현대힘스"
@@ -522,7 +524,9 @@ def test_an_unrecognised_market_label_resolves_to_nothing(tmp_path, monkeypatch)
     monkeypatch.setattr(
         data_module, "_import_pykrx_stock", lambda: (_ for _ in ()).throw(RuntimeError("KRX down"))
     )
-    provider = _StubProvider(StockInfo(code="460930", name="", market="KONEX?"))
+    provider = _StubProvider(
+        StockInfo(code="460930", name="", market="KONEX?", market_raw="KONEX?")
+    )
     md = _market_data_with(provider, tmp_path)
 
     assert md.get_market("460930") is None
@@ -537,4 +541,24 @@ def test_no_broker_means_no_resolution_rather_than_an_error(tmp_path, monkeypatc
     )
     md = _market_data_with(None, tmp_path)
     assert md.get_name("460930") is None
+    assert md.get_market("460930") is None
+
+
+def test_a_missing_market_field_does_not_confirm_itself(tmp_path, monkeypatch):
+    """StockInfo.market defaults to KOSPI, so verification must read market_raw.
+
+    Reading `market` flagged all four KOSDAQ stocks as "listing says KOSPI"
+    when Kiwoom had in fact said nothing at all.
+    """
+    import data as data_module
+    from broker import StockInfo
+
+    monkeypatch.setattr(
+        data_module, "_import_pykrx_stock", lambda: (_ for _ in ()).throw(RuntimeError("KRX down"))
+    )
+    info = StockInfo(code="460930", name="현대힘스")   # no market field returned
+    assert info.market == "KOSPI"                      # the defaulted value
+    assert info.market_raw == ""                       # what was actually said
+
+    md = _market_data_with(_StubProvider(info), tmp_path)
     assert md.get_market("460930") is None

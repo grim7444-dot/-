@@ -47,6 +47,13 @@ TIMEFRAMES: dict[str, timedelta] = {
 _SYNTHETIC_SIGMA = {"15Min": 0.004, "30Min": 0.006, "60Min": 0.009, "1Day": 0.030}
 
 
+#: Market labels seen from Kiwoom, mapped to the two boards. Anything not
+#: listed here resolves to None rather than a guess -- the market tag selects
+#: the transaction tax, so a wrong one is worse than an unverified one.
+_KOSPI_LABELS = {KOSPI, "0", "1", "KRX", "STK", "코스피", "유가증권", "유가"}
+_KOSDAQ_LABELS = {KOSDAQ, "10", "KSQ", "코스닥"}
+
+
 class IntradayProvider(Protocol):
     """Anything that can serve minute bars - in practice, the broker."""
 
@@ -476,13 +483,22 @@ class MarketData:
         info = self._broker_stock_info(code)
         if info is None:
             return None
-        # Kiwoom labels the market in its own vocabulary; only map what is
-        # unambiguous rather than guessing and mis-pricing the transaction tax.
-        raw = str(info.market or "").strip().upper()
-        if raw in {KOSPI, "0", "코스피", "유가증권"}:
+        # market_raw, never `market`: the latter defaults to KOSPI when the
+        # field is absent, which would confirm a KOSPI tag on every stock and
+        # flag every KOSDAQ one as a mismatch. That is what it did.
+        raw = str(getattr(info, "market_raw", "") or "").strip().upper()
+        if not raw:
+            return None
+        if raw in _KOSPI_LABELS:
             return KOSPI
-        if raw in {KOSDAQ, "10", "코스닥"}:
+        if raw in _KOSDAQ_LABELS:
             return KOSDAQ
+        logger.info(
+            "broker reports market %r for %s, which maps to neither board; "
+            "leaving the configured tag alone",
+            raw,
+            code,
+        )
         return None
 
 

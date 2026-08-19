@@ -40,6 +40,10 @@ class StockProfile:
     resolved_name: str | None = None
     configured_market: str = KOSPI
     resolved_market: str | None = None
+    #: What the broker literally called the market, mapped or not. Printed so
+    #: an unrecognised label can be added to the map instead of staying
+    #: unverified forever.
+    resolved_market_raw: str = ""
     bars: int = 0
     source: str = ""
     last_close: float = 0.0
@@ -125,6 +129,8 @@ def profile_stock(
     if market_data is not None:
         prof.resolved_name = market_data.get_name(code)
         prof.resolved_market = market_data.get_market(code)
+        info = getattr(market_data, "_broker_stock_info", lambda _c: None)(code)
+        prof.resolved_market_raw = str(getattr(info, "market_raw", "") or "")
 
     if bars.empty:
         prof.notes.append("no bars available")
@@ -176,6 +182,12 @@ def profile_stock(
         prof.notes.append(
             f"market mismatch: config says {prof.configured_market}, "
             f"listing says {prof.resolved_market} - this changes the transaction tax"
+        )
+    elif prof.resolved_market is None:
+        raw = f" (broker said {prof.resolved_market_raw!r})" if prof.resolved_market_raw else ""
+        prof.notes.append(
+            f"market tag {prof.configured_market} is UNVERIFIED{raw} - no listing "
+            f"source could confirm it"
         )
     return prof
 

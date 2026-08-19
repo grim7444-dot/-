@@ -98,6 +98,11 @@ class StockInfo:
     code: str
     name: str = ""
     market: str = KOSPI
+    #: Exactly what the broker said the market was, before any defaulting.
+    #: ``market`` falls back to KOSPI when the field is absent, which makes it
+    #: useless for *verifying* a configured market tag -- the default would
+    #: confirm itself. Callers doing that check must read this instead.
+    market_raw: str = ""
     tradable: bool = True
     previous_close: float = 0.0
     min_qty: float = 1.0
@@ -592,10 +597,12 @@ class KiwoomBroker(BrokerBase):
         except BrokerError:
             # Unknown or unreachable: treat as not tradable rather than guessing.
             return StockInfo(code=code, tradable=False)
+        market_raw = str(data.get("mrkt_tp") or "").strip()
         return StockInfo(
             code=code,
             name=str(data.get("stk_nm") or ""),
-            market=str(data.get("mrkt_tp") or KOSPI),
+            market=market_raw or KOSPI,
+            market_raw=market_raw,
             tradable=str(data.get("trde_stop_yn") or "N").upper() != "Y",
             previous_close=abs(_to_float(data.get("base_pric") or data.get("prev_close"))),
         )

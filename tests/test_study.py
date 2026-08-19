@@ -553,3 +553,58 @@ def test_the_broker_is_not_consulted_when_pykrx_answers(monkeypatch):
     codes, source = market_codes("kospi", as_of=date(2026, 8, 19), broker=_Broker())
     assert codes == ["005930"]
     assert "pykrx" in source
+
+
+# ---------------------------------------------------------------------------
+# The strong-close pattern, held to the same standard
+# ---------------------------------------------------------------------------
+
+
+def test_a_strong_close_in_an_uptrend_on_volume_is_an_event():
+    from study import find_strength_events
+
+    closes = [100 + i for i in range(45)]
+    highs = [c * 1.03 for c in closes]
+    lows = [c * 0.97 for c in closes]
+    volumes = [1000.0] * 45
+    highs[40] = closes[40] * 1.001          # finishes on its high
+    volumes[40] = 4000.0
+    bars = _daily(closes)
+    bars["high"] = highs
+    bars["low"] = lows
+    bars["volume"] = volumes
+
+    events = find_strength_events("X", bars)
+    assert [str(e.trigger_date)[:10] for e in events] == [str(bars.index[40])[:10]]
+
+
+def test_a_strong_close_in_a_downtrend_is_not_an_event():
+    from study import find_strength_events
+
+    closes = [200 - i for i in range(45)]
+    bars = _daily(closes)
+    bars["high"] = [c * 1.001 for c in closes]     # every day closes on its high
+    bars["low"] = [c * 0.97 for c in closes]
+    bars["volume"] = [4000.0] * 45
+    assert find_strength_events("X", bars) == []
+
+
+def test_a_strong_close_on_ordinary_volume_is_not_an_event():
+    from study import find_strength_events
+
+    closes = [100 + i for i in range(45)]
+    bars = _daily(closes)
+    bars["high"] = [c * 1.001 for c in closes]
+    bars["low"] = [c * 0.97 for c in closes]
+    bars["volume"] = [1000.0] * 45                 # never above its own average
+    assert find_strength_events("X", bars) == []
+
+
+def test_the_strong_close_report_is_titled_for_what_it_measured():
+    report = format_bounce_study(
+        [_stats_with([0.01] * 30)],
+        down_days=3, drop_pct=0.2, cost_pct=0.0038, limit_down=False,
+        pattern="strong-close",
+    )
+    assert "STRONG CLOSE, NEXT SESSION" in report
+    assert "top 30% of the day's range" in report

@@ -154,6 +154,82 @@ def find_bounce_events(
     return events
 
 
+def find_strength_events(
+    code: str,
+    bars: pd.DataFrame,
+    close_strength: float = 0.7,
+    trend_ema: int = 20,
+    volume_mult: float = 1.2,
+    volume_period: int = 20,
+    **_ignored,
+) -> list[BounceEvent]:
+    """Days that closed strong, in an uptrend, on volume.
+
+    The mirror image of the drop pattern, and the entry the configured
+    close_auction strategy actually uses. It gets measured the same way for
+    the same reason: a rule nobody has held to the standard is not a better
+    rule, only an untested one.
+    """
+    from indicators import ema, rolling_mean_volume
+
+    warmup = max(trend_ema, volume_period) + 2
+    if len(bars) < warmup + 2:
+        return []
+    closes = bars["close"].astype(float)
+    trend = ema(closes, trend_ema)
+    avg_volume = rolling_mean_volume(bars, volume_period).shift(1)
+
+    events: list[BounceEvent] = []
+    for i in range(warmup, len(bars) - 1):
+        high = float(bars["high"].iloc[i])
+        low = float(bars["low"].iloc[i])
+        close = float(closes.iloc[i])
+        span = high - low
+        if span <= 0 or close <= 0:
+            continue
+        if (close - low) / span < close_strength:
+            continue
+        level = trend.iloc[i]
+        if pd.isna(level) or close <= float(level):
+            continue
+        average = avg_volume.iloc[i]
+        if pd.isna(average) or float(average) <= 0:
+            continue
+        if float(bars["volume"].iloc[i]) < volume_mult * float(average):
+            continue
+
+        nxt = bars.iloc[i + 1]
+        if float(nxt["open"]) <= 0:
+            continue
+        events.append(
+            BounceEvent(
+                code=code,
+                trigger_date=bars.index[i],
+                drop_pct=(close - low) / span,
+                entry_close=close,
+                next_open=float(nxt["open"]),
+                next_close=float(nxt["close"]),
+            )
+        )
+    return events
+
+
+#: Pattern name -> (finder, report title, description template).
+PATTERNS = {
+    "drop": (
+        find_bounce_events,
+        "DROP AND BOUNCE",
+        "{down_days} consecutive down sessions falling {drop_pct:.0%} or more in total.",
+    ),
+    "strong-close": (
+        find_strength_events,
+        "STRONG CLOSE, NEXT SESSION",
+        "a close in the top {top:.0%} of the day's range, above the 20-day EMA, "
+        "on 1.2x volume.",
+    ),
+}
+
+
 def format_bounce_study(
     stats: Sequence[BounceStats],
     down_days: int,
@@ -162,13 +238,21 @@ def format_bounce_study(
     limit_down: bool,
     survivorship_note: bool = False,
     per_stock: bool = True,
+    pattern: str = "drop",
 ) -> str:
     width = 100
     lines = ["=" * width]
-    title = "TWO-DAY DROP, NEXT-DAY BOUNCE" if down_days == 2 else "DROP AND BOUNCE"
+    if pattern != "drop":
+        title = PATTERNS[pattern][1]
+    else:
+        title = "TWO-DAY DROP, NEXT-DAY BOUNCE" if down_days == 2 else "DROP AND BOUNCE"
     lines += [title.center(width), "=" * width, ""]
 
-    if limit_down:
+    if pattern == "strong-close":
+        lines.append(
+            "  Pattern: " + PATTERNS[pattern][2].format(top=1.0 - 0.7)
+        )
+    elif limit_down:
         lines.append(
             f"  Pattern: {down_days} consecutive sessions closing at the -30% limit."
         )
@@ -665,6 +749,7 @@ def run_bounce_study(
     drop_pct: float = 0.15,
     limit_down: bool = False,
     progress: "Callable[[int, int], None] | None" = None,
+    pattern: str = "drop",
 ) -> list[BounceStats]:
     from datetime import datetime
 
@@ -696,8 +781,12 @@ def run_bounce_study(
         if barset.synthetic:
             logger.warning("%s: synthetic bars - excluded from the study", code)
         else:
-            stats.events = find_bounce_events(
-                code, barset.bars, down_days, drop_pct, limit_down
-            )
+            finder = PATTERNS[pattern][0]
+            if pattern == "drop":
+                stats.events = finder(
+                    code, barset.bars, down_days, drop_pct, limit_down
+                )
+            else:
+                stats.events = finder(code, barset.bars)
         out.append(stats)
     return out

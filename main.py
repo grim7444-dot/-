@@ -764,9 +764,13 @@ def cmd_study_bounce(args: argparse.Namespace) -> int:
         + tax
     ) / 10_000.0
 
+    what = (
+        f"{args.down_days} consecutive down sessions"
+        if args.pattern == "drop"
+        else "strong closes in an uptrend"
+    )
     print(
-        f"\nScanning {args.months} month(s) of daily bars for "
-        f"{args.down_days} consecutive down sessions ...",
+        f"\nScanning {args.months} month(s) of daily bars for {what} ...",
         flush=True,
     )
     def progress(done: int, total: int) -> None:
@@ -781,6 +785,7 @@ def cmd_study_bounce(args: argparse.Namespace) -> int:
         down_days=args.down_days,
         drop_pct=abs(args.drop) / 100.0,
         limit_down=bool(args.limit_down),
+        pattern=args.pattern,
     )
     print()
     print(
@@ -792,6 +797,7 @@ def cmd_study_bounce(args: argparse.Namespace) -> int:
             limit_down=bool(args.limit_down),
             survivorship_note=survivorship,
             per_stock=len(universe) <= 40,
+            pattern=args.pattern,
         )
     )
     return 0
@@ -1524,6 +1530,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="test these codes instead of the configured universe, e.g. "
              "096770,058470 (an out-of-sample check: same rule, different stocks)",
+    )
+    study.add_argument(
+        "--pattern",
+        choices=("drop", "strong-close"),
+        default="drop",
+        help="drop: N down sessions then a bounce. strong-close: the entry the "
+             "configured close_auction strategy uses, held to the same standard",
     )
     study.add_argument(
         "--market",

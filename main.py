@@ -689,6 +689,52 @@ def cmd_profile(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_study_bounce(args: argparse.Namespace) -> int:
+    """Measure the drop-then-bounce pattern on the configured universe.
+
+    Places no orders and reads only daily bars. It exists because "I have seen
+    this happen a lot" and "this happens more often than not" are different
+    claims, and only one of them can be checked.
+    """
+    from study import format_bounce_study, run_bounce_study
+
+    cli_live = bool(getattr(args, "live", False))
+    rt = build_runtime(args, cli_live=cli_live, force_dry_run=not cli_live)
+
+    costs = rt.config.get("costs") or {}
+    tax = max(float(v) for v in (costs.get("sell_tax_bps") or {"x": 0.0}).values())
+    cost_pct = (
+        2 * float(costs.get("commission_bps", 0.0))
+        + 2 * float(costs.get("slippage_bps", 0.0))
+        + tax
+    ) / 10_000.0
+
+    print(
+        f"\nScanning {args.months} month(s) of daily bars for "
+        f"{args.down_days} consecutive down sessions ...",
+        flush=True,
+    )
+    stats = run_bounce_study(
+        rt.universe,
+        rt.market_data,
+        months=args.months,
+        down_days=args.down_days,
+        drop_pct=abs(args.drop) / 100.0,
+        limit_down=bool(args.limit_down),
+    )
+    print()
+    print(
+        format_bounce_study(
+            stats,
+            down_days=args.down_days,
+            drop_pct=abs(args.drop) / 100.0,
+            cost_pct=cost_pct,
+            limit_down=bool(args.limit_down),
+        )
+    )
+    return 0
+
+
 def cmd_backtest(args: argparse.Namespace) -> int:
     from backtest import Backtester, format_result
 
@@ -1394,6 +1440,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="derive the KRX holiday list from pykrx and print it for config.yaml",
     )
 
+    study = sub.add_parser(
+        "study-bounce",
+        help="measure whether a multi-day drop is followed by a bounce",
+    )
+    study.add_argument("--months", type=int, default=24, help="history to scan (default: 24)")
+    study.add_argument(
+        "--down-days", type=int, default=2, help="consecutive losing sessions (default: 2)"
+    )
+    study.add_argument(
+        "--drop", type=float, default=15.0,
+        help="minimum combined fall over those days, in percent (default: 15)",
+    )
+    study.add_argument(
+        "--limit-down",
+        action="store_true",
+        help="require every day to close at the -30%% limit instead of --drop",
+    )
+    study.add_argument(
+        "--live", action="store_true", help="read bars through the live account"
+    )
+
     bt = sub.add_parser("backtest", help="run a historical backtest")
     bt.add_argument("--months", type=int, default=6, help="months of history (default: 6)")
 
@@ -1464,6 +1531,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "profile":
         return cmd_profile(args)
+    if args.command == "study-bounce":
+        return cmd_study_bounce(args)
     if args.command == "backtest":
         return cmd_backtest(args)
     if args.command == "paper":

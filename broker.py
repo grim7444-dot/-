@@ -529,6 +529,8 @@ class KiwoomBroker(BrokerBase):
     #: so ``last_balance_fields`` keeps the raw response for inspection.
     EQUITY_FIELDS = ("prsm_dpst_aset_amt", "tot_est_amt", "tot_evlt_amt")
     CASH_FIELDS = ("ord_alow_amt", "entr", "dpst", "d2_entra", "prsm_dpst")
+    #: Borrowings included in the account total but not spendable.
+    LOAN_FIELDS = ("tot_loan_amt", "tot_crd_loan_amt", "tot_crd_ls_amt")
 
     def get_account(self) -> AccountSnapshot:
         data = self._call(
@@ -547,11 +549,32 @@ class KiwoomBroker(BrokerBase):
         }
         equity = _first_amount(data, self.EQUITY_FIELDS)
         cash = _first_amount(data, self.CASH_FIELDS)
-        # `tot_evlt_amt` is the valuation of the holdings alone. Whichever
-        # field supplied it, the account cannot be worth less than its stock
-        # plus its cash, and reporting it as less understates every risk
-        # figure derived from equity.
         holdings_value = _to_float(data.get("tot_evlt_amt"))
+
+        # This TR reports no deposit of its own: a real account showed
+        # prsm_dpst_aset_amt 550,310 and tot_evlt_amt 273,960 with no cash
+        # field at all, the missing 276,350 being the settled proceeds of a
+        # sale. Total assets are deposit + holdings - borrowings, so the
+        # deposit falls out of the identity. Cash reading zero is not
+        # cosmetic -- it fails the funding check on every buy, which is to
+        # say the bot would never open a position again.
+        if not cash and equity > holdings_value:
+            loans = sum(_to_float(data.get(name)) for name in self.LOAN_FIELDS)
+            derived = equity - holdings_value - loans
+            if derived > 0:
+                cash = derived
+                logger.info(
+                    "no deposit field in the balance response; derived cash "
+                    "%s from total %s - holdings %s - loans %s",
+                    f"{cash:,.0f}",
+                    f"{equity:,.0f}",
+                    f"{holdings_value:,.0f}",
+                    f"{loans:,.0f}",
+                )
+
+        # Whichever field supplied it, the account cannot be worth less than
+        # its stock plus its cash, and reporting it as less understates every
+        # risk figure derived from equity.
         floor = holdings_value + cash
         if floor > equity:
             logger.warning(

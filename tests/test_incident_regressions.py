@@ -340,3 +340,49 @@ def test_make_console_tolerant_sets_a_forgiving_error_handler(monkeypatch, tmp_p
         print("em dash: " + chr(0x2014) + " done")  # unguarded, this raises
 
     assert "done" in target.read_text(encoding="cp949")
+
+
+# ---------------------------------------------------------------------------
+# 7. the deposit is derived when the balance TR does not report one
+# ---------------------------------------------------------------------------
+
+#: The real response from a live account on 2026-08-19, trimmed to the scalar
+#: fields. Note what is absent: there is no deposit field of any name.
+LIVE_BALANCE = {
+    "prsm_dpst_aset_amt": "000000000550310",
+    "tot_evlt_amt": "000000000273960",
+    "tot_pur_amt": "000000000299160",
+    "tot_evlt_pl": "-00000000025826",
+    "tot_prft_rt": "-8.63",
+    "tot_loan_amt": "000000000000000",
+    "tot_crd_loan_amt": "000000000000000",
+    "tot_crd_ls_amt": "000000000000000",
+    "return_code": "0",
+}
+
+
+def test_deposit_is_derived_from_total_assets_minus_holdings():
+    account = _account_broker(dict(LIVE_BALANCE)).get_account()
+    assert account.equity == pytest.approx(550_310)
+    assert account.cash == pytest.approx(276_350)
+    assert account.buying_power == pytest.approx(276_350)
+
+
+def test_borrowings_are_not_counted_as_spendable_cash():
+    payload = dict(LIVE_BALANCE, tot_loan_amt="000000000100000")
+    assert _account_broker(payload).get_account().cash == pytest.approx(176_350)
+
+
+def test_an_explicit_deposit_field_wins_over_the_derivation():
+    payload = dict(LIVE_BALANCE, entr="000000000276350")
+    broker = _account_broker(payload)
+    assert broker.get_account().cash == pytest.approx(276_350)
+
+
+def test_a_fully_invested_account_derives_no_cash():
+    payload = dict(
+        LIVE_BALANCE,
+        prsm_dpst_aset_amt="000000000273960",
+        tot_evlt_amt="000000000273960",
+    )
+    assert _account_broker(payload).get_account().cash == 0.0

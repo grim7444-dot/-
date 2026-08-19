@@ -38,6 +38,11 @@ echo.
 echo ===============================================================
 echo   Running the connection check (READ ONLY, no orders)
 echo ===============================================================
+REM Notepad reads a file with no BOM as UTF-8, so the output has to BE UTF-8 or
+REM every Korean label arrives as mojibake. chcp 65001 makes the console agree,
+REM so `type` below stays readable too.
+chcp 65001 >nul
+set PYTHONIOENCODING=utf-8
 python main.py check --live > "%~dp0result.txt" 2>&1
 type "%~dp0result.txt"
 goto :done

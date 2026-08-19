@@ -223,7 +223,12 @@ class BrokerBase:
         raise NotImplementedError
 
     def get_chart(
-        self, code: str, timeframe: str, start: datetime, end: datetime
+        self,
+        code: str,
+        timeframe: str,
+        start: datetime,
+        end: datetime,
+        max_rows: int | None = None,
     ) -> pd.DataFrame | None:
         return None
 
@@ -488,12 +493,19 @@ class KiwoomBroker(BrokerBase):
         api_id_key: str,
         body: Mapping[str, Any],
         description: str,
+        enough: Callable[[list[dict[str, Any]]], bool] | None = None,
     ) -> list[dict[str, Any]]:
         """Follow ``cont-yn``/``next-key`` and return every page.
 
         Charts and holdings can exceed one page, and stopping at the first one
         silently truncates history - which would quietly shorten every
         indicator lookback computed from it.
+
+        *enough* stops early once the caller has what it needs. Kiwoom returns
+        minute charts newest-first, so a caller that wants the last few hundred
+        bars gets them from the first page or two; paging to the cap instead
+        pulled about twelve thousand bars per stock per cycle, taking ten
+        seconds each and burning the rate limit for data nothing read.
         """
         pages: list[dict[str, Any]] = []
         cont_yn, next_key = "N", ""
@@ -502,6 +514,8 @@ class KiwoomBroker(BrokerBase):
                 endpoint_key, api_id_key, body, description, cont_yn, next_key
             )
             pages.append(payload)
+            if enough is not None and enough(pages):
+                return pages
             if cont_yn != "Y" or not next_key:
                 break
         else:
@@ -613,7 +627,12 @@ class KiwoomBroker(BrokerBase):
         return [str(r.get("stk_cd") or "").strip() for r in rows if r.get("stk_cd")]
 
     def get_chart(
-        self, code: str, timeframe: str, start: datetime, end: datetime
+        self,
+        code: str,
+        timeframe: str,
+        start: datetime,
+        end: datetime,
+        max_rows: int | None = None,
     ) -> pd.DataFrame | None:
         """Intraday/daily bars from Kiwoom - pykrx cannot serve minute data."""
         intraday = timeframe.endswith("Min")
@@ -626,12 +645,22 @@ class KiwoomBroker(BrokerBase):
             key = "daily_chart"
         # Charts routinely span several pages; taking only the first would
         # silently shorten every lookback computed from these bars.
-        rows: list[Mapping[str, Any]] = []
-        for page in self._call_paged("chart", key, body, f"chart({code},{timeframe})"):
-            rows.extend(
+        def _rows_of(page: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+            return list(
                 page.get("output")
                 or next((v for v in page.values() if isinstance(v, list) and v), [])
             )
+
+        enough = None
+        if max_rows:
+            def enough(pages: list[dict[str, Any]]) -> bool:
+                return sum(len(_rows_of(p)) for p in pages) >= max_rows
+
+        rows: list[Mapping[str, Any]] = []
+        for page in self._call_paged(
+            "chart", key, body, f"chart({code},{timeframe})", enough=enough
+        ):
+            rows.extend(_rows_of(page))
         if not rows:
             return None
         return _chart_frame(rows, intraday)

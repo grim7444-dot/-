@@ -330,3 +330,100 @@ def run_profile(
         )
 
     return profiles, correlation_matrix(barsets)
+
+
+# ---------------------------------------------------------------------------
+# Timeframe sweep
+# ---------------------------------------------------------------------------
+
+#: Candidate intraday timeframes for a day-trade stock, shortest first.
+SWEEP_TIMEFRAMES = ("3Min", "5Min", "10Min", "15Min", "30Min", "60Min")
+
+
+def atr_sweep(
+    codes: Mapping[str, Mapping[str, Any]],
+    market_data: MarketData,
+    round_trip_cost_pct: float,
+    min_edge_mult: float,
+    atr_trail_mult: float,
+    atr_period: int = 14,
+    bars: int = 400,
+) -> str:
+    """Measure ATR at each candidate timeframe and say which can pay its costs.
+
+    The timeframe for a day trade is a cost decision before it is anything
+    else. A bar whose typical range is smaller than the round trip cannot
+    produce a winning trade that keeps more than it pays, however good the
+    entry rule is.
+
+    This measures rather than extrapolates. Estimating minute-bar ATR from
+    daily ATR by the square root of time overstated it by a factor of two to
+    three on these stocks, and a gate set from that estimate silently refused
+    every entry.
+    """
+    end = datetime.now(KST)
+    # What a winning trade keeps is on the scale of the trail distance, so
+    # that is what has to clear the round trip -- see Scalping.min_atr_pct.
+    threshold = round_trip_cost_pct * min_edge_mult / max(atr_trail_mult, 0.1)
+
+    width = 100
+    lines = ["=" * width, "ATR BY TIMEFRAME".center(width), "=" * width, ""]
+    lines.append(
+        f"  Round trip {round_trip_cost_pct:.2%} x {min_edge_mult:g} edge "
+        f"/ {atr_trail_mult:g} ATR trail  ->  a bar must show at least "
+        f"{threshold:.2%}"
+    )
+    lines.append("")
+    header = f"  {'code':<8} {'name':<14}" + "".join(f"{tf:>9}" for tf in SWEEP_TIMEFRAMES)
+    lines.append(header)
+    lines.append("  " + "-" * (width - 4))
+
+    verdicts: dict[str, str] = {}
+    for code, cfg in codes.items():
+        code = str(code)
+        name = str(cfg.get("name") or "")[:13]
+        row = f"  {code:<8} {name:<14}"
+        first_ok = ""
+        for timeframe in SWEEP_TIMEFRAMES:
+            try:
+                barset = market_data.get_bars(
+                    code=code,
+                    timeframe=timeframe,
+                    lookback_bars=bars,
+                    end=end,
+                    market=str(cfg.get("market") or KOSPI),
+                )
+            except Exception as exc:                     # pragma: no cover - network
+                logger.warning("%s %s: %s", code, timeframe, exc)
+                row += f"{'-':>9}"
+                continue
+            frame = barset.bars
+            if len(frame) < atr_period + 2 or barset.synthetic:
+                row += f"{'-':>9}"
+                continue
+            series = atr_indicator(frame, atr_period).dropna()
+            close = float(frame["close"].iloc[-1])
+            if series.empty or close <= 0:
+                row += f"{'-':>9}"
+                continue
+            pct = float(series.iloc[-1]) / close
+            mark = "*" if pct >= threshold else " "
+            row += f"{pct:>8.2%}{mark}"
+            if not first_ok and pct >= threshold:
+                first_ok = timeframe
+        verdicts[code] = first_ok
+        lines.append(row)
+
+    lines += ["", "  * = clears the cost threshold", ""]
+    lines.append("  -- Shortest timeframe that pays for itself " + "-" * (width - 47))
+    for code, timeframe in verdicts.items():
+        name = str(codes[code].get("name") or "")
+        if timeframe:
+            lines.append(f"    {code} {name:<14} {timeframe}")
+        else:
+            lines.append(
+                f"    {code} {name:<14} none of these - costs exceed the range at "
+                "every timeframe measured"
+            )
+    lines.append("=" * width)
+    return "\n".join(lines)

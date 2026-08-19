@@ -71,7 +71,12 @@ class IntradayProvider(Protocol):
     """Anything that can serve minute bars - in practice, the broker."""
 
     def get_chart(
-        self, code: str, timeframe: str, start: datetime, end: datetime
+        self,
+        code: str,
+        timeframe: str,
+        start: datetime,
+        end: datetime,
+        max_rows: int | None = None,
     ) -> pd.DataFrame | None: ...
 
 
@@ -331,7 +336,9 @@ class MarketData:
                 ):
                     return BarSet(code, timeframe, _tail(window, lookback_bars), "cache", market)
 
-        frame, source = self._fetch_live(code, timeframe, start, end, market)
+        frame, source = self._fetch_live(
+            code, timeframe, start, end, market, lookback_bars=lookback_bars
+        )
         if frame is not None and not frame.empty:
             if use_cache:
                 write_cache(self.cache_dir, code, timeframe, frame)
@@ -386,12 +393,22 @@ class MarketData:
         return last.date() >= expected
 
     def _fetch_live(
-        self, code: str, timeframe: str, start: datetime, end: datetime, market: str
+        self,
+        code: str,
+        timeframe: str,
+        start: datetime,
+        end: datetime,
+        market: str,
+        lookback_bars: int | None = None,
     ) -> tuple[pd.DataFrame | None, Source]:
         if not self.allow_network:
             return None, "synthetic"
+        # A generous multiple of what the caller asked for: enough that the
+        # window is never short, small enough that a minute chart stops after
+        # a page or two instead of pulling months nothing will read.
+        max_rows = int(lookback_bars * 3) if lookback_bars else None
         if is_intraday(timeframe):
-            return self._fetch_broker(code, timeframe, start, end), "broker"
+            return self._fetch_broker(code, timeframe, start, end, max_rows), "broker"
         frame = self._fetch_pykrx_daily(code, start, end)
         if frame is not None and not frame.empty:
             return frame, "pykrx"
@@ -400,10 +417,15 @@ class MarketData:
         # stocks already use, so there is a second source to try before
         # falling back to a cache that may be stale or to invented numbers.
         logger.info("pykrx returned nothing for %s; trying the broker chart", code)
-        return self._fetch_broker(code, "1Day", start, end), "broker"
+        return self._fetch_broker(code, "1Day", start, end, max_rows), "broker"
 
     def _fetch_broker(
-        self, code: str, timeframe: str, start: datetime, end: datetime
+        self,
+        code: str,
+        timeframe: str,
+        start: datetime,
+        end: datetime,
+        max_rows: int | None = None,
     ) -> pd.DataFrame | None:
         """Bars from the broker's chart call.
 
@@ -416,7 +438,9 @@ class MarketData:
             )
             return None
         try:
-            frame = self.intraday_provider.get_chart(code, timeframe, start, end)
+            frame = self.intraday_provider.get_chart(
+                code, timeframe, start, end, max_rows=max_rows
+            )
         except Exception as exc:
             logger.warning("broker chart fetch failed for %s %s: %s", code, timeframe, exc)
             return None

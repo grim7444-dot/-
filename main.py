@@ -206,7 +206,7 @@ class TradingEngine:
         self.intervals: dict[str, int] = dict(schedule.get("intervals") or {})
         self.tick_seconds = int(schedule.get("tick_seconds", 30))
         self.closed_sleep = int(schedule.get("closed_market_sleep_seconds", 300))
-        self._next_due: dict[str, float] = {}
+        self._last_ran: dict[str, float] = {}
         # Parsed once at construction so a malformed window fails at start-up
         # rather than at 15:19 on the one day it matters.
         self._session_rules: dict[str, SessionRules] = {
@@ -223,25 +223,46 @@ class TradingEngine:
             return int(self.intervals[timeframe])
         return int(timeframe_delta(timeframe).total_seconds())
 
-    def due_codes(self, now: float) -> list[str]:
+    #: Cadence while a stock's entry window is open, in seconds.
+    ENTRY_WINDOW_INTERVAL = 60
+
+    def due_codes(self, now: float, moment: datetime | None = None) -> list[str]:
         """Stocks to look at this tick.
 
-        Signal cadence and risk cadence are not the same thing. A daily stock
-        is worth a new entry decision once a day, but its hard stop is the only
-        thing standing between an open position and an unbounded loss -- and
-        Kiwoom holds no resting stop order, so nothing checks it while this
-        loop is not looking. An open position is therefore always due,
-        whatever its timeframe.
+        Three cadences, not one:
+
+        * an **open position** is always due. Its hard stop is the only thing
+          between it and an unbounded loss, and Kiwoom holds no resting stop
+          order, so nothing checks it while this loop is not looking;
+        * a stock **inside its entry window** is due at least once a minute.
+          A close-based entry has a four-minute window, and its bars are
+          daily: on the timeframe cadence alone it would be looked at once a
+          day, almost never during those four minutes, and would therefore
+          never trade at all;
+        * everything else is due on its strategy's own cadence.
         """
+        moment = moment or datetime.now(KST)
         held = set(self.rt.portfolio.positions())
-        return [
-            c
-            for c in self.rt.strategies
-            if c in held or now >= self._next_due.get(c, 0.0)
-        ]
+        due: list[str] = []
+        for code in self.rt.strategies:
+            if code in held:
+                due.append(code)
+                continue
+            if now - self._last_ran.get(code, float("-inf")) >= self._interval_now(
+                code, moment
+            ):
+                due.append(code)
+        return due
+
+    def _interval_now(self, code: str, moment: datetime) -> float:
+        base = float(self.interval_for(code))
+        rules = self.session_rules(code)
+        if rules.entry_from is not None and rules.entry_allowed(moment)[0]:
+            return min(base, float(self.ENTRY_WINDOW_INTERVAL))
+        return base
 
     def mark_ran(self, code: str, now: float) -> None:
-        self._next_due[code] = now + self.interval_for(code)
+        self._last_ran[code] = now
 
     # -- one cycle ---------------------------------------------------------
 
@@ -601,7 +622,7 @@ class TradingEngine:
 
 
 def cmd_profile(args: argparse.Namespace) -> int:
-    from universe_profile import format_profiles, run_profile
+    from universe_profile import SWEEP_TIMEFRAMES, atr_sweep, format_profiles, run_profile
 
     # pykrx serves daily bars, but minute bars only come from the broker -- so
     # without one, every 60-minute stock profiles on synthetic data and the
@@ -609,6 +630,36 @@ def cmd_profile(args: argparse.Namespace) -> int:
     # is why --live is offered here at all.
     cli_live = bool(getattr(args, "live", False))
     rt = build_runtime(args, cli_live=cli_live, force_dry_run=not cli_live)
+
+    if getattr(args, "atr_sweep", False):
+        day_traders = {
+            c: cfg for c, cfg in rt.universe.items() if cfg.get("strategy") == "scalping"
+        }
+        if not day_traders:
+            print("\n  No stocks are configured for day trading; nothing to sweep.")
+            return 0
+        if rt.broker.dry_run:
+            print(
+                "\n  A sweep needs real minute bars. Run "
+                "`python main.py profile --atr-sweep --live`."
+            )
+            return 1
+        sample = next(iter(day_traders))
+        strategy = rt.strategies[sample]
+        print(f"\nMeasuring {len(day_traders)} stocks at {len(SWEEP_TIMEFRAMES)} "
+              "timeframes; this takes a minute ...", flush=True)
+        print()
+        print(
+            atr_sweep(
+                day_traders,
+                rt.market_data,
+                round_trip_cost_pct=strategy.round_trip_cost_pct,
+                min_edge_mult=strategy.min_edge_mult,
+                atr_trail_mult=strategy.atr_trail_mult,
+                atr_period=rt.risk.atr_period,
+            )
+        )
+        return 0
 
     intraday = [c for c, cfg in rt.universe.items() if cfg.get("timeframe") != "1Day"]
     if intraday and rt.broker.dry_run:
@@ -1332,6 +1383,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--live",
         action="store_true",
         help="read intraday charts from the live account (read-only, no orders)",
+    )
+    prof.add_argument(
+        "--atr-sweep",
+        action="store_true",
+        help="measure ATR at 3/5/10/15/30/60-minute bars for the day-trade stocks",
     )
     prof.add_argument(
         "--refresh-calendar",

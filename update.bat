@@ -15,6 +15,12 @@ REM ---------------------------------------------------------------------------
 setlocal
 cd /d "%~dp0"
 
+REM %~dp0 ends with a backslash, and "C:\path\" makes the trailing backslash
+REM escape the closing quote -- tar then sees one mangled argument and cannot
+REM chdir anywhere. Strip it before quoting.
+set "TARGET=%~dp0"
+if "%TARGET:~-1%"=="\" set "TARGET=%TARGET:~0,-1%"
+
 echo.
 echo ===============================================================
 echo   Updating the bot from GitHub
@@ -22,7 +28,7 @@ echo ===============================================================
 curl -L -o "%TEMP%\krxbot.zip" "https://github.com/grim7444-dot/-/archive/refs/heads/claude/krx-8stock-trading-bot.zip"
 if errorlevel 1 goto :failed
 
-tar -xf "%TEMP%\krxbot.zip" -C "%~dp0" --strip-components=1
+tar -xf "%TEMP%\krxbot.zip" -C "%TARGET%" --strip-components=1
 if errorlevel 1 goto :failed
 
 del "%TEMP%\krxbot.zip" >nul 2>&1
@@ -38,7 +44,9 @@ goto :done
 
 :failed
 echo.
-echo   Update FAILED. Check your internet connection and try again.
+echo   Update FAILED. The error printed just above says which step.
+echo   "curl" lines mean the download; "tar" lines mean unpacking.
+echo   Send that message over -- the bot itself was not changed.
 goto :end
 
 :done

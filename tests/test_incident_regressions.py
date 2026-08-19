@@ -703,3 +703,96 @@ def test_a_daily_stock_with_a_position_is_due_every_tick(workdir):
     )
     assert code in engine.due_codes(now + 30)
     assert code in engine.due_codes(now + 3600)
+
+
+# ---------------------------------------------------------------------------
+# 12. observation reads real data and cannot order
+# ---------------------------------------------------------------------------
+
+
+def _credentials(label: str, with_keys: bool):
+    from settings import Credentials, Secret
+
+    blank = Secret("")
+    key = Secret("k" * 43) if with_keys else blank
+    secret = Secret("s" * 43) if with_keys else blank
+    return Credentials(
+        app_key=key,
+        secret_key=secret,
+        account_no=blank,
+        telegram_token=blank,
+        telegram_chat_id=blank,
+        loaded_for=label,
+    )
+
+
+def test_observation_uses_the_real_broker_when_credentials_exist(monkeypatch, workdir):
+    """Watching a synthetic random walk all day is worse than not watching."""
+    import broker as broker_module
+    from broker import DryRunBroker, ReadOnlyBroker
+    from settings import resolve_mode
+
+    monkeypatch.setattr(broker_module, "KiwoomBroker", lambda *a, **k: object())
+    decision = resolve_mode({}, cli_live=False)
+    creds = _credentials(decision.label, with_keys=True)
+    built = broker_module.build_broker(decision, creds, {}, force_dry_run=True)
+    assert isinstance(built, ReadOnlyBroker)
+    assert not isinstance(built, DryRunBroker)
+    assert built.dry_run is True
+
+
+def test_observation_falls_back_to_simulation_without_credentials(workdir):
+    from broker import DryRunBroker, build_broker
+    from settings import resolve_mode
+
+    decision = resolve_mode({}, cli_live=False)
+    built = build_broker(decision, _credentials(decision.label, with_keys=False), {}, force_dry_run=True)
+    assert isinstance(built, DryRunBroker)
+
+
+class _RecordingInner:
+    dry_run = False
+
+    def __init__(self):
+        self.orders = 0
+
+    def submit_order(self, *a, **k):
+        self.orders += 1
+        raise AssertionError("a read-only broker must not reach the order path")
+
+    def cancel_all_orders(self):
+        raise AssertionError("a read-only broker must not cancel")
+
+    def close_all_positions(self):
+        raise AssertionError("a read-only broker must not flatten")
+
+    def get_chart(self, code, timeframe, start, end, max_rows=None):
+        return "real bars"
+
+
+def test_a_read_only_broker_refuses_every_write_path():
+    from broker import ReadOnlyBroker
+
+    inner = _RecordingInner()
+    observer = ReadOnlyBroker(inner)
+
+    result = observer.submit_order("002990", "LONG", 10)
+    assert result.submitted is False
+    assert observer.cancel_all_orders() == 0
+    assert observer.close_all_positions() == 0
+    assert inner.orders == 0
+
+
+def test_a_read_only_broker_still_serves_real_bars():
+    from broker import ReadOnlyBroker
+
+    observer = ReadOnlyBroker(_RecordingInner())
+    assert observer.get_chart("002990", "30Min", None, None) == "real bars"
+
+
+def test_observation_gets_its_own_mode_label():
+    """Its positions diverge from the account's, so its equity is its own."""
+    from broker import DryRunBroker, ReadOnlyBroker
+
+    assert ReadOnlyBroker(_RecordingInner()).mode_suffix == "-OBSERVE"
+    assert DryRunBroker().mode_suffix == "-SIM"

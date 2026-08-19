@@ -214,6 +214,118 @@ def find_strength_events(
     return events
 
 
+def find_volume_spike_events(
+    code: str,
+    bars: pd.DataFrame,
+    volume_mult: float = 5.0,
+    volume_period: int = 20,
+    **_ignored,
+) -> list[BounceEvent]:
+    """Days whose volume dwarfed the recent average, whatever the price did."""
+    from indicators import rolling_mean_volume
+
+    warmup = volume_period + 2
+    if len(bars) < warmup + 2:
+        return []
+    avg = rolling_mean_volume(bars, volume_period).shift(1)
+    closes = bars["close"].astype(float)
+
+    events: list[BounceEvent] = []
+    for i in range(warmup, len(bars) - 1):
+        average = avg.iloc[i]
+        if pd.isna(average) or float(average) <= 0:
+            continue
+        ratio = float(bars["volume"].iloc[i]) / float(average)
+        if ratio < volume_mult:
+            continue
+        nxt = bars.iloc[i + 1]
+        if float(closes.iloc[i]) <= 0 or float(nxt["open"]) <= 0:
+            continue
+        events.append(
+            BounceEvent(
+                code=code,
+                trigger_date=bars.index[i],
+                drop_pct=ratio,
+                entry_close=float(closes.iloc[i]),
+                next_open=float(nxt["open"]),
+                next_close=float(nxt["close"]),
+            )
+        )
+    return events
+
+
+def find_ma_cross_events(
+    code: str,
+    bars: pd.DataFrame,
+    fast: int = 5,
+    slow: int = 20,
+    **_ignored,
+) -> list[BounceEvent]:
+    """The session a fast moving average crossed above a slow one."""
+    from indicators import ema
+
+    warmup = slow + 2
+    if len(bars) < warmup + 2:
+        return []
+    closes = bars["close"].astype(float)
+    fast_ma = ema(closes, fast)
+    slow_ma = ema(closes, slow)
+
+    events: list[BounceEvent] = []
+    for i in range(warmup, len(bars) - 1):
+        now_f, now_s = fast_ma.iloc[i], slow_ma.iloc[i]
+        was_f, was_s = fast_ma.iloc[i - 1], slow_ma.iloc[i - 1]
+        if pd.isna(now_f) or pd.isna(now_s) or pd.isna(was_f) or pd.isna(was_s):
+            continue
+        if not (was_f <= was_s and now_f > now_s):
+            continue
+        nxt = bars.iloc[i + 1]
+        if float(closes.iloc[i]) <= 0 or float(nxt["open"]) <= 0:
+            continue
+        events.append(
+            BounceEvent(
+                code=code,
+                trigger_date=bars.index[i],
+                drop_pct=float(now_f / now_s - 1.0),
+                entry_close=float(closes.iloc[i]),
+                next_open=float(nxt["open"]),
+                next_close=float(nxt["close"]),
+            )
+        )
+    return events
+
+
+def find_new_high_events(
+    code: str, bars: pd.DataFrame, period: int = 20, **_ignored
+) -> list[BounceEvent]:
+    """Closes above the highest close of the previous *period* sessions."""
+    warmup = period + 2
+    if len(bars) < warmup + 2:
+        return []
+    closes = bars["close"].astype(float)
+    prior_high = closes.rolling(period).max().shift(1)
+
+    events: list[BounceEvent] = []
+    for i in range(warmup, len(bars) - 1):
+        level = prior_high.iloc[i]
+        if pd.isna(level) or float(closes.iloc[i]) <= float(level):
+            continue
+        nxt = bars.iloc[i + 1]
+        if float(nxt["open"]) <= 0:
+            continue
+        events.append(
+            BounceEvent(
+                code=code,
+                trigger_date=bars.index[i],
+                drop_pct=float(closes.iloc[i] / level - 1.0),
+                entry_close=float(closes.iloc[i]),
+                next_open=float(nxt["open"]),
+                next_close=float(nxt["close"]),
+            )
+        )
+    return events
+
+
 #: Pattern name -> (finder, report title, description template).
 PATTERNS = {
     "drop": (
@@ -224,8 +336,23 @@ PATTERNS = {
     "strong-close": (
         find_strength_events,
         "STRONG CLOSE, NEXT SESSION",
-        "a close in the top {top:.0%} of the day's range, above the 20-day EMA, "
+        "a close in the top 30% of the day's range, above the 20-day EMA, "
         "on 1.2x volume.",
+    ),
+    "volume-spike": (
+        find_volume_spike_events,
+        "VOLUME SPIKE, NEXT SESSION",
+        "volume at least 5x its own 20-day average, whatever the price did.",
+    ),
+    "ma-cross": (
+        find_ma_cross_events,
+        "5/20 CROSS, NEXT SESSION",
+        "the session the 5-day EMA crossed above the 20-day.",
+    ),
+    "new-high": (
+        find_new_high_events,
+        "20-DAY HIGH, NEXT SESSION",
+        "a close above the highest close of the previous 20 sessions.",
     ),
 }
 
@@ -248,10 +375,8 @@ def format_bounce_study(
         title = "TWO-DAY DROP, NEXT-DAY BOUNCE" if down_days == 2 else "DROP AND BOUNCE"
     lines += [title.center(width), "=" * width, ""]
 
-    if pattern == "strong-close":
-        lines.append(
-            "  Pattern: " + PATTERNS[pattern][2].format(top=1.0 - 0.7)
-        )
+    if pattern != "drop":
+        lines.append("  Pattern: " + PATTERNS[pattern][2])
     elif limit_down:
         lines.append(
             f"  Pattern: {down_days} consecutive sessions closing at the -30% limit."

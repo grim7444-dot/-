@@ -213,6 +213,11 @@ class BrokerBase:
     """Interface used by the trading loop."""
 
     dry_run: bool = True
+    #: Appended to the mode label in state.json. Equity from a simulated
+    #: account and equity from a real one are not comparable, and neither is
+    #: comparable to a run that reads the real account but never trades it --
+    #: its positions diverge from the account's the moment a signal fires.
+    mode_suffix: str = "-SIM"
 
     def get_account(self) -> AccountSnapshot:
         raise NotImplementedError
@@ -261,6 +266,7 @@ class DryRunBroker(BrokerBase):
     """Simulated broker. Never touches the network, never sends an order."""
 
     dry_run = True
+    mode_suffix = "-SIM"
 
     def __init__(
         self,
@@ -339,6 +345,7 @@ class KiwoomBroker(BrokerBase):
     """Kiwoom REST adapter (mock or live, decided by ``ModeDecision``)."""
 
     dry_run = False
+    mode_suffix = ""
 
     def __init__(
         self,
@@ -904,6 +911,90 @@ def _chart_frame(rows: list[Mapping[str, Any]], intraday: bool) -> pd.DataFrame 
 # --------------------------------------------------------------------------
 
 
+class ReadOnlyBroker(BrokerBase):
+    """A real broker with the order paths removed.
+
+    Observation needs real bars. Running it on the simulated broker instead
+    means the minute charts fall back to the synthetic generator, and what
+    gets watched all day is a random walk -- which is worse than not watching,
+    because it looks like evidence.
+
+    So this delegates every read to the real adapter and answers every write
+    with a refusal. The refusal is the point: an order path that is absent
+    cannot be reached by a bug in the loop above it, which is a stronger
+    guarantee than a flag that some code path might forget to check.
+    """
+
+    dry_run = True
+    mode_suffix = "-OBSERVE"
+
+    def __init__(self, inner: BrokerBase) -> None:
+        self.inner = inner
+        self.label = "OBSERVE"
+        self.refused: list[OrderResult] = []
+
+    # -- reads pass through -------------------------------------------------
+
+    def get_account(self) -> AccountSnapshot:
+        return self.inner.get_account()
+
+    def get_stock_info(self, code: str) -> StockInfo:
+        return self.inner.get_stock_info(code)
+
+    def open_order_codes(self) -> list[str]:
+        return self.inner.open_order_codes()
+
+    def get_chart(self, code, timeframe, start, end, max_rows=None):
+        return self.inner.get_chart(code, timeframe, start, end, max_rows=max_rows)
+
+    def get_holdings(self) -> dict[str, Holding]:
+        getter = getattr(self.inner, "get_holdings", None)
+        return getter() if getter else {}
+
+    def get_market_codes(self, market: str) -> list[str]:
+        getter = getattr(self.inner, "get_market_codes", None)
+        return getter(market) if getter else []
+
+    # -- writes are refused -------------------------------------------------
+
+    def submit_order(
+        self,
+        code: str,
+        side: str,
+        qty: float,
+        price: float | None = None,
+        stop_price: float | None = None,
+        is_exit: bool = False,
+        note: str = "",
+    ) -> OrderResult:
+        result = OrderResult(
+            code=code,
+            side=side,
+            qty=qty,
+            stop_price=stop_price,
+            submitted=False,
+            note=note or "observation",
+        )
+        self.refused.append(result)
+        logger.info(
+            "[OBSERVE] would submit %s %s x%s stop=%s (%s) - NOT sent",
+            side,
+            code,
+            qty,
+            f"{stop_price:,.0f}" if stop_price is not None else "n/a",
+            note or ("exit" if is_exit else "entry"),
+        )
+        return result
+
+    def cancel_all_orders(self) -> int:
+        logger.info("[OBSERVE] would cancel all open orders - NOT sent")
+        return 0
+
+    def close_all_positions(self) -> int:
+        logger.info("[OBSERVE] would flatten all positions - NOT sent")
+        return 0
+
+
 def build_broker(
     decision: ModeDecision,
     credentials: Credentials,
@@ -917,6 +1008,14 @@ def build_broker(
     """
     starting_equity = float((config.get("account") or {}).get("starting_equity", 10_000_000.0))
     if force_dry_run:
+        # With credentials, observation reads the real account and the real
+        # charts and refuses to trade. Without them there is nothing to read,
+        # so it falls back to simulation -- and says which it got.
+        if credentials.has_kiwoom:
+            universe = [str(c) for c in (config.get("universe") or {})]
+            return ReadOnlyBroker(
+                KiwoomBroker(decision, credentials, config, allowed_codes=universe)
+            )
         return DryRunBroker(starting_equity=starting_equity, label="DRY-RUN")
     if not credentials.has_kiwoom:
         logger.warning(

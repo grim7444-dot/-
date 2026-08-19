@@ -608,3 +608,63 @@ def test_the_strong_close_report_is_titled_for_what_it_measured():
     )
     assert "STRONG CLOSE, NEXT SESSION" in report
     assert "top 30% of the day's range" in report
+
+
+# ---------------------------------------------------------------------------
+# The other patterns
+# ---------------------------------------------------------------------------
+
+
+def _with(bars, **columns):
+    for name, values in columns.items():
+        bars[name] = values
+    return bars
+
+
+def test_a_volume_spike_is_found_regardless_of_direction():
+    from study import find_volume_spike_events
+
+    closes = [100.0] * 30
+    bars = _with(_daily(closes), volume=[1000.0] * 28 + [9000.0, 1000.0])
+    events = find_volume_spike_events("X", bars, volume_mult=5.0)
+    assert [str(e.trigger_date)[:10] for e in events] == [str(bars.index[28])[:10]]
+
+
+def test_a_volume_spike_below_the_multiple_is_not_an_event():
+    from study import find_volume_spike_events
+
+    bars = _with(_daily([100.0] * 30), volume=[1000.0] * 28 + [3000.0, 1000.0])
+    assert find_volume_spike_events("X", bars, volume_mult=5.0) == []
+
+
+def test_the_ma_cross_fires_on_the_crossing_session_only():
+    from study import find_ma_cross_events
+
+    # Falling long enough for 5 < 20, then rising through it and staying above.
+    closes = [200 - i * 2 for i in range(40)] + [125 + i * 4 for i in range(20)]
+    events = find_ma_cross_events("X", _daily(closes), fast=5, slow=20)
+    assert len(events) == 1, [str(e.trigger_date)[:10] for e in events]
+
+
+def test_a_new_high_needs_to_beat_the_prior_window_not_itself():
+    from study import find_new_high_events
+
+    flat_then_break = [100.0] * 30 + [101.0] + [100.0] * 3
+    events = find_new_high_events("X", _daily(flat_then_break), period=20)
+    assert len(events) == 1
+
+
+def test_every_pattern_is_reachable_and_titled():
+    from study import PATTERNS
+
+    for name, (finder, title, description) in PATTERNS.items():
+        assert callable(finder), name
+        assert title.strip(), name
+        assert description.strip().endswith("."), name
+        report = format_bounce_study(
+            [_stats_with([0.01] * 30)],
+            down_days=3, drop_pct=0.2, cost_pct=0.0038, limit_down=False,
+            pattern=name,
+        )
+        if name != "drop":
+            assert title in report, name

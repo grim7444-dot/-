@@ -167,7 +167,7 @@ def build_runtime(
     # starting_equity no matter which endpoint was resolved, so "LIVE with a
     # dry-run broker" must not share a label with "LIVE for real" -- otherwise
     # the simulated peak carries over and reads as a crash.
-    mode_label = decision.label if not broker.dry_run else f"{decision.label}-SIM"
+    mode_label = f"{decision.label}{getattr(broker, 'mode_suffix', '-SIM' if broker.dry_run else '')}"
     portfolio = Portfolio(
         state_path=paths.get("state_file", "state.json"),
         trades_path=paths.get("trades_csv", "trades.csv"),
@@ -764,10 +764,12 @@ def cmd_study_bounce(args: argparse.Namespace) -> int:
         + tax
     ) / 10_000.0
 
+    from study import PATTERNS
+
     what = (
         f"{args.down_days} consecutive down sessions"
         if args.pattern == "drop"
-        else "strong closes in an uptrend"
+        else PATTERNS[args.pattern][1].lower()
     )
     print(
         f"\nScanning {args.months} month(s) of daily bars for {what} ...",
@@ -882,10 +884,15 @@ def cmd_trade(args: argparse.Namespace, cli_live: bool) -> int:
         )
         return 1
 
-    if isinstance(rt.broker, DryRunBroker):
+    if rt.broker.dry_run:
+        source = (
+            "real account and real charts"
+            if getattr(rt.broker, "mode_suffix", "") == "-OBSERVE"
+            else "SIMULATED data - no credentials, so bars are synthetic"
+        )
         print(
-            f"\n[{rt.broker.label}] no orders will be sent; "
-            "intended orders are printed and logged only.\n"
+            f"\n[{getattr(rt.broker, 'label', 'DRY-RUN')}] {source}; "
+            "no orders will be sent.\n"
         )
 
     phase = rt.calendar.phase()
@@ -1533,10 +1540,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     study.add_argument(
         "--pattern",
-        choices=("drop", "strong-close"),
+        choices=("drop", "strong-close", "volume-spike", "ma-cross", "new-high"),
         default="drop",
-        help="drop: N down sessions then a bounce. strong-close: the entry the "
-             "configured close_auction strategy uses, held to the same standard",
+        help="which rule to measure. drop: N down sessions then a bounce. "
+             "strong-close: the configured close_auction entry. volume-spike, "
+             "ma-cross, new-high: common ideas, same standard",
     )
     study.add_argument(
         "--market",

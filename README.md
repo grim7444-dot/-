@@ -1,8 +1,8 @@
 # KRX 9-Stock Trading Bot
 
 A paper-first trading bot for nine KRX-listed stocks, built on the **Kiwoom
-REST API** and Python 3.10+. Five are day traded on three-minute bars; four are
-bought into the close and sold the next morning.
+REST API** and Python 3.10+. Five are day traded on thirty-minute bars; four
+are bought into the close and sold the next morning.
 
 **Paper trading is the default and the fallback.** Live trading requires three
 independent confirmations; miss any one and the run is demoted to paper with

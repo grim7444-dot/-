@@ -6,7 +6,8 @@
 
 account:
   # Used by the dry-run broker and as the backtest starting equity (KRW).
-  starting_equity: 10000000
+  # Update this to match your actual account equity before live trading.
+  starting_equity: 550000
   currency: KRW
 
 risk:

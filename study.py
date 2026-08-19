@@ -73,6 +73,11 @@ class BounceStats:
     name: str = ""
     sessions: int = 0
     events: list[BounceEvent] = field(default_factory=list)
+    #: Every session's close-to-next-open return, by date. The control the
+    #: whole study needs: a pattern that buys a stock which rose all year
+    #: shows that stock's drift, not the pattern's edge, and only a
+    #: comparison against holding it can tell the two apart.
+    baseline: "pd.Series | None" = None
 
     @property
     def count(self) -> int:
@@ -903,6 +908,7 @@ def run_bounce_study(
         stats = BounceStats(
             code=code, name=str(cfg.get("name") or ""), sessions=len(barset.bars)
         )
+        stats.baseline = overnight_returns(barset.bars)
         if barset.synthetic:
             logger.warning("%s: synthetic bars - excluded from the study", code)
         else:
@@ -920,6 +926,19 @@ def run_bounce_study(
 # ---------------------------------------------------------------------------
 # Which stocks, if any, are worth selecting
 # ---------------------------------------------------------------------------
+
+
+def overnight_returns(bars: pd.DataFrame) -> "pd.Series":
+    """Close-to-next-open return for every session, indexed by session date."""
+    if len(bars) < 2:
+        return pd.Series(dtype="float64")
+    closes = bars["close"].astype(float)
+    opens = bars["open"].astype(float)
+    values = (opens.shift(-1) / closes - 1.0).iloc[:-1]
+    values.index = [
+        getattr(ts, "date", lambda: ts)() for ts in bars.index[:-1]
+    ]
+    return values.dropna()
 
 
 def _split_date(stats: Sequence[BounceStats]):
@@ -1019,19 +1038,51 @@ def format_selection_study(
     chosen_mean = _mean_to_open(chosen_late, cost_pct)
     field_mean = _mean_to_open(field_late, cost_pct)
 
+    # The control. A stock that rose all through the test window pays any rule
+    # that buys it, so the pattern has to beat simply holding the same stocks
+    # over the same days -- gross, since holding does not pay a round trip per
+    # session.
+    held = [
+        value
+        for s, _, _, _ in chosen
+        if s.baseline is not None
+        for day, value in s.baseline.items()
+        if day >= split
+    ]
+    hold_mean = sum(held) / len(held) if held else 0.0
+
+    # And the same clustering question as everywhere else.
+    dates: dict[Any, list[float]] = {}
+    for e in chosen_late:
+        key = getattr(e.trigger_date, "date", lambda: e.trigger_date)()
+        dates.setdefault(key, []).append(e.to_open_pct - cost_pct)
+    per_date = [sum(v) / len(v) for v in dates.values()]
+    if len(per_date) > 1:
+        mean = sum(per_date) / len(per_date)
+        variance = sum((v - mean) ** 2 for v in per_date) / (len(per_date) - 1)
+        std_error = (variance / len(per_date)) ** 0.5
+        dated_t = mean / std_error if std_error else 0.0
+    else:
+        dated_t = 0.0
+
     lines += ["", "  " + "-" * (width - 4)]
     lines.append("  Out of sample, in the test window:")
     lines.append(
         f"    the {len(chosen)} chosen stocks : {chosen_mean:+.2%} "
-        f"over {len(chosen_late)} events"
+        f"over {len(chosen_late)} events on {len(per_date)} dates  (t {dated_t:+.2f})"
     )
     lines.append(
         f"    every stock            : {field_mean:+.2%} "
         f"over {len(field_late)} events"
     )
+    lines.append(
+        f"    holding those 10       : {hold_mean:+.2%} per session, "
+        f"every session, no costs"
+    )
     lines.append("")
 
     edge = chosen_mean - field_mean
+    over_hold = chosen_mean - hold_mean
     if not chosen_late:
         lines.append("  The chosen stocks produced no events in the test window, so the")
         lines.append("  selection cannot be checked at all.")
@@ -1045,19 +1096,44 @@ def format_selection_study(
         lines.append(
             "  period's. Picking stocks by past performance does not work here."
         )
-    elif edge < 0.005:
+    elif over_hold <= 0:
+        lines.append(
+            f"  The pattern returned {chosen_mean:+.2%} on these stocks while simply"
+        )
+        lines.append(
+            f"  holding them overnight returned {hold_mean:+.2%} a session. The rule adds"
+        )
+        lines.append(
+            "  nothing: it picked stocks that were going up, and any rule that bought"
+        )
+        lines.append("  them would have looked the same.")
+    elif edge < cost_pct:
         lines.append(
             f"  Selecting gained {edge:+.2%} over the field -- smaller than the"
         )
         lines.append(
             f"  {cost_pct:.2%} it costs to trade at all. Not worth acting on."
         )
-    else:
+    elif abs(dated_t) < 2.0:
         lines.append(
-            f"  Selecting gained {edge:+.2%} over the field out of sample. That is"
+            f"  Better than the field ({edge:+.2%}) and better than holding "
+            f"({over_hold:+.2%}),"
         )
         lines.append(
-            "  worth a second look -- rerun over a different split before trusting it."
+            f"  but t is {dated_t:+.2f} across {len(per_date)} dates -- inside what chance"
+        )
+        lines.append(
+            "  produces. One split of one board is not enough to act on."
+        )
+    else:
+        lines.append(
+            f"  Beats the field by {edge:+.2%}, beats holding the same stocks by"
+        )
+        lines.append(
+            f"  {over_hold:+.2%}, and survives date clustering at t {dated_t:+.2f}."
+        )
+        lines.append(
+            "  Rerun on KOSPI and on a different split before trusting it."
         )
     lines.append("=" * width)
     return "\n".join(lines)

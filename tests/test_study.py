@@ -675,14 +675,22 @@ def test_every_pattern_is_reachable_and_titled():
 # ---------------------------------------------------------------------------
 
 
-def _stock(code, early_returns, late_returns, split_day=15):
-    """A stock whose events straddle a split date."""
+def _stock(code, early_returns, late_returns, hold=0.0):
+    """A stock whose events straddle a split date.
+
+    *hold* is what simply holding it overnight paid per session, the control
+    the pattern has to beat.
+    """
     events = []
     for i, r in enumerate(early_returns):
         events.append(_event_on(f"2026-01-{1 + i:02d}", r))
     for i, r in enumerate(late_returns):
         events.append(_event_on(f"2026-02-{1 + i:02d}", r))
-    return BounceStats(code=code, name=code, sessions=700, events=events)
+    days = [pd.Timestamp(f"2026-02-{1 + i:02d}").date() for i in range(20)]
+    baseline = pd.Series([hold] * len(days), index=days)
+    return BounceStats(
+        code=code, name=code, sessions=700, events=events, baseline=baseline
+    )
 
 
 def test_selection_that_does_not_carry_over_is_called_noise():
@@ -701,27 +709,42 @@ def test_selection_that_does_not_carry_over_is_called_noise():
     assert "The ranking was noise" in report
 
 
-def test_selection_that_carries_over_is_reported_as_worth_a_look():
+def test_a_pattern_that_only_matches_the_stocks_drift_is_called_out():
+    """Picking stocks that went up is not the same as having an edge."""
     from study import format_selection_study
 
     stats = [
-        _stock("000001", [0.10] * 6, [0.06] * 6),
-        _stock("000002", [0.09] * 6, [0.05] * 6),
-        _stock("000003", [-0.05] * 6, [-0.05] * 6),
-        _stock("000004", [-0.08] * 6, [-0.06] * 6),
+        _stock("000001", [0.10] * 6, [0.05] * 6, hold=0.05),
+        _stock("000002", [0.09] * 6, [0.05] * 6, hold=0.05),
+        _stock("000003", [-0.05] * 6, [0.00] * 6, hold=0.0),
+        _stock("000004", [-0.08] * 6, [0.00] * 6, hold=0.0),
     ]
     report = format_selection_study(stats, cost_pct=0.0038, top_n=2, min_events=5)
-    assert "worth a second look" in report
+    assert "any rule that bought" in report
+
+
+def test_selection_that_beats_holding_but_lacks_dates_is_still_refused():
+    from study import format_selection_study
+
+    stats = [
+        _stock("000001", [0.10] * 6, [0.06, -0.04, 0.09, -0.05, 0.08, 0.01], hold=0.0),
+        _stock("000002", [0.09] * 6, [0.05, -0.06, 0.07, -0.03, 0.02, 0.04], hold=0.0),
+        _stock("000003", [-0.05] * 6, [-0.05] * 6, hold=0.0),
+        _stock("000004", [-0.08] * 6, [-0.06] * 6, hold=0.0),
+    ]
+    report = format_selection_study(stats, cost_pct=0.0038, top_n=2, min_events=5)
+    assert "inside what chance" in report
 
 
 def test_an_edge_smaller_than_costs_is_not_worth_acting_on():
     from study import format_selection_study
 
+    # The chosen stocks beat both the field and holding, but only just.
     stats = [
-        _stock("000001", [0.10] * 6, [0.0020] * 6),
-        _stock("000002", [0.09] * 6, [0.0020] * 6),
-        _stock("000003", [-0.05] * 6, [0.0000] * 6),
-        _stock("000004", [-0.08] * 6, [0.0000] * 6),
+        _stock("000001", [0.10] * 6, [0.0060] * 6, hold=0.0),
+        _stock("000002", [0.09] * 6, [0.0060] * 6, hold=0.0),
+        _stock("000003", [-0.05] * 6, [0.0040] * 6, hold=0.0),
+        _stock("000004", [-0.08] * 6, [0.0040] * 6, hold=0.0),
     ]
     report = format_selection_study(stats, cost_pct=0.0038, top_n=2, min_events=5)
     assert "Not worth acting on" in report

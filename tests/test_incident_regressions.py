@@ -645,3 +645,49 @@ def test_every_configured_stock_is_reached_in_a_cycle(workdir, monkeypatch):
         if cfg.get("enabled", True)
     }
     assert set(seen) == configured
+
+
+# ---------------------------------------------------------------------------
+# 11. an open position is checked every tick, whatever its timeframe
+# ---------------------------------------------------------------------------
+
+
+def _engine(workdir):
+    import argparse
+
+    import main
+
+    args = argparse.Namespace(config=None, once=True, dry_run=True, live=False, watch=False)
+    return main.TradingEngine(main.build_runtime(args, cli_live=False, force_dry_run=True))
+
+
+def test_a_daily_stock_is_due_once_a_day_when_flat(workdir):
+    engine = _engine(workdir)
+    now = 1000.0
+    assert "009830" in engine.due_codes(now)      # first look
+    engine.mark_ran("009830", now)
+    # A daily stock's signal cadence is 24h; an hour later it is not due.
+    assert "009830" not in engine.due_codes(now + 3600)
+
+
+def test_a_daily_stock_with_a_position_is_due_every_tick(workdir):
+    """The hard stop lives in this loop -- Kiwoom holds no resting stop."""
+    from portfolio import LONG, Position
+
+    engine = _engine(workdir)
+    now = 1000.0
+    engine.mark_ran("009830", now)
+    assert "009830" not in engine.due_codes(now + 3600)
+
+    engine.rt.portfolio.open_position(
+        Position(
+            symbol="009830",
+            side=LONG,
+            qty=1,
+            entry_price=34_600.0,
+            stop_price=31_400.0,
+            stop_distance=3_200.0,
+        )
+    )
+    assert "009830" in engine.due_codes(now + 30)
+    assert "009830" in engine.due_codes(now + 3600)

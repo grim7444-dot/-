@@ -214,7 +214,21 @@ class TradingEngine:
         return int(timeframe_delta(timeframe).total_seconds())
 
     def due_codes(self, now: float) -> list[str]:
-        return [c for c in self.rt.strategies if now >= self._next_due.get(c, 0.0)]
+        """Stocks to look at this tick.
+
+        Signal cadence and risk cadence are not the same thing. A daily stock
+        is worth a new entry decision once a day, but its hard stop is the only
+        thing standing between an open position and an unbounded loss -- and
+        Kiwoom holds no resting stop order, so nothing checks it while this
+        loop is not looking. An open position is therefore always due,
+        whatever its timeframe.
+        """
+        held = set(self.rt.portfolio.positions())
+        return [
+            c
+            for c in self.rt.strategies
+            if c in held or now >= self._next_due.get(c, 0.0)
+        ]
 
     def mark_ran(self, code: str, now: float) -> None:
         self._next_due[code] = now + self.interval_for(code)

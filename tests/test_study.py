@@ -302,3 +302,92 @@ def test_empty_input_yields_no_codes():
 
     assert parse_codes("") == []
     assert parse_codes("   ") == []
+
+
+# ---------------------------------------------------------------------------
+# Independence: same-day events are one observation
+# ---------------------------------------------------------------------------
+
+
+def _event_on(day, ret):
+    return BounceEvent(
+        code="X",
+        trigger_date=pd.Timestamp(day),
+        drop_pct=-0.25,
+        entry_close=100.0,
+        next_open=100.0 * (1 + ret),
+        next_close=100.0 * (1 + ret),
+    )
+
+
+def test_events_sharing_a_date_are_counted_once():
+    """A market-wide fall is one observation however many stocks it hits."""
+    # Twelve stocks, all triggered on the same three crash days.
+    stats = [
+        BounceStats(
+            code=f"S{i}",
+            name=f"s{i}",
+            sessions=700,
+            events=[
+                _event_on("2026-01-05", 0.09),
+                _event_on("2026-04-07", 0.08),
+                _event_on("2026-06-11", -0.02),
+            ],
+        )
+        for i in range(12)
+    ]
+    report = format_bounce_study(
+        stats, down_days=3, drop_pct=0.2, cost_pct=0.0038, limit_down=False
+    )
+    assert "happened on 3 distinct dates" in report
+    assert "largest single day: 12 stocks at once" in report
+
+
+def test_a_per_event_t_above_two_is_overruled_by_the_clustered_one():
+    """Thirty stocks reacting to three market days are three observations.
+
+    Per event this clears t = 2 comfortably. Per date it does not come close,
+    and the per-date figure is the honest one -- the thirty stocks did not
+    each independently confirm anything.
+    """
+    stats = [
+        BounceStats(
+            code=f"S{i}",
+            name=f"s{i}",
+            sessions=700,
+            events=[
+                _event_on("2026-01-05", 0.09),
+                _event_on("2026-04-07", 0.08),
+                _event_on("2026-06-11", -0.10),
+            ],
+        )
+        for i in range(30)
+    ]
+    report = format_bounce_study(
+        stats, down_days=3, drop_pct=0.2, cost_pct=0.0038, limit_down=False
+    )
+    assert "treating one market-wide fall as many independent" in report
+    assert "this is not" in report
+
+
+def test_a_result_spread_across_many_dates_keeps_its_significance():
+    """Some clustering is normal; what matters is that it survives it."""
+    import random
+
+    random.seed(7)
+    events = []
+    for i in range(60):
+        # Forty distinct dates, a few of them shared by two stocks.
+        day = 1 + (i % 40)
+        events.append(
+            _event_on(
+                f"2026-{1 + day // 29:02d}-{1 + day % 29:02d}",
+                0.02 + random.uniform(-0.005, 0.005),
+            )
+        )
+    stats = [BounceStats(code="S", name="s", sessions=700, events=events)]
+    report = format_bounce_study(
+        stats, down_days=3, drop_pct=0.2, cost_pct=0.0038, limit_down=False
+    )
+    assert "distinct dates" in report
+    assert "It survives date clustering too" in report

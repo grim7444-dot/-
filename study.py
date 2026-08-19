@@ -256,8 +256,39 @@ def format_bounce_study(
                 f"win {robust_close['win_rate']:.0%}   t {robust_close['t_stat']:+.2f}"
             )
 
+        # Independence check. See _pool_by_date: a market-wide fall makes many
+        # stocks qualify on the same day, and those are one observation.
+        dated_open = _pool_by_date(stats, cost_pct, to_open=True)
+        dated_close = _pool_by_date(stats, cost_pct, to_open=False)
+        distinct = int(dated_open["n"])
+        if distinct < total_events:
+            lines.append("")
+            lines.append(
+                f"    These {total_events} events happened on {distinct} distinct "
+                f"dates (largest single day: {int(dated_open['largest_cluster'])} "
+                "stocks at once)."
+            )
+            lines.append(
+                "    A 3-day fall of this size is usually the market, not the company,"
+            )
+            lines.append(
+                "    so same-day events are one observation. Counting each date once:"
+            )
+            lines.append(
+                f"      to next open : mean {dated_open['mean']:+.2%}   "
+                f"win {dated_open['win_rate']:.0%}   t {dated_open['t_stat']:+.2f}   "
+                f"n={distinct}"
+            )
+            lines.append(
+                f"      to next close: mean {dated_close['mean']:+.2%}   "
+                f"win {dated_close['win_rate']:.0%}   t {dated_close['t_stat']:+.2f}   "
+                f"n={distinct}"
+            )
+
         lines.append("")
-        verdict = _verdict(pooled_open, pooled_close, total_events)
+        verdict = _verdict(
+            pooled_open, pooled_close, total_events, dated_open, dated_close
+        )
         for line in verdict:
             lines.append(f"  {line}")
     lines.append("=" * width)
@@ -276,6 +307,43 @@ def _row(stats: BounceStats, summary: Mapping[str, float]) -> str:
         f"{'  |':>3} {summary['mean']:>+8.2%} {summary['median']:>+8.2%} "
         f"{summary['win_rate']:>6.0%} {summary['best']:>+8.2%} {summary['worst']:>+8.2%}"
     )
+
+
+def _pool_by_date(
+    stats: Sequence[BounceStats], cost_pct: float, to_open: bool
+) -> dict[str, float]:
+    """Pool one observation per trigger date rather than one per stock.
+
+    A 20% fall over three sessions is usually not a company event -- it is the
+    market falling, and on those days many stocks qualify at once and bounce
+    together. Counting each stock separately then treats one market event as a
+    dozen independent ones, which is exactly the assumption a t-statistic
+    rests on. Averaging within a date and pooling across dates gives the
+    number of independent observations there actually were.
+    """
+    by_date: dict[Any, list[float]] = {}
+    for s in stats:
+        for e in s.events:
+            value = (e.to_open_pct if to_open else e.to_close_pct) - cost_pct
+            key = getattr(e.trigger_date, "date", lambda: e.trigger_date)()
+            by_date.setdefault(key, []).append(value)
+    if not by_date:
+        return {"mean": 0.0, "t_stat": 0.0, "n": 0, "largest_cluster": 0}
+    values = [sum(v) / len(v) for v in by_date.values()]
+    n = len(values)
+    mean = sum(values) / n
+    if n > 1:
+        variance = sum((v - mean) ** 2 for v in values) / (n - 1)
+        std_error = (variance / n) ** 0.5
+    else:
+        std_error = float("inf")
+    return {
+        "mean": mean,
+        "win_rate": sum(1 for v in values if v > 0) / n,
+        "t_stat": mean / std_error if std_error else 0.0,
+        "n": n,
+        "largest_cluster": max(len(v) for v in by_date.values()),
+    }
 
 
 def _pool(
@@ -312,7 +380,11 @@ def _pool(
 
 
 def _verdict(
-    to_open: Mapping[str, float], to_close: Mapping[str, float], count: int
+    to_open: Mapping[str, float],
+    to_close: Mapping[str, float],
+    count: int,
+    dated_open: Mapping[str, float] | None = None,
+    dated_close: Mapping[str, float] | None = None,
 ) -> list[str]:
     """Say what the numbers support, including when that is 'not much'.
 
@@ -374,6 +446,31 @@ def _verdict(
             f"t = {best.get('t_stat', 0.0):+.2f}: the average survives its own error bar."
         )
         lines.append(f"The result is carried by {best_label}.")
+
+    # The date-clustered figure outranks the per-event one: if it disagrees,
+    # the per-event t was counting one market move many times over.
+    dated = dated_open if to_open["mean"] >= to_close["mean"] else dated_close
+    if dated and dated.get("n", 0) and dated["n"] < count:
+        dated_t = abs(dated.get("t_stat", 0.0))
+        if t_stat >= 2.0 > dated_t:
+            lines.append("")
+            lines.append(
+                f"But counting each date once, t falls to {dated.get('t_stat', 0.0):+.2f} "
+                f"on {int(dated['n'])} dates. The per-event"
+            )
+            lines.append(
+                "figure above was treating one market-wide fall as many independent"
+            )
+            lines.append(
+                "results. Take the date-clustered number as the real one: this is not"
+            )
+            lines.append("established.")
+        elif dated_t >= 2.0:
+            lines.append("")
+            lines.append(
+                f"It survives date clustering too: t {dated.get('t_stat', 0.0):+.2f} "
+                f"across {int(dated['n'])} distinct dates."
+            )
 
     lines.append("")
     lines.append(

@@ -418,3 +418,134 @@ def test_the_cost_gate_admits_the_stocks_it_is_configured_for(workdir):
             f"{code}: 3-min ATR ~{per_bar:.2%} would be blocked by the "
             f"{strategy.min_atr_pct:.2%} cost gate"
         )
+
+
+# ---------------------------------------------------------------------------
+# The backtest models what the live bot does
+# ---------------------------------------------------------------------------
+
+
+def _flat_day(day: date, closes, volumes=None):
+    """One session of 3-minute bars, 09:00 onward."""
+    return _intraday(closes, volumes, day=day)
+
+
+def test_backtest_flattens_a_day_trade_at_its_time():
+    """A backtest that holds through the close measures a different strategy."""
+    from backtest import Backtester
+    from data import BarSet
+    from strategies.scalping import Scalping
+
+    # A session long enough to reach 15:10: 09:00 + 3 min x 125 = 15:15.
+    n = 130
+    closes = [100.0] * 20 + [100 + 0.6 * i for i in range(n - 20)]
+    volumes = [1000.0] * 23 + [9000.0] + [1000.0] * (n - 24)
+    bars = _flat_day(WEDNESDAY, closes, volumes)
+
+    universe = {
+        "002990": {
+            "name": "test",
+            "market": "KOSPI",
+            "min_qty": 1,
+            "entry_window": ["09:15", "14:30"],
+            "force_exit_at": "15:10",
+        }
+    }
+    config = {
+        "risk": {"per_trade_pct": 0.01, "atr_period": 14, "long_only": True},
+        "account": {"starting_equity": 10_000_000},
+        "backtest": {"fill_delay_bars": 1},
+        "universe": universe,
+    }
+    strategy = Scalping(symbol="002990", timeframe="3Min", period=5, min_edge_mult=0.0)
+    result = Backtester(config, apply_drawdown_guard=False).run(
+        {"002990": BarSet("002990", "3Min", bars, "synthetic")},
+        {"002990": strategy},
+        universe,
+    )
+
+    assert result.trades, "expected the day trade to open and close"
+    for trade in result.trades:
+        assert str(trade.exit_time)[11:16] <= "15:20", (
+            f"still open into the closing auction at {trade.exit_time}"
+        )
+
+
+def test_backtest_refuses_entries_outside_the_window():
+    from backtest import Backtester
+    from data import BarSet
+    from strategies.scalping import Scalping
+
+    n = 40
+    closes = [100.0] * 20 + [100 + 2.0 * i for i in range(n - 20)]
+    volumes = [1000.0] * 23 + [9000.0] * (n - 23)
+    bars = _flat_day(WEDNESDAY, closes, volumes)      # 09:00 - 10:57
+
+    universe = {
+        "002990": {
+            "name": "test",
+            "market": "KOSPI",
+            "min_qty": 1,
+            # A window this bot's bars never reach.
+            "entry_window": ["13:00", "14:30"],
+            "force_exit_at": "15:10",
+        }
+    }
+    config = {
+        "risk": {"per_trade_pct": 0.01, "atr_period": 14, "long_only": True},
+        "account": {"starting_equity": 10_000_000},
+        "backtest": {"fill_delay_bars": 1},
+        "universe": universe,
+    }
+    result = Backtester(config, apply_drawdown_guard=False).run(
+        {"002990": BarSet("002990", "3Min", bars, "synthetic")},
+        {"002990": Scalping(symbol="002990", timeframe="3Min", period=5, min_edge_mult=0.0)},
+        universe,
+    )
+    assert not result.trades
+    assert any("entries open at" in s for s in result.skipped_orders)
+
+
+def test_a_close_trade_is_bought_at_the_close_and_sold_at_the_next_open():
+    """Filling the entry at the next open would fill it at the exit price."""
+    from backtest import Backtester
+    from data import BarSet
+    from strategies.close_auction import CloseAuction
+
+    closes = _rising(45)
+    highs = [c * 1.02 for c in closes]
+    lows = [c * 0.98 for c in closes]
+    volumes = [1000.0] * len(closes)
+    # One qualifying day: finishes on its high, on volume.
+    highs[40] = closes[40] * 1.001
+    volumes[40] = 4000.0
+    bars = _daily(closes, highs, lows, volumes)
+
+    universe = {
+        "460930": {
+            "name": "test",
+            "market": "KOSDAQ",
+            "min_qty": 1,
+            "entry_window": ["15:15", "15:19"],
+            "force_exit_at": "09:05",
+            "hold_overnight": True,
+        }
+    }
+    config = {
+        "risk": {"per_trade_pct": 0.01, "atr_period": 14, "long_only": True},
+        "account": {"starting_equity": 10_000_000},
+        "backtest": {"fill_delay_bars": 1},
+        "universe": universe,
+    }
+    result = Backtester(config, apply_drawdown_guard=False).run(
+        {"460930": BarSet("460930", "1Day", bars, "synthetic")},
+        {"460930": CloseAuction(symbol="460930")},
+        universe,
+    )
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    # Bought on day 40's close, before slippage; sold on day 41's open.
+    assert trade.entry_price == pytest.approx(closes[40], rel=0.01)
+    assert trade.exit_price == pytest.approx(bars["open"].iloc[41], rel=0.01)
+    assert trade.entry_time.date() < trade.exit_time.date()

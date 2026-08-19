@@ -84,9 +84,21 @@ class Scalping(Strategy):
         self.round_trip_cost_pct = round_trip_cost_pct
         self.allow_short = allow_short
 
+    #: 09:00-15:30 in three-minute steps.
+    BARS_PER_SESSION = 130
+
     @property
     def warmup(self) -> int:
         return max(self.period, self.atr_period) + 2
+
+    @property
+    def window_bars(self) -> int:
+        """Channel, ATR and today's VWAP -- nothing here looks back further.
+
+        Two sessions of margin so the current one is always complete even when
+        the window starts mid-day.
+        """
+        return max(self.period, self.atr_period) + 2 * self.BARS_PER_SESSION
 
     @property
     def min_atr_pct(self) -> float:

@@ -645,7 +645,12 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     rt = build_runtime(args, cli_live=False, force_dry_run=True)
     end = datetime.now(KST)
     start = months_to_start(args.months, end)
-    print(f"\nLoading {args.months} month(s) of bars ({start.date()} -> {end.date()}) ...")
+    # flush=True throughout: redirected output is block-buffered, and a long
+    # run that prints nothing for ten minutes looks like a hang.
+    print(
+        f"\nLoading {args.months} month(s) of bars ({start.date()} -> {end.date()}) ...",
+        flush=True,
+    )
 
     barsets = {}
     for code, asset_cfg in rt.universe.items():
@@ -669,11 +674,18 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         tradable = max(0, len(barset) - warm)
         print(
             f"  {label:<22} {len(barset):>6d} bars  [{barset.source}]"
-            f"  warmup {warm} -> {tradable} tradable"
+            f"  warmup {warm} -> {tradable} tradable",
+            flush=True,
         )
 
+    total_bars = sum(len(b) for b in barsets.values())
+    print(f"\nSimulating {total_bars:,} bars ...", flush=True)
+
+    def progress(done: int, total: int) -> None:
+        print(f"  {done * 100 // total:>3d}%  ({done:,} / {total:,} bars)", flush=True)
+
     engine = Backtester(rt.config)
-    result = engine.run(barsets, rt.strategies, rt.universe)
+    result = engine.run(barsets, rt.strategies, rt.universe, progress=progress)
     print()
     print(format_result(result, names={c: rt.name_of(c) for c in rt.universe}))
     return 0

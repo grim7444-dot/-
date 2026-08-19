@@ -90,6 +90,22 @@ class Strategy:
         """Bars required before the strategy can emit anything but HOLD."""
         return self.atr_period + 1
 
+    @property
+    def window_bars(self) -> int | None:
+        """Trailing bars this strategy actually reads, or None for all of them.
+
+        A backtest hands ``evaluate`` a window that grows by one bar each step.
+        For a strategy whose answer depends only on a fixed lookback, rescanning
+        the whole history every bar makes the run quadratic -- on 3-minute bars
+        over a few months that is the difference between seconds and hours.
+        Declaring the window turns it back into linear work.
+
+        None is the safe default and keeps the existing behaviour exactly: an
+        EMA is defined over everything before it, so truncating its input would
+        change the numbers, not just the runtime.
+        """
+        return None
+
     def _atr(self, window: pd.DataFrame) -> float:
         series = atr_indicator(window, self.atr_period)
         value = series.iloc[-1] if len(series) else float("nan")

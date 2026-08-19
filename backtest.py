@@ -25,15 +25,17 @@ side pays transaction tax on top of commission, and a bar pinned at the daily
 from __future__ import annotations
 
 import logging
+import textwrap
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import pandas as pd
 
 from data import BarSet
 from market.rules import KOSPI, KrxRules, TradingCosts
+from market.session_rules import SessionRules
 from portfolio import LONG, Position
 from risk.manager import (
     hard_stop_price,
@@ -76,6 +78,10 @@ class Fill:
     costs: float
     slippage_cost: float
     reason: str = ""
+    #: True for a close-based entry, which fills on its own signal bar. This
+    #: is the single declared exception to the next-bar fill rule, and it is
+    #: declared here so the invariant can allow exactly it and nothing else.
+    fill_at_close: bool = False
 
     @property
     def signal_driven(self) -> bool:
@@ -159,8 +165,37 @@ class BacktestResult:
         return dict(sorted(out.items(), key=lambda kv: kv[1], reverse=True))
 
     def verify_no_lookahead(self) -> bool:
-        """Every signal-driven fill happened on the bar after its signal."""
-        return all(f.fill_index == f.signal_index + 1 for f in self.fills if f.signal_driven)
+        """Every signal-driven fill happened on the bar after its signal.
+
+        Close-based entries are the one exception and are excluded by name
+        rather than by loosening the test: they are bought on the bar they
+        were decided from because the live bot buys at 15:15, minutes before
+        that bar closes. What that costs in fidelity is stated in
+        `close_fill_note` and printed with every result, because the entry
+        condition reads the day's full high and low while the live bot at
+        15:15 does not yet know them.
+        """
+        return all(
+            f.fill_index == f.signal_index + 1
+            for f in self.fills
+            if f.signal_driven and not f.fill_at_close
+        )
+
+    @property
+    def close_fill_count(self) -> int:
+        return sum(1 for f in self.fills if f.fill_at_close)
+
+    @property
+    def close_fill_note(self) -> str:
+        if not self.close_fill_count:
+            return ""
+        return (
+            f"{self.close_fill_count} close-based entries filled on their own "
+            "signal bar's close. The live bot decides these at 15:15 and buys "
+            "immediately; the backtest decides from the completed daily bar, so "
+            "it knows the day's final high and low and the live bot does not. "
+            "Treat these entries as slightly flattered."
+        )
 
 
 # --------------------------------------------------------------------------
@@ -180,6 +215,34 @@ class _PendingOrder:
     stop_distance: float
     trail_stop: float | None
     reason: str
+    #: Fill on the signal bar's close instead of the next bar's open. Used
+    #: only by close-based entries, which are placed minutes before the close
+    #: on the same bar they are decided from -- see `_fill_reference`.
+    fill_at_close: bool = False
+
+
+def _window_for(bars: pd.DataFrame, index: int, window_bars: int | None) -> pd.DataFrame:
+    """The slice a strategy sees: everything up to *index*, or its declared tail.
+
+    Never anything past *index* -- that is the no-lookahead guarantee, and it
+    holds whichever branch is taken.
+    """
+    if window_bars is None:
+        return bars.iloc[: index + 1]
+    return bars.iloc[max(0, index + 1 - window_bars) : index + 1]
+
+
+def _has_time_of_day(bars: pd.DataFrame) -> bool:
+    """Do these bars carry a clock, or only a date?
+
+    A daily bar is stamped midnight, so any rule expressed as a time of day is
+    unanswerable on one. Saying so explicitly beats silently evaluating every
+    daily bar as though it were 00:00 and rejecting every entry.
+    """
+    index = bars.index
+    if len(index) == 0:
+        return False
+    return bool((index.hour != 0).any() or (index.minute != 0).any())
 
 
 class Backtester:
@@ -226,6 +289,7 @@ class Backtester:
         barsets: Mapping[str, BarSet],
         strategies: Mapping[str, Strategy],
         universe: Mapping[str, Mapping[str, Any]] | None = None,
+        progress: Callable[[int, int], None] | None = None,
     ) -> BacktestResult:
         universe = universe or {}
 
@@ -244,6 +308,7 @@ class Backtester:
 
         frames = {c: bs.bars for c, bs in barsets.items() if len(bs.bars) > 0}
         markets = {c: bs.market for c, bs in barsets.items()}
+        rules_for = {c: SessionRules.from_config(universe.get(c, {})) for c in frames}
         events = self._build_events(frames, strategies)
         if not events:
             return BacktestResult(
@@ -255,7 +320,12 @@ class Backtester:
                 synthetic_data=any(bs.synthetic for bs in barsets.values()),
             )
 
-        for timestamp, code, index in events:
+        total_events = len(events)
+        report_every = max(1, total_events // 10)
+
+        for event_number, (timestamp, code, index) in enumerate(events, start=1):
+            if progress is not None and event_number % report_every == 0:
+                progress(event_number, total_events)
             bars = frames[code]
             strategy = strategies[code]
             asset_cfg = universe.get(code, {})
@@ -304,6 +374,34 @@ class Backtester:
                 pending.pop(code, None)
                 position = None
 
+            # -- 2b. the clock closes a day trade, whatever the chart says --
+            # Modelled like a stop rather than like a signal: filled on this
+            # bar rather than the next one. A flat-out is a risk event, and
+            # the live bot sends its market order the moment the time passes
+            # -- it does not wait three minutes for the next bar.
+            rules = rules_for.get(code, SessionRules())
+            position = positions.get(code)
+            if position is not None and not rules.hold_overnight:
+                due, why = rules.exit_due(timestamp.to_pydatetime(), position.entry_date())
+                if due:
+                    equity, fill, trade = self._close_at(
+                        code=code,
+                        position=position,
+                        raw_price=float(bar["close"]),
+                        index=index,
+                        fill_time=timestamp,
+                        positions=positions,
+                        equity=equity,
+                        market=market,
+                        kind=EXIT,
+                        reason=why,
+                        strategy_name=strategy.name,
+                    )
+                    fills.append(fill)
+                    trades.append(trade)
+                    pending.pop(code, None)
+                    position = None
+
             # -- 3. mark to market & drawdown guard -------------------------
             last_price[code] = float(bar["close"])
             mark_equity = equity + sum(
@@ -351,7 +449,7 @@ class Backtester:
 
             # -- 4. trailing stop ratchet -----------------------------------
             position = positions.get(code)
-            window = bars.iloc[: index + 1]
+            window = _window_for(bars, index, strategy.window_bars)
             if position is not None:
                 new_trail = strategy.update_trailing_stop(window, position)
                 if new_trail is not None:
@@ -372,6 +470,16 @@ class Backtester:
                     continue
                 if self.long_only and signal.action is Action.ENTER_SHORT:
                     continue
+                # The live bot will not open outside the window, so a backtest
+                # that does is measuring a different strategy. Daily bars are
+                # stamped midnight and carry no time of day, so this only ever
+                # constrains intraday series -- which is the honest answer: on
+                # daily bars there is nothing to check it against.
+                if _has_time_of_day(bars):
+                    allowed, why = rules.entry_allowed(timestamp.to_pydatetime())
+                    if not allowed:
+                        skipped.append(f"{timestamp} {code}: {why}")
+                        continue
                 blocked, reason = theme_block(
                     code, positions, self.themes, self.theme_filter_enabled
                 )
@@ -387,18 +495,75 @@ class Backtester:
             elif position is None:
                 continue  # exit signal with nothing to exit
 
+            # A close-based entry is bought on the bar it was decided from:
+            # live, the order goes in at 15:15 and the bar closes at 15:30.
+            # Filling it at the next bar's open would fill it at the price the
+            # trade is meant to SELL at, which nets out to nothing but costs.
+            fill_at_close = (
+                rules.hold_overnight
+                and signal.action.is_entry
+                and not _has_time_of_day(bars)
+            )
             pending[code] = _PendingOrder(
                 code=code,
                 action=signal.action,
                 signal_index=index,
-                fill_index=index + self.fill_delay_bars,
+                fill_index=index if fill_at_close else index + self.fill_delay_bars,
                 signal_time=timestamp,
                 signal_close=float(bar["close"]),
                 atr=signal.atr,
                 stop_distance=signal.stop_distance,
                 trail_stop=signal.trail_stop,
                 reason=signal.reason,
+                fill_at_close=fill_at_close,
             )
+            if fill_at_close:
+                pending.pop(code, None)
+                equity, fill, trade = self._execute(
+                    order=_PendingOrder(
+                        code=code,
+                        action=signal.action,
+                        signal_index=index,
+                        fill_index=index,
+                        signal_time=timestamp,
+                        signal_close=float(bar["close"]),
+                        atr=signal.atr,
+                        stop_distance=signal.stop_distance,
+                        trail_stop=signal.trail_stop,
+                        reason=signal.reason,
+                        fill_at_close=True,
+                    ),
+                    bars=bars,
+                    index=index,
+                    positions=positions,
+                    equity=equity,
+                    asset_cfg=asset_cfg,
+                    market=market,
+                    strategy=strategy,
+                    skipped=skipped,
+                    halted=halted,
+                )
+                if fill is not None:
+                    fills.append(fill)
+                if trade is not None:
+                    trades.append(trade)
+                # The exit is the next morning's open, which on a daily series
+                # is the next bar. Scheduling it here rather than waiting for a
+                # signal is what makes this an overnight trade rather than an
+                # open-ended hold.
+                if code in positions:
+                    pending[code] = _PendingOrder(
+                        code=code,
+                        action=Action.EXIT,
+                        signal_index=index,
+                        fill_index=index + 1,
+                        signal_time=timestamp,
+                        signal_close=float(bar["close"]),
+                        atr=signal.atr,
+                        stop_distance=signal.stop_distance,
+                        trail_stop=None,
+                        reason="planned exit at the next open",
+                    )
 
         # Liquidate whatever is still open at the final bar of its own series.
         for code, position in list(positions.items()):
@@ -490,8 +655,12 @@ class Backtester:
         code = order.code
         fill_time = bars.index[index]
         # Rule 10: the fill reference is the *next* bar's open, not the signal
-        # bar's close.
-        raw_price = float(bars.iloc[index]["open"])
+        # bar's close. A close-based entry is the one exception, and it is one
+        # because the live strategy really does buy on the bar it decided from
+        # -- at 15:15, minutes before that bar closes.
+        raw_price = float(
+            bars.iloc[index]["close"] if order.fill_at_close else bars.iloc[index]["open"]
+        )
         position = positions.get(code)
 
         if order.action is Action.EXIT:
@@ -578,6 +747,7 @@ class Backtester:
             qty=sizing.qty,
             costs=cost,
             slippage_cost=slippage_cost,
+            fill_at_close=order.fill_at_close,
             reason=order.reason,
         )
         return equity, fill, None
@@ -666,6 +836,13 @@ def format_result(
         lines.append("  pipeline demonstration, NOT a claim about real performance.")
         lines.append("!" * width)
 
+    if result.close_fill_note:
+        lines.append("")
+        lines.append("  " + "-" * (width - 4))
+        for line in textwrap.wrap(result.close_fill_note, width - 6):
+            lines.append(f"  {line}")
+        lines.append("  " + "-" * (width - 4))
+
     lines.append("")
     lines.append(f"  Period            : {result.start} -> {result.end}")
     lines.append(f"  Starting equity   : {result.starting_equity:>16,.0f} KRW")
@@ -713,6 +890,12 @@ def format_result(
 
     lines.append("")
     lines.append("  Fill rule: signals execute at the OPEN of the following bar")
-    lines.append("  (no same-bar close fills, safety rule 10).")
+    if result.close_fill_count:
+        lines.append(
+            f"  (safety rule 10), except the {result.close_fill_count} close-based "
+            "entries noted above."
+        )
+    else:
+        lines.append("  (no same-bar close fills, safety rule 10).")
     lines.append("=" * width)
     return "\n".join(lines)

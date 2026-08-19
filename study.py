@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
@@ -160,6 +160,8 @@ def format_bounce_study(
     drop_pct: float,
     cost_pct: float,
     limit_down: bool,
+    survivorship_note: bool = False,
+    per_stock: bool = True,
 ) -> str:
     width = 100
     lines = ["=" * width]
@@ -184,24 +186,36 @@ def format_bounce_study(
     lines.append(
         f"  Entry at the trigger day's close, net of {cost_pct:.2%} round-trip costs."
     )
+    if survivorship_note:
+        lines.append("")
+        lines.append("  The ticker list was taken as of the start of the window, so it")
+        lines.append("  includes names that have since been delisted -- but bars for those")
+        lines.append("  may not come back, which still tilts the result toward survivors.")
+        lines.append("  Read a positive number here as an upper bound.")
     lines.append("")
 
     header = (
         f"  {'code':<8} {'name':<14} {'sessions':>9} {'events':>7}"
         f"{'  |':>3} {'mean':>8} {'median':>8} {'win':>6} {'best':>8} {'worst':>8}"
     )
-    lines.append("  -- Sell at the NEXT OPEN " + "-" * (width - 29))
-    lines.append(header)
-    lines.append("  " + "-" * (width - 4))
-    for s in stats:
-        lines.append(_row(s, s.to_open(cost_pct)))
+    if per_stock:
+        lines.append("  -- Sell at the NEXT OPEN " + "-" * (width - 29))
+        lines.append(header)
+        lines.append("  " + "-" * (width - 4))
+        for s in stats:
+            lines.append(_row(s, s.to_open(cost_pct)))
 
-    lines.append("")
-    lines.append("  -- Sell at the NEXT CLOSE " + "-" * (width - 30))
-    lines.append(header)
-    lines.append("  " + "-" * (width - 4))
-    for s in stats:
-        lines.append(_row(s, s.to_close(cost_pct)))
+        lines.append("")
+        lines.append("  -- Sell at the NEXT CLOSE " + "-" * (width - 30))
+        lines.append(header)
+        lines.append("  " + "-" * (width - 4))
+        for s in stats:
+            lines.append(_row(s, s.to_close(cost_pct)))
+    else:
+        active = [s for s in stats if s.count]
+        lines.append(
+            f"  {len(stats)} stocks scanned, {len(active)} produced at least one event."
+        )
 
     total_events = sum(s.count for s in stats)
     lines += ["", "  " + "-" * (width - 4)]
@@ -532,6 +546,42 @@ def parse_codes(raw: str) -> list[str]:
     return unique
 
 
+def market_codes(
+    market: str, as_of: "date | None" = None, limit: int | None = None
+) -> list[str]:
+    """Every ticker on a board, as of *as_of*.
+
+    Taking the list as of the START of the study window rather than today is
+    deliberate. A list of what is listed *now* has already removed every stock
+    that fell and never came back -- which for a study of what happens after a
+    crash is the single worst bias available. The list is still imperfect
+    (bars for a delisted name may not come back at all) but it is honest about
+    what it is trying to do.
+    """
+    from datetime import date as _date
+
+    from data import _import_pykrx_stock
+    from market.rules import KOSDAQ, KOSPI
+
+    boards = {"kospi": [KOSPI], "kosdaq": [KOSDAQ], "all": [KOSPI, KOSDAQ]}
+    wanted = boards.get(market.lower())
+    if wanted is None:
+        raise ValueError(
+            f"unknown market {market!r}; expected one of {sorted(boards)}"
+        )
+    stock = _import_pykrx_stock()
+    stamp = (as_of or _date.today()).strftime("%Y%m%d")
+    out: list[str] = []
+    for board in wanted:
+        try:
+            out.extend(str(c) for c in stock.get_market_ticker_list(stamp, market=board))
+        except Exception as exc:
+            logger.warning("ticker list for %s on %s failed: %s", board, stamp, exc)
+    seen: set[str] = set()
+    unique = [c for c in out if not (c in seen or seen.add(c))]
+    return unique[:limit] if limit else unique
+
+
 def run_bounce_study(
     universe: Mapping[str, Mapping[str, Any]],
     market_data,
@@ -539,6 +589,7 @@ def run_bounce_study(
     down_days: int = 2,
     drop_pct: float = 0.15,
     limit_down: bool = False,
+    progress: "Callable[[int, int], None] | None" = None,
 ) -> list[BounceStats]:
     from datetime import datetime
 
@@ -550,8 +601,11 @@ def run_bounce_study(
     start = months_to_start(months, end)
 
     out: list[BounceStats] = []
-    for code, cfg in universe.items():
+    total = len(universe)
+    for done, (code, cfg) in enumerate(universe.items(), start=1):
         code = str(code)
+        if progress is not None:
+            progress(done, total)
         if not cfg.get("enabled", True):
             continue
         barset = market_data.get_bars(

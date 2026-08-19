@@ -702,17 +702,43 @@ def cmd_study_bounce(args: argparse.Namespace) -> int:
     rt = build_runtime(args, cli_live=cli_live, force_dry_run=not cli_live)
 
     universe: Mapping[str, Mapping[str, Any]] = rt.universe
+    survivorship = False
     codes = parse_codes(getattr(args, "codes", "") or "")
+    if getattr(args, "market", None):
+        from study import market_codes
+
+        window_start = months_to_start(args.months, datetime.now(KST)).date()
+        try:
+            codes = market_codes(args.market, as_of=window_start, limit=args.limit)
+        except Exception as exc:
+            print(f"\n  could not read the {args.market} ticker list: {exc}")
+            return 1
+        if not codes:
+            print(f"\n  the {args.market} ticker list came back empty.")
+            return 1
+        survivorship = True
+        print(
+            f"\n{args.market.upper()}: {len(codes)} tickers as of "
+            f"{window_start}. This takes a while -- one request per stock.",
+            flush=True,
+        )
     if codes:
         # Testing the rule on stocks it was not chosen on is the only check
         # that separates a real pattern from a parameter search that happened
         # to fit nine names. Names come from the broker; nothing here is
         # configured, and nothing here is ever ordered.
+        # Resolving a name costs a request each, which is worth it for a
+        # pasted list and absurd for a whole board.
+        resolve = len(codes) <= 40
         universe = {
-            code: {"name": rt.market_data.get_name(code) or "", "market": KOSPI}
+            code: {
+                "name": (rt.market_data.get_name(code) or "") if resolve else "",
+                "market": KOSPI,
+            }
             for code in codes
         }
-        print(f"\nOut-of-sample: {len(codes)} codes not in config.yaml", flush=True)
+        if not survivorship:
+            print(f"\nOut-of-sample: {len(codes)} codes not in config.yaml", flush=True)
 
     costs = rt.config.get("costs") or {}
     tax = max(float(v) for v in (costs.get("sell_tax_bps") or {"x": 0.0}).values())
@@ -727,9 +753,14 @@ def cmd_study_bounce(args: argparse.Namespace) -> int:
         f"{args.down_days} consecutive down sessions ...",
         flush=True,
     )
+    def progress(done: int, total: int) -> None:
+        if total > 40 and done % 25 == 0:
+            print(f"  {done}/{total} stocks ...", flush=True)
+
     stats = run_bounce_study(
         universe,
         rt.market_data,
+        progress=progress,
         months=args.months,
         down_days=args.down_days,
         drop_pct=abs(args.drop) / 100.0,
@@ -743,6 +774,8 @@ def cmd_study_bounce(args: argparse.Namespace) -> int:
             drop_pct=abs(args.drop) / 100.0,
             cost_pct=cost_pct,
             limit_down=bool(args.limit_down),
+            survivorship_note=survivorship,
+            per_stock=len(universe) <= 40,
         )
     )
     return 0
@@ -1475,6 +1508,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="test these codes instead of the configured universe, e.g. "
              "096770,058470 (an out-of-sample check: same rule, different stocks)",
+    )
+    study.add_argument(
+        "--market",
+        choices=("kospi", "kosdaq", "all"),
+        help="scan a whole board instead of a code list (slow, but it is the "
+             "only way to get enough independent dates to settle anything)",
+    )
+    study.add_argument(
+        "--limit", type=int, default=300, help="cap on --market stocks (default: 300)"
     )
     study.add_argument(
         "--live", action="store_true", help="read bars through the live account"

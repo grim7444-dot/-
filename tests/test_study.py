@@ -391,3 +391,33 @@ def test_a_result_spread_across_many_dates_keeps_its_significance():
     )
     assert "distinct dates" in report
     assert "It survives date clustering too" in report
+
+
+def test_a_market_scan_says_its_result_is_an_upper_bound():
+    """A ticker list cannot fully undo survivorship bias; say so."""
+    report = format_bounce_study(
+        [_stats_with([0.02] * 30)],
+        down_days=3, drop_pct=0.2, cost_pct=0.0038, limit_down=False,
+        survivorship_note=True,
+    )
+    assert "upper bound" in report
+
+
+def test_a_large_scan_summarises_instead_of_listing_every_stock():
+    stats = [
+        BounceStats(code=f"{i:06d}", name="", sessions=700, events=_stats_with([0.02]).events)
+        for i in range(200)
+    ]
+    report = format_bounce_study(
+        stats, down_days=3, drop_pct=0.2, cost_pct=0.0038, limit_down=False,
+        per_stock=False,
+    )
+    assert "200 stocks scanned, 200 produced at least one event." in report
+    assert "000199" not in report          # no 200-row table
+
+
+def test_an_unknown_market_name_is_refused():
+    from study import market_codes
+
+    with pytest.raises(ValueError, match="unknown market"):
+        market_codes("konex")

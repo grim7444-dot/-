@@ -136,15 +136,42 @@ def test_a_bounce_smaller_than_costs_counts_as_a_loss():
     assert summary["mean"] < 0
 
 
-def test_the_report_calls_a_small_sample_a_small_sample():
+def test_a_mean_inside_its_own_error_bar_is_reported_as_noise():
+    """Three good outcomes are not evidence, however good they are."""
     report = format_bounce_study(
-        [_stats_with([0.05, 0.06, 0.07])],
+        [_stats_with([0.05, 0.001, 0.09])],
         down_days=2,
         drop_pct=0.15,
         cost_pct=0.0038,
         limit_down=False,
     )
-    assert "too few to separate an edge from luck" in report
+    assert "inside the range chance produces" in report
+
+
+def test_a_positive_mean_over_a_negative_median_is_called_a_lottery_ticket():
+    """The failure mode this study exists for: outliers carrying the average."""
+    returns = [-0.02] * 9 + [0.40]        # nine small losses, one huge win
+    report = format_bounce_study(
+        [_stats_with(returns)],
+        down_days=2,
+        drop_pct=0.15,
+        cost_pct=0.0038,
+        limit_down=False,
+    )
+    assert "lottery ticket, not an edge" in report
+    assert "more than half" in report
+
+
+def test_a_sub_fifty_win_rate_is_stated_plainly():
+    returns = [-0.02] * 6 + [0.20] * 4
+    report = format_bounce_study(
+        [_stats_with(returns)],
+        down_days=2,
+        drop_pct=0.15,
+        cost_pct=0.0038,
+        limit_down=False,
+    )
+    assert "Fewer than half the trades" in report
 
 
 def test_the_report_says_so_when_the_pattern_loses_after_costs():
@@ -159,15 +186,16 @@ def test_the_report_says_so_when_the_pattern_loses_after_costs():
     assert "too few" not in report
 
 
-def test_the_report_separates_an_overnight_gain_from_a_swing_gain():
+def test_the_report_says_when_the_gain_needs_a_full_extra_day():
+    """Buy-close-sell-open is a different trade from buy-close-sell-close."""
     events = [
         BounceEvent(
             code="X",
             trigger_date=pd.Timestamp("2026-01-01"),
             drop_pct=-0.2,
             entry_close=100.0,
-            next_open=104.0,      # the gap pays
-            next_close=99.0,      # the session gives it back
+            next_open=100.5,      # the gap barely pays
+            next_close=104.0,     # the session does
         )
         for _ in range(30)
     ]
@@ -178,7 +206,7 @@ def test_the_report_separates_an_overnight_gain_from_a_swing_gain():
         cost_pct=0.0038,
         limit_down=False,
     )
-    assert "overnight trade, not a swing trade" in report
+    assert "rather than the close-to-open trade it was" in report
 
 
 def test_limit_down_mode_warns_that_the_entry_may_not_fill():

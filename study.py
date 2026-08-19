@@ -211,13 +211,22 @@ def format_bounce_study(
         pooled_open = _pool(stats, cost_pct, to_open=True)
         pooled_close = _pool(stats, cost_pct, to_open=False)
         lines.append(f"  {total_events} occurrences across {len(stats)} stocks.")
+        for label, pooled in (
+            ("to next open ", pooled_open),
+            ("to next close", pooled_close),
+        ):
+            lines.append(
+                f"    {label}: mean {pooled['mean']:+.2%}   "
+                f"median {pooled['median']:+.2%}   "
+                f"win {pooled['win_rate']:.0%}   "
+                f"t {pooled['t_stat']:+.2f}"
+            )
+        lines.append("")
         lines.append(
-            f"    to next open : mean {pooled_open['mean']:+.2%}  "
-            f"win {pooled_open['win_rate']:.0%}"
+            "    t is the mean divided by its own standard error. Below about 2,"
         )
         lines.append(
-            f"    to next close: mean {pooled_close['mean']:+.2%}  "
-            f"win {pooled_close['win_rate']:.0%}"
+            "    a positive average is within what chance produces at this sample size."
         )
         lines.append("")
         verdict = _verdict(pooled_open, pooled_close, total_events)
@@ -250,50 +259,106 @@ def _pool(
         for e in s.events
     ]
     if not values:
-        return {"mean": 0.0, "win_rate": 0.0}
+        return {"mean": 0.0, "median": 0.0, "win_rate": 0.0, "t_stat": 0.0, "n": 0}
+    n = len(values)
+    mean = sum(values) / n
+    ordered = sorted(values)
+    middle = n // 2
+    median = ordered[middle] if n % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+    # Standard error of the mean. Without it "the average is positive" and
+    # "the average is reliably positive" are impossible to tell apart, which
+    # is the whole failure mode this study exists to avoid.
+    if n > 1:
+        variance = sum((v - mean) ** 2 for v in values) / (n - 1)
+        std_error = (variance / n) ** 0.5
+    else:
+        std_error = float("inf")
     return {
-        "mean": sum(values) / len(values),
-        "win_rate": sum(1 for v in values if v > 0) / len(values),
+        "mean": mean,
+        "median": median,
+        "win_rate": sum(1 for v in values if v > 0) / n,
+        "std_error": std_error,
+        "t_stat": mean / std_error if std_error else 0.0,
+        "n": float(n),
     }
 
 
 def _verdict(
     to_open: Mapping[str, float], to_close: Mapping[str, float], count: int
 ) -> list[str]:
-    """Say what the numbers support, including when that is 'not much'."""
+    """Say what the numbers support, including when that is 'not much'.
+
+    A positive mean is the weakest of the available signals and the easiest to
+    be fooled by, so it is the last thing considered rather than the first.
+    Whether the typical trade wins, how often any trade wins, and whether the
+    average survives its own error bar all come first.
+    """
     lines: list[str] = []
-    if count < 20:
+    best_label, best = max(
+        (("selling at the next open", to_open), ("selling at the next close", to_close)),
+        key=lambda pair: pair[1]["mean"],
+    )
+
+    if best["mean"] <= 0:
         lines.append(
-            f"Only {count} occurrences. That is too few to separate an edge from "
-            "luck;"
-        )
-        lines.append(
-            "a run of good ones proves nothing at this sample size. Treat the "
-            "numbers"
-        )
-        lines.append("above as a description of the past, not as an estimate.")
-        lines.append("")
-    best = max(to_open["mean"], to_close["mean"])
-    if best <= 0:
-        lines.append(
-            "After costs the pattern loses money on both exits. Whatever the "
-            "bounces"
+            "After costs the pattern loses money on both exits. Whatever the bounces"
         )
         lines.append("looked like, the ones that did not bounce cost more.")
-    elif to_open["mean"] > 0 and to_close["mean"] <= 0:
+        return lines
+
+    if best.get("median", 0.0) <= 0:
         lines.append(
-            "The gain is in the overnight gap and is given back during the next"
+            f"The average is positive but the median is {best['median']:+.2%}: more "
+            "than half"
         )
-        lines.append("session. That is an overnight trade, not a swing trade.")
+        lines.append(
+            "of these trades lost money, and the average is held up by a few large"
+        )
+        lines.append(
+            "winners. That is a lottery ticket, not an edge -- and it is exactly the"
+        )
+        lines.append(
+            "shape that memory reports as 'this happens a lot', because the outliers"
+        )
+        lines.append("are the ones worth remembering.")
+        lines.append("")
+
+    if best.get("win_rate", 0.0) < 0.5:
+        lines.append(
+            f"It wins {best['win_rate']:.0%} of the time. Fewer than half the trades"
+        )
+        lines.append(
+            "are profitable, so position sizing has to survive long losing runs."
+        )
+        lines.append("")
+
+    t_stat = abs(best.get("t_stat", 0.0))
+    if t_stat < 2.0:
+        lines.append(
+            f"t = {best.get('t_stat', 0.0):+.2f} on {count} occurrences: the average is"
+        )
+        lines.append(
+            "inside the range chance produces. This history cannot tell a real edge"
+        )
+        lines.append("from a lucky one; more data would be needed, not more confidence.")
     else:
         lines.append(
-            "Positive after costs on this history. Worth testing further before "
-            "it"
+            f"t = {best.get('t_stat', 0.0):+.2f}: the average survives its own error bar."
+        )
+        lines.append(f"The result is carried by {best_label}.")
+
+    if to_close["mean"] > to_open["mean"] * 2 and to_open["mean"] > 0:
+        lines.append("")
+        lines.append(
+            "Most of the move happens during the next session, not in the overnight"
         )
         lines.append(
-            "trades real money -- a positive average over few events is still "
-            "mostly noise."
+            "gap. That makes this a swing trade held through a full day -- with a"
         )
+        lines.append(
+            "day's worth of exposure -- rather than the close-to-open trade it was"
+        )
+        lines.append("proposed as.")
     return lines
 
 

@@ -242,3 +242,47 @@ def test_watch_flag_switches_dry_run_from_one_cycle_to_the_loop(workdir, monkeyp
     # --once always wins: it is the escape hatch that guarantees termination.
     assert main.main(["paper", "--dry-run", "--watch", "--once"]) == 0
     assert calls == ["once"]
+
+
+# ---------------------------------------------------------------------------
+# 5. the account snapshot cannot understate what the account holds
+# ---------------------------------------------------------------------------
+
+
+def _account_broker(payload):
+    from broker import KiwoomBroker
+
+    broker = object.__new__(KiwoomBroker)
+    broker._call = lambda *a, **k: payload
+    return broker
+
+
+def test_equity_is_never_less_than_holdings_plus_cash():
+    """tot_evlt_amt is the stock valuation alone; cash has to be added back."""
+    broker = _account_broker({"tot_evlt_amt": "273,960", "entr": "150,000"})
+    account = broker.get_account()
+    assert account.cash == pytest.approx(150_000)
+    assert account.equity == pytest.approx(423_960)
+
+
+def test_a_missing_cash_field_is_not_read_as_zero_cash():
+    """Absent key vs genuine zero: the first candidate that carries a value wins."""
+    broker = _account_broker(
+        {"tot_evlt_amt": "273,960", "entr": "0", "d2_entra": "150,000"}
+    )
+    assert broker.get_account().cash == pytest.approx(150_000)
+
+
+def test_a_genuinely_empty_account_still_reports_zero():
+    broker = _account_broker({"tot_evlt_amt": "273,960", "entr": "0"})
+    account = broker.get_account()
+    assert account.cash == 0.0
+    assert account.equity == pytest.approx(273_960)
+
+
+def test_balance_fields_are_kept_for_diagnosis_without_nested_payloads():
+    broker = _account_broker(
+        {"tot_evlt_amt": "273,960", "entr": "0", "acnt_evlt_remn_indv_tot": [{"stk_cd": "073240"}]}
+    )
+    broker.get_account()
+    assert broker.last_balance_fields == {"tot_evlt_amt": "273,960", "entr": "0"}

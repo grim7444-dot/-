@@ -1088,6 +1088,31 @@ def cmd_check(args: argparse.Namespace) -> int:
     if open_orders:
         print(f"  Working orders : {open_orders}")
 
+    # A cash figure of zero can mean the account holds no cash, or that the
+    # field carrying it is named something we did not try. Those look
+    # identical from the outside and lead to opposite conclusions, so the raw
+    # response is printed whenever the numbers do not add up. Amounts are not
+    # secrets; the token and keys never appear in this payload.
+    raw = dict(getattr(rt.broker, "last_balance_fields", {}) or {})
+    if account is not None and holdings:
+        stock_value = sum(h.qty * h.current_price for h in holdings.values())
+        unexplained = account.equity - stock_value - account.cash
+        if account.cash <= 0 or abs(unexplained) > max(1000.0, stock_value * 0.01):
+            print()
+            print("  Equity does not reconcile against the holdings:")
+            print(f"    stocks at market : {stock_value:>16,.0f} KRW")
+            print(f"    cash             : {account.cash:>16,.0f} KRW")
+            print(f"    reported equity  : {account.equity:>16,.0f} KRW")
+            print(f"    unexplained      : {unexplained:>16,.0f} KRW")
+            print()
+            print("  Raw balance fields (amounts only, no credentials):")
+            for name, value in sorted(raw.items()):
+                print(f"    {name:<24} {value}")
+            print()
+            print("  If a field here holds your deposit and the bot read 0, the field")
+            print("  name belongs in KiwoomBroker.CASH_FIELDS. Until then the bot will")
+            print("  refuse every buy for lack of cash.")
+
     print("-" * 78)
     if auth_failure:
         print("  AUTHENTICATION FAILED — nothing else could be tested.")

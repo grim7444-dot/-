@@ -25,7 +25,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Callable, Iterable, Mapping, TypeVar
+from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar
 
 import pandas as pd
 
@@ -370,6 +370,8 @@ class KiwoomBroker(BrokerBase):
 
         self._token: str = ""
         self._token_expires: datetime | None = None
+        #: Scalar fields from the most recent balance response, for `check`.
+        self.last_balance_fields: dict[str, str] = {}
 
     # -- auth --------------------------------------------------------------
 
@@ -521,6 +523,13 @@ class KiwoomBroker(BrokerBase):
             return [str(r.get("accno") or r.get("acnt_no") or r).strip() for r in rows]
         return []
 
+    #: Field names the balance TR might use for total account value and for
+    #: spendable cash, most specific first. Which ones a given TR revision
+    #: actually returns is not something documentation has settled reliably,
+    #: so ``last_balance_fields`` keeps the raw response for inspection.
+    EQUITY_FIELDS = ("prsm_dpst_aset_amt", "tot_est_amt", "tot_evlt_amt")
+    CASH_FIELDS = ("ord_alow_amt", "entr", "dpst", "d2_entra", "prsm_dpst")
+
     def get_account(self) -> AccountSnapshot:
         data = self._call(
             "account",
@@ -528,8 +537,30 @@ class KiwoomBroker(BrokerBase):
             {"qry_tp": "1", "dmst_stex_tp": "KRX"},
             "get_account",
         )
-        equity = _to_float(data.get("tot_evlt_amt") or data.get("prsm_dpst_aset_amt"))
-        cash = _to_float(data.get("entr") or data.get("ord_alow_amt"))
+        # Kept for `check` to print. These are money amounts, not secrets, and
+        # seeing the real field names is the only way to tell an account that
+        # holds no cash from a field name we guessed wrong.
+        self.last_balance_fields = {
+            str(k): str(v)
+            for k, v in data.items()
+            if not isinstance(v, (list, dict))
+        }
+        equity = _first_amount(data, self.EQUITY_FIELDS)
+        cash = _first_amount(data, self.CASH_FIELDS)
+        # `tot_evlt_amt` is the valuation of the holdings alone. Whichever
+        # field supplied it, the account cannot be worth less than its stock
+        # plus its cash, and reporting it as less understates every risk
+        # figure derived from equity.
+        holdings_value = _to_float(data.get("tot_evlt_amt"))
+        floor = holdings_value + cash
+        if floor > equity:
+            logger.warning(
+                "account equity reported as %s but holdings + cash is %s; "
+                "using the larger. Run `check` to see the raw balance fields.",
+                f"{equity:,.0f}",
+                f"{floor:,.0f}",
+            )
+            equity = floor
         return AccountSnapshot(equity=equity, cash=cash, buying_power=cash)
 
     def get_stock_info(self, code: str) -> StockInfo:
@@ -714,6 +745,22 @@ def _to_float(value: Any) -> float:
         return float(str(value).replace(",", "").strip() or 0.0)
     except ValueError:
         return 0.0
+
+
+def _first_amount(data: Mapping[str, Any], names: Sequence[str]) -> float:
+    """The first of *names* present in *data* with a non-zero amount.
+
+    Kiwoom returns the same concept under different keys across TR revisions,
+    and an absent key and a genuine zero are indistinguishable once both have
+    been coerced to 0.0 -- so try each candidate in order rather than relying
+    on ``or``, which cannot tell "field missing" from "account holds nothing".
+    """
+    for name in names:
+        if name in data:
+            amount = abs(_to_float(data[name]))
+            if amount:
+                return amount
+    return 0.0
 
 
 def _chart_frame(rows: list[Mapping[str, Any]], intraday: bool) -> pd.DataFrame | None:

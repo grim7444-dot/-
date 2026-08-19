@@ -714,7 +714,12 @@ def cmd_study_bounce(args: argparse.Namespace) -> int:
             print(f"\n  could not read the {args.market} ticker list: {exc}")
             return 1
         if not codes:
-            print(f"\n  the {args.market} ticker list came back empty.")
+            print(
+                f"\n  No {args.market} ticker list could be read. KRX's listing\n"
+                "  endpoint has been returning non-JSON, and the OHLCV snapshot\n"
+                "  fallback did not answer either. See logs/bot.log for what was\n"
+                "  tried. You can still pass codes by hand with --codes.",
+            )
             return 1
         survivorship = True
         print(

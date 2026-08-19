@@ -421,3 +421,101 @@ def test_an_unknown_market_name_is_refused():
 
     with pytest.raises(ValueError, match="unknown market"):
         market_codes("konex")
+
+
+# ---------------------------------------------------------------------------
+# Getting a ticker list when KRX's listing endpoint is down
+# ---------------------------------------------------------------------------
+
+
+class _StockModule:
+    """Stand-in for pykrx.stock with selectable failures."""
+
+    def __init__(self, working: set[str], codes, trading_days=None):
+        self.working = working
+        self.codes = codes
+        self.trading_days = trading_days
+        self.calls: list[str] = []
+
+    def _answer(self, name, stamp):
+        self.calls.append(f"{name}@{stamp}")
+        if name not in self.working:
+            raise RuntimeError("Expecting value: line 1 column 1 (char 0)")
+        if self.trading_days is not None and stamp not in self.trading_days:
+            return []
+        return list(self.codes)
+
+    def get_market_ticker_list(self, stamp, market=None):
+        return self._answer("get_market_ticker_list", stamp)
+
+    def get_market_ohlcv_by_ticker(self, stamp, market=None):
+        return pd.DataFrame(
+            index=pd.Index(self._answer("get_market_ohlcv_by_ticker", stamp))
+        )
+
+
+def _patched(monkeypatch, module):
+    import data as data_module
+
+    monkeypatch.setattr(data_module, "_import_pykrx_stock", lambda: module)
+
+
+def test_the_ticker_list_falls_back_when_the_listing_endpoint_is_down(monkeypatch):
+    """The exact failure seen live: listing 500s, OHLCV works."""
+    from datetime import date
+
+    from study import market_codes
+
+    module = _StockModule(working={"get_market_ohlcv_by_ticker"}, codes=["005930", "000660"])
+    _patched(monkeypatch, module)
+
+    assert market_codes("kospi", as_of=date(2026, 8, 19)) == ["005930", "000660"]
+    assert any("get_market_ticker_list" in c for c in module.calls)
+
+
+def test_a_non_trading_day_makes_it_step_back(monkeypatch):
+    from datetime import date
+
+    from study import market_codes
+
+    module = _StockModule(
+        working={"get_market_ticker_list"},
+        codes=["005930"],
+        trading_days={"20260814"},          # the 17th-19th return nothing
+    )
+    _patched(monkeypatch, module)
+    assert market_codes("kospi", as_of=date(2026, 8, 19)) == ["005930"]
+
+
+def test_everything_failing_yields_an_empty_list_not_an_exception(monkeypatch):
+    from datetime import date
+
+    from study import market_codes
+
+    _patched(monkeypatch, _StockModule(working=set(), codes=["005930"]))
+    assert market_codes("kosdaq", as_of=date(2026, 8, 19)) == []
+
+
+def test_junk_entries_never_reach_the_study(monkeypatch):
+    from datetime import date
+
+    from study import market_codes
+
+    module = _StockModule(
+        working={"get_market_ticker_list"},
+        codes=["005930", "A000660", "", "12345", "005930", "035720"],
+    )
+    _patched(monkeypatch, module)
+    assert market_codes("kospi", as_of=date(2026, 8, 19)) == ["005930", "035720"]
+
+
+def test_the_limit_is_applied_after_deduplication(monkeypatch):
+    from datetime import date
+
+    from study import market_codes
+
+    module = _StockModule(
+        working={"get_market_ticker_list"}, codes=["005930", "005930", "000660", "035720"]
+    )
+    _patched(monkeypatch, module)
+    assert market_codes("kospi", as_of=date(2026, 8, 19), limit=2) == ["005930", "000660"]

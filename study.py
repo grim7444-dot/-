@@ -546,8 +546,45 @@ def parse_codes(raw: str) -> list[str]:
     return unique
 
 
+def _looks_like_codes(values) -> list[str]:
+    """Keep only six-digit tickers, in order, without duplicates."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        code = str(value).strip()
+        if len(code) == 6 and code.isdigit() and code not in seen:
+            seen.add(code)
+            out.append(code)
+    return out
+
+
+def _ticker_list_attempts(stock, stamp: str, board: str):
+    """Ways of asking pykrx which stocks were listed, best first.
+
+    ``get_market_ticker_list`` is the direct question and the one that has
+    been failing: KRX's listing endpoint returns something that is not JSON.
+    The whole-market OHLCV snapshot answers the same question from an
+    endpoint that demonstrably works -- every stock that traded that day is a
+    stock that was listed that day -- so it is worth trying rather than
+    reporting an empty list and stopping.
+    """
+    yield "get_market_ticker_list", lambda: stock.get_market_ticker_list(
+        stamp, market=board
+    )
+    for name in ("get_market_ohlcv_by_ticker", "get_market_cap_by_ticker"):
+        fn = getattr(stock, name, None)
+        if fn is not None:
+            yield name, (lambda fn=fn: list(fn(stamp, board).index))
+    yield "get_market_ohlcv(market=)", lambda: list(
+        stock.get_market_ohlcv(stamp, market=board).index
+    )
+
+
 def market_codes(
-    market: str, as_of: "date | None" = None, limit: int | None = None
+    market: str,
+    as_of: "date | None" = None,
+    limit: int | None = None,
+    calendar=None,
 ) -> list[str]:
     """Every ticker on a board, as of *as_of*.
 
@@ -559,6 +596,7 @@ def market_codes(
     what it is trying to do.
     """
     from datetime import date as _date
+    from datetime import timedelta as _timedelta
 
     from data import _import_pykrx_stock
     from market.rules import KOSDAQ, KOSPI
@@ -570,13 +608,32 @@ def market_codes(
             f"unknown market {market!r}; expected one of {sorted(boards)}"
         )
     stock = _import_pykrx_stock()
-    stamp = (as_of or _date.today()).strftime("%Y%m%d")
+    start = as_of or _date.today()
+
     out: list[str] = []
     for board in wanted:
-        try:
-            out.extend(str(c) for c in stock.get_market_ticker_list(stamp, market=board))
-        except Exception as exc:
-            logger.warning("ticker list for %s on %s failed: %s", board, stamp, exc)
+        found: list[str] = []
+        # A weekend or holiday returns nothing however the question is asked,
+        # so step back a few days before concluding the source is broken.
+        for offset in range(0, 8):
+            stamp = (start - _timedelta(days=offset)).strftime("%Y%m%d")
+            for label, attempt in _ticker_list_attempts(stock, stamp, board):
+                try:
+                    found = _looks_like_codes(attempt())
+                except Exception as exc:
+                    logger.debug("%s failed for %s on %s: %s", label, board, stamp, exc)
+                    continue
+                if found:
+                    logger.info(
+                        "%s: %d tickers from %s on %s", board, len(found), label, stamp
+                    )
+                    break
+            if found:
+                break
+        if not found:
+            logger.warning("no ticker list for %s near %s", board, start)
+        out.extend(found)
+
     seen: set[str] = set()
     unique = [c for c in out if not (c in seen or seen.add(c))]
     return unique[:limit] if limit else unique

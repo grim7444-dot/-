@@ -654,8 +654,7 @@ def cmd_profile(args: argparse.Namespace) -> int:
                 day_traders,
                 rt.market_data,
                 round_trip_cost_pct=strategy.round_trip_cost_pct,
-                min_edge_mult=strategy.min_edge_mult,
-                atr_trail_mult=strategy.atr_trail_mult,
+                max_cost_share=strategy.max_cost_share,
                 atr_period=rt.risk.atr_period,
             )
         )

@@ -186,7 +186,7 @@ def _scalper(**kw):
     every structural test report "too quiet" instead of the condition it means
     to exercise.
     """
-    kw.setdefault("min_edge_mult", 0.0)
+    kw.setdefault("max_cost_share", 10.0)
     return Scalping(symbol="002990", timeframe="3Min", period=5, **kw)
 
 
@@ -218,7 +218,7 @@ def test_scalping_refuses_a_break_below_vwap():
 def test_scalping_refuses_a_stock_too_quiet_to_pay_for_itself():
     """A round trip costs ~0.38%; a 0.05% ATR cannot repay it."""
     closes = [100 + 0.01 * i for i in range(24)]
-    scalper = _scalper(min_edge_mult=3.0, round_trip_cost_pct=0.0038)
+    scalper = _scalper(max_cost_share=0.25, round_trip_cost_pct=0.0038)
     signal = scalper.evaluate(_intraday(closes, [1000.0] * 23 + [9000.0]))
     assert signal.action is Action.HOLD
     assert "pay for itself" in signal.reason
@@ -454,7 +454,7 @@ def test_the_sweep_names_the_shortest_timeframe_that_pays(monkeypatch, tmp_path)
     codes = {"002990": {"name": "금호건설", "market": "KOSPI"}}
     # threshold = 0.0038 * 2.0 / 1.5 = 0.507%
     report = universe_profile.atr_sweep(
-        codes, _Stub(), round_trip_cost_pct=0.0038, min_edge_mult=2.0, atr_trail_mult=1.5
+        codes, _Stub(), round_trip_cost_pct=0.0038, max_cost_share=0.75
     )
 
     assert "0.51%" in report                      # the threshold is stated
@@ -483,6 +483,6 @@ def test_the_sweep_says_so_when_nothing_pays(tmp_path):
 
     report = universe_profile.atr_sweep(
         {"002990": {"name": "금호건설"}}, _Stub(),
-        round_trip_cost_pct=0.0038, min_edge_mult=2.0, atr_trail_mult=1.5,
+        round_trip_cost_pct=0.0038, max_cost_share=0.75,
     )
     assert "costs exceed the range at every timeframe" in report

@@ -53,10 +53,20 @@ themes:
 # official listing data — a wrong `market` mis-prices the transaction tax.
 # ---------------------------------------------------------------------------
 universe:
-  # --- Day trading (단타), 3-minute bars -----------------------------------
+  # --- Day trading (단타), 30-minute bars ----------------------------------
   # Assigned by measured volatility, not by sector: `profile` put these five
-  # above the 8% daily-ATR line, which is what makes an intraday move large
-  # enough to clear the ~0.38% round trip of commission, tax and slippage.
+  # above the 8% daily-ATR line.
+  #
+  # The timeframe comes from `profile --atr-sweep`, which measured ATR at each
+  # candidate. What matters is costs as a share of what a trade risks -- the
+  # hard stop is one ATR, so that ratio is 0.38% / ATR%:
+  #
+  #     3Min 112%   5Min 72%   10Min 42%   15Min 32%   30Min 20%   60Min 12%
+  #
+  # A breakout system does not earn 0.42R a trade, so 30-minute bars are the
+  # first that survive their own friction. This is still a day trade: entries
+  # 09:15-14:30, flat at 15:10. There are 13 bars in a session, so signals are
+  # much rarer than on a faster bar -- that is what the cost structure buys.
   #
   # entry_window keeps entries out of the opening minutes, where the spread is
   # widest and no channel has formed yet, and stops them well before the
@@ -68,12 +78,12 @@ universe:
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 3Min
+    timeframe: 30Min
     min_qty: 1
     entry_window: ["09:15", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 20
+      period: 10
       volume_mult: 1.5
       atr_trail_mult: 1.5
 
@@ -82,12 +92,12 @@ universe:
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 3Min
+    timeframe: 30Min
     min_qty: 1
     entry_window: ["09:15", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 20
+      period: 10
       volume_mult: 1.5
       atr_trail_mult: 1.5
 
@@ -96,12 +106,12 @@ universe:
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 3Min
+    timeframe: 30Min
     min_qty: 1
     entry_window: ["09:15", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 20
+      period: 10
       volume_mult: 1.5
       atr_trail_mult: 1.5
 
@@ -110,12 +120,12 @@ universe:
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 3Min
+    timeframe: 30Min
     min_qty: 1
     entry_window: ["09:15", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 20
+      period: 10
       volume_mult: 1.5
       atr_trail_mult: 1.5
 
@@ -124,12 +134,12 @@ universe:
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 3Min
+    timeframe: 30Min
     min_qty: 1
     entry_window: ["09:15", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 20
+      period: 10
       volume_mult: 1.5
       atr_trail_mult: 1.5
 
@@ -278,7 +288,7 @@ schedule:
   # How often the outer loop wakes to see which strategies are due.
   tick_seconds: 20
   intervals:
-    3Min: 180
+    30Min: 1800
     60Min: 3600
     # Daily strategies are looked at once a day for a *signal*. An open
     # position is re-checked every tick regardless -- see TradingEngine.

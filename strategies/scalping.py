@@ -1,29 +1,39 @@
-"""Intraday momentum on 3-minute bars (단타).
+"""Intraday momentum on intraday bars, flat by the close (단타).
 
 The entry is a momentum break, filtered twice:
 
 * the close must exceed the *prior* N-bar high, on at least ``volume_mult``
-  times the average volume of those bars -- the same channel logic the hourly
-  breakout uses, at a faster cadence;
+  times the average volume of those bars;
 * the price must be above the session's own VWAP.
 
 The VWAP filter is what separates this from ``Breakout`` run faster. Intraday,
 VWAP is where the day's volume actually changed hands, and a break above a
 short-term high while the stock sits below it is usually a bounce inside a
 decline rather than the start of a move. VWAP resets each session, so it says
-something about *today* rather than about a window that happens to be 60
-minutes long.
+something about *today* rather than about a fixed-length window.
 
-Costs decide whether any of this is worth doing. A round trip on KRX pays
+Costs decide the timeframe before anything else does. A round trip on KRX pays
 commission both ways, transaction tax on the sell and slippage on both fills --
-call it 0.38% at the assumptions in ``config.yaml``. The strategy therefore
-refuses to enter a stock whose bars are too small for a winning trade to clear
-that. The comparison is against the move a *win* keeps, not against one bar:
-the trail sits ``atr_trail_mult`` ATR below the high, so that is the scale of
-what a good trade gives up at the end and roughly the scale of what it keeps.
-Requiring ``min_edge_mult`` round trips out of that is the test. Comparing
-costs to a single ATR instead would have barred four of the five stocks this
-runs on, all of which move 9-16% a day.
+0.38% at the assumptions in ``config.yaml``. The useful way to read that is as
+a share of what the trade risks: the hard stop is one ATR, so a trade risks
+``ATR`` and pays ``0.38%`` to do it, and the ratio ``0.38% / ATR%`` is what
+has to be small. Measured on these five stocks:
+
+    3-minute bars   ATR 0.34%   costs are 112% of the amount risked
+    5-minute        ATR 0.53%    72%
+    10-minute       ATR 0.91%    42%
+    15-minute       ATR 1.20%    32%
+    30-minute       ATR 1.93%    20%
+    60-minute       ATR 3.13%    12%
+
+A breakout system does not earn 0.42 R per trade, so anything faster than
+roughly half-hourly loses to its own friction whatever the entry rule is.
+``max_cost_share`` is that ratio, and it is checked before every entry.
+
+These numbers came from ``profile --atr-sweep``, which measures each
+timeframe. An earlier version of this file estimated them from daily ATR by
+the square root of time, overstated 3-minute volatility by a factor of three,
+and set a threshold that silently refused every entry for a whole session.
 
 Exits are the shared ATR trail plus the flat-out time in ``SessionRules`` --
 the engine closes the position before the closing auction whatever this says.
@@ -58,12 +68,13 @@ class Scalping(Strategy):
     def __init__(
         self,
         symbol: str = "",
-        timeframe: str = "3Min",
-        period: int = 20,
+        timeframe: str = "30Min",
+        period: int = 10,
         volume_mult: float = 1.5,
         atr_trail_mult: float = 1.5,
-        #: How many round trips a typical winning trade must be worth.
-        min_edge_mult: float = 2.0,
+        #: Largest share of the risked amount that costs may eat. The hard
+        #: stop is one ATR, so this caps `round_trip_cost_pct / ATR%`.
+        max_cost_share: float = 0.25,
         round_trip_cost_pct: float = 0.0038,
         atr_period: int = 14,
         hard_stop_atr_mult: float = 1.0,
@@ -80,12 +91,15 @@ class Scalping(Strategy):
         self.period = period
         self.volume_mult = volume_mult
         self.atr_trail_mult = atr_trail_mult
-        self.min_edge_mult = min_edge_mult
+        self.max_cost_share = max_cost_share
         self.round_trip_cost_pct = round_trip_cost_pct
         self.allow_short = allow_short
 
-    #: 09:00-15:30 in three-minute steps.
-    BARS_PER_SESSION = 130
+    #: Bars in one 09:00-15:30 session, by timeframe label.
+    _SESSION_BARS = {
+        "1Min": 390, "3Min": 130, "5Min": 78, "10Min": 39,
+        "15Min": 26, "30Min": 13, "60Min": 7,
+    }
 
     @property
     def warmup(self) -> int:
@@ -98,13 +112,13 @@ class Scalping(Strategy):
         Two sessions of margin so the current one is always complete even when
         the window starts mid-day.
         """
-        return max(self.period, self.atr_period) + 2 * self.BARS_PER_SESSION
+        per_session = self._SESSION_BARS.get(self.timeframe, 130)
+        return max(self.period, self.atr_period) + 2 * per_session
 
     @property
     def min_atr_pct(self) -> float:
         """Smallest ATR, as a fraction of price, worth trading at these costs."""
-        capture = max(self.atr_trail_mult, 0.1)
-        return self.round_trip_cost_pct * self.min_edge_mult / capture
+        return self.round_trip_cost_pct / max(self.max_cost_share, 0.01)
 
     def evaluate(self, window: pd.DataFrame, position: Position | None = None) -> Signal:
         if len(window) < self.warmup:
@@ -148,8 +162,11 @@ class Scalping(Strategy):
         if atr_pct < self.min_atr_pct:
             return self._hold(
                 window,
-                f"too quiet to pay for itself: ATR {atr_pct:.2%} < "
-                f"{self.min_atr_pct:.2%} (round trip costs {self.round_trip_cost_pct:.2%})",
+                f"too quiet to pay for itself: costs would be "
+                f"{self.round_trip_cost_pct / atr_pct:.0%} of the amount risked "
+                f"(ATR {atr_pct:.2%}, limit {self.max_cost_share:.0%})"
+                if atr_pct > 0
+                else "ATR unavailable",
             )
 
         if price <= vwap_now:
@@ -165,7 +182,7 @@ class Scalping(Strategy):
         return self._signal(
             window,
             Action.ENTER_LONG,
-            f"3-min break of {prior_high:,.0f} on {vol_ratio:.2f}x volume, "
+            f"{self.timeframe} break of {prior_high:,.0f} on {vol_ratio:.2f}x volume, "
             f"above VWAP {vwap_now:,.0f}",
             atr_value,
             trail_stop=price - self.atr_trail_mult * atr_value,

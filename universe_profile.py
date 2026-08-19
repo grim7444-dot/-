@@ -344,8 +344,7 @@ def atr_sweep(
     codes: Mapping[str, Mapping[str, Any]],
     market_data: MarketData,
     round_trip_cost_pct: float,
-    min_edge_mult: float,
-    atr_trail_mult: float,
+    max_cost_share: float,
     atr_period: int = 14,
     bars: int = 400,
 ) -> str:
@@ -362,16 +361,18 @@ def atr_sweep(
     every entry.
     """
     end = datetime.now(KST)
-    # What a winning trade keeps is on the scale of the trail distance, so
-    # that is what has to clear the round trip -- see Scalping.min_atr_pct.
-    threshold = round_trip_cost_pct * min_edge_mult / max(atr_trail_mult, 0.1)
+    # The hard stop is one ATR, so a trade risks ATR and pays round_trip to do
+    # it. What has to be small is that ratio -- see Scalping.min_atr_pct.
+    threshold = round_trip_cost_pct / max(max_cost_share, 0.01)
 
     width = 100
     lines = ["=" * width, "ATR BY TIMEFRAME".center(width), "=" * width, ""]
     lines.append(
-        f"  Round trip {round_trip_cost_pct:.2%} x {min_edge_mult:g} edge "
-        f"/ {atr_trail_mult:g} ATR trail  ->  a bar must show at least "
-        f"{threshold:.2%}"
+        f"  A trade risks 1 ATR and pays {round_trip_cost_pct:.2%} to do it."
+    )
+    lines.append(
+        f"  Costs may be at most {max_cost_share:.0%} of that, so a bar must "
+        f"show ATR of {threshold:.2%} or more."
     )
     lines.append("")
     header = f"  {'code':<8} {'name':<14}" + "".join(f"{tf:>9}" for tf in SWEEP_TIMEFRAMES)

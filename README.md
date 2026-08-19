@@ -18,11 +18,11 @@ the reason printed. See [Safety rules](#safety-rules).
 
 | Code | Name | Market | Timeframe | Strategy | Theme |
 |---|---|---|---|---|---|
-| 009830 | 한화솔루션 | KOSPI | 3 min | Day trade (단타) | power_energy |
-| 002990 | 금호건설 | KOSPI | 3 min | Day trade (단타) | construction |
-| 093370 | 후성 | KOSPI | 3 min | Day trade (단타) | battery_materials |
-| 006340 | 대원전선 | KOSPI | 3 min | Day trade (단타) | power_energy |
-| 073240 | 금호타이어 | KOSPI | 3 min | Day trade (단타) | auto_parts |
+| 009830 | 한화솔루션 | KOSPI | 30 min | Day trade (단타) | power_energy |
+| 002990 | 금호건설 | KOSPI | 30 min | Day trade (단타) | construction |
+| 093370 | 후성 | KOSPI | 30 min | Day trade (단타) | battery_materials |
+| 006340 | 대원전선 | KOSPI | 30 min | Day trade (단타) | power_energy |
+| 073240 | 금호타이어 | KOSPI | 30 min | Day trade (단타) | auto_parts |
 | 460930 | 현대힘스 | KOSDAQ | daily | Close trade (종가매매) | shipbuilding |
 | 101730 | 위메이드맥스 | KOSDAQ | daily | Close trade (종가매매) | game |
 | 228340 | 동양파일 | KOSDAQ | daily | Close trade (종가매매) | construction |
@@ -41,10 +41,28 @@ with `python main.py profile`, which reads the official listing data. A wrong
 
 ### Day trading (단타)
 
-Three-minute bars. A close above the prior 20-bar high on 1.5x volume enters,
+Thirty-minute bars. A close above the prior 10-bar high on 1.5x volume enters,
 but only while the price is above the session's own VWAP -- a break made below
 it is usually a bounce inside a decline. Exit is a 1.5 ATR trail, losing VWAP,
 or the flat-out time, whichever comes first.
+
+**The timeframe is a cost decision.** The hard stop is one ATR, so a trade
+risks ATR and pays the round trip to do it; what matters is that ratio.
+`profile --atr-sweep` measured it on these five stocks:
+
+| Bar | ATR | Costs as a share of what is risked |
+|---|---|---|
+| 3 min | 0.34% | **112%** |
+| 5 min | 0.53% | 72% |
+| 10 min | 0.91% | 42% |
+| 15 min | 1.20% | 32% |
+| 30 min | 1.93% | **20%** |
+| 60 min | 3.13% | 12% |
+
+A breakout system does not earn 0.42 R per trade, so anything faster than
+half-hourly loses to its own friction whatever the entry rule is. On
+three-minute bars the round trip is larger than the stop itself. Thirteen bars
+a session means signals are rare; that rarity is what the cost structure buys.
 
 Entries run 09:15-14:30. The opening minutes are skipped because the spread is
 widest there and no channel has formed yet; the afternoon cut-off leaves room
@@ -57,11 +75,12 @@ so surviving the close turns a day trade into an unhedged overnight hold.
 `SessionRules` refuses at construction to accept a flat-out time inside the
 auction, so this cannot be misconfigured quietly.
 
-A cost gate sits in front of every entry. A round trip pays commission both
-ways, transaction tax on the sell and slippage on both fills -- 0.38% at the
-assumptions in `config.yaml`. The gate compares that to the move a winning
-trade *keeps*, which is on the scale of the trail distance rather than of one
-bar, and refuses stocks too quiet to clear it twice over.
+`max_cost_share` enforces that ratio before every entry, and the log says
+which side of it a rejected stock fell on. These numbers are measured, not
+modelled: an earlier version estimated minute-bar ATR from daily ATR by the
+square root of time, overstated it threefold, and set a gate that refused
+every entry for a full session while the tests -- which asserted the same bad
+model -- passed.
 
 ### Close trading (종가매매)
 
@@ -119,6 +138,7 @@ as `SYNTHETIC DATA` wherever it is used).
 
 ```bash
 python main.py profile                    # measure the universe, suggest strategies
+python main.py profile --atr-sweep --live # measure ATR by timeframe (cost check)
 python main.py profile --refresh-calendar # derive KRX holidays from pykrx
 python main.py backtest --months 6        # next-bar fills, costs included
 python main.py paper --dry-run            # one cycle, print orders, send nothing
@@ -398,7 +418,7 @@ history never mixes with a real run's.
 pytest -q
 ```
 
-305 tests, no network and no credentials required. `tests/conftest.py` scrubs
+307 tests, no network and no credentials required. `tests/conftest.py` scrubs
 `KIWOOM_*` from the environment before every test, so a real `.env` can never
 turn a test run into a live-trading attempt, and the broker double raises if
 anything tries to submit an order.

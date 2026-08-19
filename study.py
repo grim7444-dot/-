@@ -40,6 +40,12 @@ logger = logging.getLogger("bot.study")
 #: grid and for a close that comes off the limit by a tick or two.
 LIMIT_DOWN_RETURN = -0.28
 
+#: A move this size from the previous close can only be the +/-30% daily
+#: limit. An open there cannot be traded: at limit-up the book is bids with no
+#: offers, at limit-down it is offers with no bids, and either way the order
+#: that would have caught the move is the one that does not fill.
+LIMIT_MOVE = 0.29
+
 #: A stock contributing at or below this many events tells you about its own
 #: luck rather than about the pattern, so the report also shows the pooled
 #: result without those stocks.
@@ -66,6 +72,17 @@ class BounceEvent:
     def to_close_pct(self) -> float:
         return self.next_close / self.entry_close - 1.0
 
+    @property
+    def fillable(self) -> bool:
+        """Could this entry actually have been bought at the next open?
+
+        Not if the stock opened at its daily limit. Those prints dominated
+        every average this study produced -- four of the five largest results
+        in the KOSDAQ selection were opens exactly 30.0% above the previous
+        close -- and not one of them was a fill anyone could have got.
+        """
+        return abs(self.to_open_pct) < LIMIT_MOVE
+
 
 @dataclass
 class BounceStats:
@@ -79,9 +96,18 @@ class BounceStats:
     #: comparison against holding it can tell the two apart.
     baseline: "pd.Series | None" = None
 
+    #: Events dropped because the next open was at the daily limit.
+    @property
+    def unfillable(self) -> int:
+        return sum(1 for e in self.events if not e.fillable)
+
+    @property
+    def tradeable(self) -> list[BounceEvent]:
+        return [e for e in self.events if e.fillable]
+
     @property
     def count(self) -> int:
-        return len(self.events)
+        return len(self.tradeable)
 
     def _summarise(self, values: Sequence[float], cost_pct: float) -> dict[str, float]:
         if not values:
@@ -104,10 +130,10 @@ class BounceStats:
         }
 
     def to_open(self, cost_pct: float) -> dict[str, float]:
-        return self._summarise([e.to_open_pct for e in self.events], cost_pct)
+        return self._summarise([e.to_open_pct for e in self.tradeable], cost_pct)
 
     def to_close(self, cost_pct: float) -> dict[str, float]:
-        return self._summarise([e.to_close_pct for e in self.events], cost_pct)
+        return self._summarise([e.to_close_pct for e in self.tradeable], cost_pct)
 
 
 def find_bounce_events(
@@ -432,7 +458,17 @@ def format_bounce_study(
         )
 
     total_events = sum(s.count for s in stats)
+    dropped = sum(s.unfillable for s in stats)
     lines += ["", "  " + "-" * (width - 4)]
+    if dropped:
+        lines.append(
+            f"  {dropped} event(s) excluded: the next open was at the +/-30% daily"
+        )
+        lines.append(
+            "  limit, where there is nothing to trade against. Those fills do not"
+        )
+        lines.append("  exist, so counting them would price a trade nobody could make.")
+        lines.append("")
     if not total_events:
         lines.append(
             "  The pattern never occurred in this history. Nothing here says it does"
@@ -551,7 +587,7 @@ def _pool_by_date(
     """
     by_date: dict[Any, list[float]] = {}
     for s in stats:
-        for e in s.events:
+        for e in s.tradeable:
             value = (e.to_open_pct if to_open else e.to_close_pct) - cost_pct
             key = getattr(e.trigger_date, "date", lambda: e.trigger_date)()
             by_date.setdefault(key, []).append(value)
@@ -580,7 +616,7 @@ def _pool(
     values = [
         (e.to_open_pct if to_open else e.to_close_pct) - cost_pct
         for s in stats
-        for e in s.events
+        for e in s.tradeable
     ]
     if not values:
         return {"mean": 0.0, "median": 0.0, "win_rate": 0.0, "t_stat": 0.0, "n": 0}
@@ -946,14 +982,14 @@ def _split_date(stats: Sequence[BounceStats]):
     dates = sorted(
         getattr(e.trigger_date, "date", lambda: e.trigger_date)()
         for s in stats
-        for e in s.events
+        for e in s.tradeable
     )
     return dates[len(dates) // 2] if dates else None
 
 
 def _half(stats: BounceStats, split, early: bool) -> list[BounceEvent]:
     out = []
-    for e in stats.events:
+    for e in stats.tradeable:
         day = getattr(e.trigger_date, "date", lambda: e.trigger_date)()
         if (day < split) if early else (day >= split):
             out.append(e)

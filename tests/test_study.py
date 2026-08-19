@@ -150,7 +150,8 @@ def test_a_mean_inside_its_own_error_bar_is_reported_as_noise():
 
 def test_a_positive_mean_over_a_negative_median_is_called_a_lottery_ticket():
     """The failure mode this study exists for: outliers carrying the average."""
-    returns = [-0.02] * 9 + [0.40]        # nine small losses, one huge win
+    # Nine small losses and one big win, the win still inside the daily limit.
+    returns = [-0.02] * 9 + [0.25]
     report = format_bounce_study(
         [_stats_with(returns)],
         down_days=2,
@@ -248,7 +249,7 @@ def test_the_report_shows_the_result_without_thinly_sampled_stocks():
     )
     lucky = BounceStats(
         code="THIN", name="thin", sessions=500,
-        events=_stats_with([0.40]).events,
+        events=_stats_with([0.25]).events,
     )
     report = format_bounce_study(
         [deep, lucky], down_days=3, drop_pct=0.2, cost_pct=0.0038, limit_down=False
@@ -786,7 +787,7 @@ def test_a_mean_carried_by_a_few_prints_is_flagged_for_inspection():
     from study import format_selection_study
 
     # Eleven ordinary results and one enormous one.
-    late = [0.002] * 11 + [0.60]
+    late = [0.002] * 11 + [0.28]
     stats = [
         _stock("000001", [0.10] * 6, late, hold=0.0),
         _stock("000002", [0.09] * 6, [0.002] * 12, hold=0.0),
@@ -808,3 +809,73 @@ def test_the_largest_results_are_printed_with_their_prices():
     report = format_selection_study(stats, cost_pct=0.0038, top_n=1, min_events=5)
     assert "largest single results" in report
     assert "->" in report
+
+
+# ---------------------------------------------------------------------------
+# Fills that do not exist
+# ---------------------------------------------------------------------------
+
+
+def test_a_limit_up_open_is_not_a_fill():
+    """+30.0% exactly is the daily limit: bids all the way up, no offers."""
+    from study import BounceEvent
+
+    limit_up = BounceEvent(
+        code="019570",
+        trigger_date=pd.Timestamp("2026-02-10"),
+        drop_pct=-0.2,
+        entry_close=5_550.0,
+        next_open=7_215.0,          # exactly +30.0%, straight from the live run
+        next_close=7_215.0,
+    )
+    assert limit_up.to_open_pct == pytest.approx(0.30)
+    assert limit_up.fillable is False
+
+
+def test_a_limit_down_open_is_not_a_fill_either():
+    from study import BounceEvent
+
+    limit_down = BounceEvent(
+        code="X",
+        trigger_date=pd.Timestamp("2026-02-10"),
+        drop_pct=-0.2,
+        entry_close=10_000.0,
+        next_open=7_000.0,
+        next_close=7_000.0,
+    )
+    assert limit_down.fillable is False
+
+
+def test_a_large_but_reachable_gap_is_still_a_fill():
+    from study import BounceEvent
+
+    ordinary = BounceEvent(
+        code="X",
+        trigger_date=pd.Timestamp("2026-02-10"),
+        drop_pct=-0.2,
+        entry_close=10_000.0,
+        next_open=12_500.0,          # +25%: big, but there were offers
+        next_close=12_500.0,
+    )
+    assert ordinary.fillable is True
+
+
+def test_limit_opens_are_kept_out_of_every_statistic():
+    """They dominated the mean while being impossible to buy."""
+    ordinary = [0.002] * 20
+    stats = _stats_with(ordinary)
+    baseline = stats.to_open(cost_pct=0.0038)["mean"]
+
+    with_limits = _stats_with(ordinary + [0.30, 0.30])
+    assert with_limits.count == 20                # the two are not counted
+    assert with_limits.unfillable == 2
+    assert with_limits.to_open(cost_pct=0.0038)["mean"] == pytest.approx(baseline)
+
+
+def test_the_report_says_how_many_fills_it_threw_away():
+    report = format_bounce_study(
+        [_stats_with([0.002] * 20 + [0.30])],
+        down_days=3, drop_pct=0.2, cost_pct=0.0038, limit_down=False,
+    )
+    assert "1 event(s) excluded" in report
+    assert "nothing to trade against" in report

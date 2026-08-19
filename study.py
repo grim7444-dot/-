@@ -40,6 +40,11 @@ logger = logging.getLogger("bot.study")
 #: grid and for a close that comes off the limit by a tick or two.
 LIMIT_DOWN_RETURN = -0.28
 
+#: A stock contributing at or below this many events tells you about its own
+#: luck rather than about the pattern, so the report also shows the pooled
+#: result without those stocks.
+MIN_EVENTS_PER_STOCK = 3
+
 
 @dataclass
 class BounceEvent:
@@ -228,6 +233,29 @@ def format_bounce_study(
         lines.append(
             "    a positive average is within what chance produces at this sample size."
         )
+        # Concentration check. A pooled average carried by a stock with one or
+        # two occurrences is that stock's luck, not the pattern's behaviour.
+        thin = [s for s in stats if 0 < s.count <= MIN_EVENTS_PER_STOCK]
+        if thin and any(s.count > MIN_EVENTS_PER_STOCK for s in stats):
+            deep = [s for s in stats if s.count > MIN_EVENTS_PER_STOCK]
+            robust_open = _pool(deep, cost_pct, to_open=True)
+            robust_close = _pool(deep, cost_pct, to_open=False)
+            dropped = sum(s.count for s in thin)
+            lines.append("")
+            lines.append(
+                f"    Dropping the {len(thin)} stock(s) with "
+                f"{MIN_EVENTS_PER_STOCK} or fewer occurrences "
+                f"({dropped} of {total_events} events):"
+            )
+            lines.append(
+                f"      to next open : mean {robust_open['mean']:+.2%}   "
+                f"win {robust_open['win_rate']:.0%}   t {robust_open['t_stat']:+.2f}"
+            )
+            lines.append(
+                f"      to next close: mean {robust_close['mean']:+.2%}   "
+                f"win {robust_close['win_rate']:.0%}   t {robust_close['t_stat']:+.2f}"
+            )
+
         lines.append("")
         verdict = _verdict(pooled_open, pooled_close, total_events)
         for line in verdict:
@@ -346,6 +374,21 @@ def _verdict(
             f"t = {best.get('t_stat', 0.0):+.2f}: the average survives its own error bar."
         )
         lines.append(f"The result is carried by {best_label}.")
+
+    lines.append("")
+    lines.append(
+        "Every parameter set tried raises the bar. Searching down_days and drop"
+    )
+    lines.append(
+        "until something looks good will find something eventually, on data with"
+    )
+    lines.append(
+        "no edge in it at all -- so a t of 2 after one attempt is not the same"
+    )
+    lines.append(
+        "result as a t of 2 after five. Count the attempts honestly, and prefer"
+    )
+    lines.append("a setting chosen for a reason over the one that scored best.")
 
     if to_close["mean"] > to_open["mean"] * 2 and to_open["mean"] > 0:
         lines.append("")

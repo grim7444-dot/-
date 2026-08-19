@@ -238,3 +238,28 @@ def test_synthetic_bars_are_excluded_from_the_study(tmp_path, monkeypatch):
 
     stats = study.run_bounce_study({"X": {"name": "t"}}, _Stub(), months=6)
     assert stats[0].count == 0
+
+
+def test_the_report_shows_the_result_without_thinly_sampled_stocks():
+    """One stock with one lucky event must not carry a pooled average."""
+    deep = BounceStats(
+        code="DEEP", name="deep", sessions=500,
+        events=_stats_with([0.002] * 20).events,
+    )
+    lucky = BounceStats(
+        code="THIN", name="thin", sessions=500,
+        events=_stats_with([0.40]).events,
+    )
+    report = format_bounce_study(
+        [deep, lucky], down_days=3, drop_pct=0.2, cost_pct=0.0038, limit_down=False
+    )
+    assert "Dropping the 1 stock(s)" in report
+    assert "1 of 21 events" in report
+
+
+def test_the_report_warns_about_searching_for_a_good_parameter_set():
+    report = format_bounce_study(
+        [_stats_with([0.03] * 40)],
+        down_days=3, drop_pct=0.2, cost_pct=0.0038, limit_down=False,
+    )
+    assert "Every parameter set tried raises the bar" in report

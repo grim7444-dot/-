@@ -709,7 +709,12 @@ def cmd_study_bounce(args: argparse.Namespace) -> int:
 
         window_start = months_to_start(args.months, datetime.now(KST)).date()
         try:
-            codes = market_codes(args.market, as_of=window_start, limit=args.limit)
+            codes, list_source = market_codes(
+                args.market,
+                as_of=window_start,
+                limit=args.limit,
+                broker=None if rt.broker.dry_run else rt.broker,
+            )
         except Exception as exc:
             print(f"\n  could not read the {args.market} ticker list: {exc}")
             return 1
@@ -723,10 +728,16 @@ def cmd_study_bounce(args: argparse.Namespace) -> int:
             return 1
         survivorship = True
         print(
-            f"\n{args.market.upper()}: {len(codes)} tickers as of "
-            f"{window_start}. This takes a while -- one request per stock.",
+            f"\n{args.market.upper()}: {len(codes)} tickers from {list_source}. "
+            "This takes a while -- one request per stock.",
             flush=True,
         )
+        if "CURRENT" in list_source:
+            print(
+                "  Note: this is what is listed TODAY. Stocks that crashed and were\n"
+                "  delisted are missing entirely, which flatters a bounce study.",
+                flush=True,
+            )
     if codes:
         # Testing the rule on stocks it was not chosen on is the only check
         # that separates a real pattern from a parameter search that happened

@@ -60,6 +60,7 @@ DEFAULT_API_IDS: dict[str, str] = {
     "cancel": "kt10003",
     "balance": "kt00018",
     "open_orders": "kt00007",
+    "market_codes": "ka10099",   # 종목정보 리스트
     "minute_chart": "ka10080",
     "daily_chart": "ka10081",
     "stock_info": "ka10001",
@@ -604,6 +605,45 @@ class KiwoomBroker(BrokerBase):
             )
             equity = floor
         return AccountSnapshot(equity=equity, cash=cash, buying_power=cash)
+
+    #: Kiwoom's own market codes for the two boards.
+    MARKET_TYPES = {"kospi": "0", "kosdaq": "10"}
+
+    def get_market_codes(self, market: str) -> list[str]:
+        """Every listed code on a board.
+
+        KRX's own market-wide endpoints have been returning non-JSON for the
+        whole of this work, which leaves pykrx unable to answer "what is
+        listed" at all. Kiwoom answers it, and its per-stock endpoints are
+        already proven to work here.
+
+        What it cannot do is answer it *as of a past date*: this is the
+        current listing, so anything that has been delisted is missing. For a
+        study of what happens after a crash that omission runs one way, and
+        the caller is expected to say so.
+        """
+        market_tp = self.MARKET_TYPES.get(market.lower())
+        if market_tp is None:
+            raise BrokerError(
+                f"unknown market {market!r}; expected one of {sorted(self.MARKET_TYPES)}"
+            )
+        codes: list[str] = []
+        for page in self._call_paged(
+            "stock_info", "market_codes", {"mrkt_tp": market_tp}, f"market_codes({market})"
+        ):
+            rows = page.get("list") or page.get("output") or next(
+                (v for v in page.values() if isinstance(v, list) and v), []
+            )
+            for row in rows:
+                if isinstance(row, Mapping):
+                    raw = row.get("code") or row.get("stk_cd") or row.get("shrn_cd") or ""
+                else:
+                    raw = row
+                code = str(raw).strip().lstrip("A")[:6]
+                if len(code) == 6 and code.isdigit():
+                    codes.append(code)
+        seen: set[str] = set()
+        return [c for c in codes if not (c in seen or seen.add(c))]
 
     def get_stock_info(self, code: str) -> StockInfo:
         try:

@@ -188,10 +188,10 @@ def format_bounce_study(
     )
     if survivorship_note:
         lines.append("")
-        lines.append("  The ticker list was taken as of the start of the window, so it")
-        lines.append("  includes names that have since been delisted -- but bars for those")
-        lines.append("  may not come back, which still tilts the result toward survivors.")
-        lines.append("  Read a positive number here as an upper bound.")
+        lines.append("  Survivorship: the stocks that fell and never came back are the")
+        lines.append("  ones most likely to be missing from any ticker list, and they are")
+        lines.append("  exactly the counter-examples this pattern needs. Read a positive")
+        lines.append("  number here as an upper bound, not as an estimate.")
     lines.append("")
 
     header = (
@@ -584,8 +584,8 @@ def market_codes(
     market: str,
     as_of: "date | None" = None,
     limit: int | None = None,
-    calendar=None,
-) -> list[str]:
+    broker=None,
+) -> tuple[list[str], str]:
     """Every ticker on a board, as of *as_of*.
 
     Taking the list as of the START of the study window rather than today is
@@ -607,12 +607,17 @@ def market_codes(
         raise ValueError(
             f"unknown market {market!r}; expected one of {sorted(boards)}"
         )
-    stock = _import_pykrx_stock()
     start = as_of or _date.today()
 
     out: list[str] = []
+    try:
+        stock = _import_pykrx_stock()
+    except ImportError:
+        stock = None
     for board in wanted:
         found: list[str] = []
+        if stock is None:
+            break
         # A weekend or holiday returns nothing however the question is asked,
         # so step back a few days before concluding the source is broken.
         for offset in range(0, 8):
@@ -634,9 +639,22 @@ def market_codes(
             logger.warning("no ticker list for %s near %s", board, start)
         out.extend(found)
 
+    source = "pykrx, as of the start of the window"
+    if not out and broker is not None:
+        # Every KRX market-wide endpoint is down. The broker still knows what
+        # is listed -- but only what is listed *now*, so the survivorship
+        # caveat gets stronger rather than softer.
+        source = "the broker's CURRENT listing"
+        for board in wanted:
+            name = "kospi" if board.upper().startswith("KOSPI") else "kosdaq"
+            try:
+                out.extend(broker.get_market_codes(name))
+            except Exception as exc:
+                logger.warning("broker ticker list for %s failed: %s", name, exc)
+
     seen: set[str] = set()
     unique = [c for c in out if not (c in seen or seen.add(c))]
-    return unique[:limit] if limit else unique
+    return (unique[:limit] if limit else unique), source
 
 
 def run_bounce_study(

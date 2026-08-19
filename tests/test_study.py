@@ -469,7 +469,7 @@ def test_the_ticker_list_falls_back_when_the_listing_endpoint_is_down(monkeypatc
     module = _StockModule(working={"get_market_ohlcv_by_ticker"}, codes=["005930", "000660"])
     _patched(monkeypatch, module)
 
-    assert market_codes("kospi", as_of=date(2026, 8, 19)) == ["005930", "000660"]
+    assert market_codes("kospi", as_of=date(2026, 8, 19))[0] == ["005930", "000660"]
     assert any("get_market_ticker_list" in c for c in module.calls)
 
 
@@ -484,7 +484,7 @@ def test_a_non_trading_day_makes_it_step_back(monkeypatch):
         trading_days={"20260814"},          # the 17th-19th return nothing
     )
     _patched(monkeypatch, module)
-    assert market_codes("kospi", as_of=date(2026, 8, 19)) == ["005930"]
+    assert market_codes("kospi", as_of=date(2026, 8, 19))[0] == ["005930"]
 
 
 def test_everything_failing_yields_an_empty_list_not_an_exception(monkeypatch):
@@ -493,7 +493,7 @@ def test_everything_failing_yields_an_empty_list_not_an_exception(monkeypatch):
     from study import market_codes
 
     _patched(monkeypatch, _StockModule(working=set(), codes=["005930"]))
-    assert market_codes("kosdaq", as_of=date(2026, 8, 19)) == []
+    assert market_codes("kosdaq", as_of=date(2026, 8, 19))[0] == []
 
 
 def test_junk_entries_never_reach_the_study(monkeypatch):
@@ -506,7 +506,7 @@ def test_junk_entries_never_reach_the_study(monkeypatch):
         codes=["005930", "A000660", "", "12345", "005930", "035720"],
     )
     _patched(monkeypatch, module)
-    assert market_codes("kospi", as_of=date(2026, 8, 19)) == ["005930", "035720"]
+    assert market_codes("kospi", as_of=date(2026, 8, 19))[0] == ["005930", "035720"]
 
 
 def test_the_limit_is_applied_after_deduplication(monkeypatch):
@@ -518,4 +518,38 @@ def test_the_limit_is_applied_after_deduplication(monkeypatch):
         working={"get_market_ticker_list"}, codes=["005930", "005930", "000660", "035720"]
     )
     _patched(monkeypatch, module)
-    assert market_codes("kospi", as_of=date(2026, 8, 19), limit=2) == ["005930", "000660"]
+    assert market_codes("kospi", as_of=date(2026, 8, 19), limit=2)[0] == ["005930", "000660"]
+
+
+def test_the_broker_supplies_the_list_when_every_krx_endpoint_is_down(monkeypatch):
+    """What actually happened: pykrx cannot answer at all, Kiwoom can."""
+    from datetime import date
+
+    from study import market_codes
+
+    _patched(monkeypatch, _StockModule(working=set(), codes=[]))
+
+    class _Broker:
+        def get_market_codes(self, market):
+            assert market == "kosdaq"
+            return ["035720", "247540"]
+
+    codes, source = market_codes("kosdaq", as_of=date(2026, 8, 19), broker=_Broker())
+    assert codes == ["035720", "247540"]
+    assert "CURRENT" in source          # the survivorship caveat gets stronger
+
+
+def test_the_broker_is_not_consulted_when_pykrx_answers(monkeypatch):
+    from datetime import date
+
+    from study import market_codes
+
+    _patched(monkeypatch, _StockModule(working={"get_market_ticker_list"}, codes=["005930"]))
+
+    class _Broker:
+        def get_market_codes(self, market):
+            raise AssertionError("should not be asked")
+
+    codes, source = market_codes("kospi", as_of=date(2026, 8, 19), broker=_Broker())
+    assert codes == ["005930"]
+    assert "pykrx" in source

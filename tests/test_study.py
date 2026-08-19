@@ -779,3 +779,32 @@ def test_no_events_at_all_is_not_an_error():
         [BounceStats(code="X", name="x", sessions=700)], cost_pct=0.0038
     )
     assert "nothing to rank" in report
+
+
+def test_a_mean_carried_by_a_few_prints_is_flagged_for_inspection():
+    """A 4% average overnight gap is usually a corporate action, not a gap."""
+    from study import format_selection_study
+
+    # Eleven ordinary results and one enormous one.
+    late = [0.002] * 11 + [0.60]
+    stats = [
+        _stock("000001", [0.10] * 6, late, hold=0.0),
+        _stock("000002", [0.09] * 6, [0.002] * 12, hold=0.0),
+        _stock("000003", [-0.05] * 6, [-0.01] * 12, hold=0.0),
+        _stock("000004", [-0.08] * 6, [-0.01] * 12, hold=0.0),
+    ]
+    report = format_selection_study(stats, cost_pct=0.0038, top_n=2, min_events=5)
+    assert "largest single results" in report
+    assert "usually a reverse" in report
+
+
+def test_the_largest_results_are_printed_with_their_prices():
+    from study import format_selection_study
+
+    stats = [
+        _stock("000001", [0.10] * 6, [0.05] * 6, hold=0.0),
+        _stock("000002", [-0.05] * 6, [0.0] * 6, hold=0.0),
+    ]
+    report = format_selection_study(stats, cost_pct=0.0038, top_n=1, min_events=5)
+    assert "largest single results" in report
+    assert "->" in report

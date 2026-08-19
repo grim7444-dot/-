@@ -1079,6 +1079,33 @@ def format_selection_study(
         f"    holding those 10       : {hold_mean:+.2%} per session, "
         f"every session, no costs"
     )
+
+    # A mean far above a normal overnight gap is usually a handful of enormous
+    # prints -- a reverse split, a rights issue or a halt reopening, none of
+    # which is a tradeable overnight move. The median and the largest single
+    # results say which it is.
+    late_net = sorted(e.to_open_pct - cost_pct for e in chosen_late)
+    late_median = 0.0
+    if late_net:
+        mid = len(late_net) // 2
+        late_median = (
+            late_net[mid]
+            if len(late_net) % 2
+            else (late_net[mid - 1] + late_net[mid]) / 2
+        )
+        wins = sum(1 for v in late_net if v > 0) / len(late_net)
+        lines.append("")
+        lines.append(
+            f"    median {late_median:+.2%}   win {wins:.0%}   "
+            "-- a median near zero means the mean is a few large prints"
+        )
+        lines.append("    largest single results:")
+        for e in sorted(chosen_late, key=lambda x: x.to_open_pct, reverse=True)[:4]:
+            lines.append(
+                f"      {e.code}  {str(e.trigger_date)[:10]}  "
+                f"{e.entry_close:>10,.0f} -> {e.next_open:>10,.0f}  "
+                f"{e.to_open_pct:+.1%}"
+            )
     lines.append("")
 
     edge = chosen_mean - field_mean
@@ -1135,5 +1162,20 @@ def format_selection_study(
         lines.append(
             "  Rerun on KOSPI and on a different split before trusting it."
         )
+    if late_net and chosen_mean > 0 and late_median < chosen_mean / 3:
+        lines.append("")
+        lines.append(
+            f"  Check the largest results first: the median is {late_median:+.2%}"
+        )
+        lines.append(
+            f"  against a mean of {chosen_mean:+.2%}, so most of this comes from a"
+        )
+        lines.append(
+            "  few prints. An overnight gap of tens of percent is usually a reverse"
+        )
+        lines.append(
+            "  split, a rights issue or a halt reopening -- none of them tradeable,"
+        )
+        lines.append("  and none of them a real gap.")
     lines.append("=" * width)
     return "\n".join(lines)

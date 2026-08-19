@@ -671,14 +671,37 @@ def _a_daily_code(engine) -> str:
     raise AssertionError("no daily stock configured")
 
 
+#: Mid-morning: inside the session, outside every configured entry window, so
+#: the cadence is the strategy's own rather than the entry-window override.
+QUIET = datetime(2026, 8, 19, 11, 0, tzinfo=KST)
+
+
 def test_a_daily_stock_is_due_once_a_day_when_flat(workdir):
     engine = _engine(workdir)
     code = _a_daily_code(engine)
     now = 1000.0
-    assert code in engine.due_codes(now)      # first look
+    assert code in engine.due_codes(now, moment=QUIET)      # first look
     engine.mark_ran(code, now)
     # A daily stock's signal cadence is 24h; an hour later it is not due.
-    assert code not in engine.due_codes(now + 3600)
+    assert code not in engine.due_codes(now + 3600, moment=QUIET)
+
+
+def test_a_stock_inside_its_entry_window_is_due_every_minute(workdir):
+    """A four-minute window on a daily cadence would never be looked at."""
+    engine = _engine(workdir)
+    # A stock whose window does not contain QUIET, so the two cadences differ.
+    code = next(
+        c
+        for c in engine.rt.strategies
+        if engine.session_rules(c).entry_from
+        and not engine.session_rules(c).entry_allowed(QUIET)[0]
+    )
+    rules = engine.session_rules(code)
+    inside = QUIET.replace(hour=rules.entry_from.hour, minute=rules.entry_from.minute)
+    now = 1000.0
+    engine.mark_ran(code, now)
+    assert code not in engine.due_codes(now + 90, moment=QUIET)
+    assert code in engine.due_codes(now + 90, moment=inside)
 
 
 def test_a_daily_stock_with_a_position_is_due_every_tick(workdir):
@@ -689,7 +712,7 @@ def test_a_daily_stock_with_a_position_is_due_every_tick(workdir):
     code = _a_daily_code(engine)
     now = 1000.0
     engine.mark_ran(code, now)
-    assert code not in engine.due_codes(now + 3600)
+    assert code not in engine.due_codes(now + 3600, moment=QUIET)
 
     engine.rt.portfolio.open_position(
         Position(
@@ -701,8 +724,8 @@ def test_a_daily_stock_with_a_position_is_due_every_tick(workdir):
             stop_distance=3_200.0,
         )
     )
-    assert code in engine.due_codes(now + 30)
-    assert code in engine.due_codes(now + 3600)
+    assert code in engine.due_codes(now + 30, moment=QUIET)
+    assert code in engine.due_codes(now + 3600, moment=QUIET)
 
 
 # ---------------------------------------------------------------------------

@@ -574,6 +574,7 @@ class TradingEngine:
                     stop_distance=sizing.stop_distance,
                     strategy=strategy.name,
                     trail_stop=signal.trail_stop,
+                    take_profit=signal.take_profit,
                 )
             )
         else:

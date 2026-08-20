@@ -88,6 +88,8 @@ universe:
       period: 10
       volume_mult: 1.5
       atr_trail_mult: 1.5
+      stop_pct: 0.02
+      take_profit_pct: 0.04
 
   "002990":
     name: 금호건설
@@ -102,6 +104,8 @@ universe:
       period: 10
       volume_mult: 1.5
       atr_trail_mult: 1.5
+      stop_pct: 0.02
+      take_profit_pct: 0.04
 
   "093370":
     name: 후성
@@ -116,6 +120,8 @@ universe:
       period: 10
       volume_mult: 1.5
       atr_trail_mult: 1.5
+      stop_pct: 0.02
+      take_profit_pct: 0.04
 
   "006340":
     name: 대원전선
@@ -130,6 +136,8 @@ universe:
       period: 10
       volume_mult: 1.5
       atr_trail_mult: 1.5
+      stop_pct: 0.02
+      take_profit_pct: 0.04
 
   "073240":
     name: 금호타이어
@@ -144,6 +152,8 @@ universe:
       period: 10
       volume_mult: 1.5
       atr_trail_mult: 1.5
+      stop_pct: 0.02
+      take_profit_pct: 0.04
 
   # --- Close-based trading (종가매매), daily bars ---------------------------
   # The four quietest names. Their intraday range barely clears the round trip,

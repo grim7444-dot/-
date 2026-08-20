@@ -95,6 +95,7 @@ class Position:
     strategy: str = ""
     entry_time: str = ""
     trail_stop: float | None = None
+    take_profit: float | None = None
     highest_price: float | None = None
     lowest_price: float | None = None
 

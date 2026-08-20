@@ -57,6 +57,7 @@ class Signal:
     bar_index: int = -1
     bar_time: pd.Timestamp | None = None
     trail_stop: float | None = None
+    take_profit: float | None = None
     meta: dict[str, Any] | None = None
 
     @property
@@ -128,6 +129,7 @@ class Strategy:
         reason: str,
         atr_value: float,
         trail_stop: float | None = None,
+        take_profit: float | None = None,
         meta: dict[str, Any] | None = None,
     ) -> Signal:
         return Signal(
@@ -140,6 +142,7 @@ class Strategy:
             bar_index=len(window) - 1,
             bar_time=window.index[-1],
             trail_stop=trail_stop,
+            take_profit=take_profit,
             meta=meta,
         )
 

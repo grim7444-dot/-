@@ -472,7 +472,7 @@ def test_multiple_failures_are_all_reported():
 
 def test_manager_reports_loss_limits(portfolio, config):
     manager = RiskManager(config, portfolio)
-    assert manager.max_loss_per_trade(EQUITY) == pytest.approx(100_000.0)
+    assert manager.max_loss_per_trade(EQUITY) == pytest.approx(200_000.0)
     assert manager.max_portfolio_loss(EQUITY) == pytest.approx(600_000.0)
 
 

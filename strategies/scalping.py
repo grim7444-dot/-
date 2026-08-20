@@ -79,6 +79,11 @@ class Scalping(Strategy):
         atr_period: int = 14,
         hard_stop_atr_mult: float = 1.0,
         allow_short: bool = False,
+        #: Fixed stop as a fraction of price (e.g. 0.02 = 2%). When set,
+        #: overrides the ATR-based stop and cost gate.
+        stop_pct: float = 0.0,
+        #: Fixed take-profit as a fraction of price (e.g. 0.04 = 4%).
+        take_profit_pct: float = 0.0,
         **params,
     ) -> None:
         super().__init__(
@@ -94,6 +99,8 @@ class Scalping(Strategy):
         self.max_cost_share = max_cost_share
         self.round_trip_cost_pct = round_trip_cost_pct
         self.allow_short = allow_short
+        self.stop_pct = stop_pct
+        self.take_profit_pct = take_profit_pct
 
     #: Bars in one 09:00-15:30 session, by timeframe label.
     _SESSION_BARS = {
@@ -141,10 +148,13 @@ class Scalping(Strategy):
         vol_ratio = (volume / avg_volume) if avg_volume > 0 else 0.0
 
         # --- manage an open position ---------------------------------------
-        # The ATR trail and the hard stop are enforced by the engine; the only
-        # exit this adds is losing the session's own reference price, which is
-        # the signal that the move being traded has stopped working.
         if position is not None:
+            if position.take_profit and position.is_long and price >= position.take_profit:
+                return self._signal(
+                    window, Action.EXIT,
+                    f"take profit {position.take_profit:,.0f} reached (close={price:,.0f})",
+                    atr_value,
+                )
             if position.is_long and price < vwap_now:
                 return self._signal(
                     window,
@@ -155,19 +165,29 @@ class Scalping(Strategy):
             return self._hold(window, f"holding, VWAP {vwap_now:,.0f}")
 
         # --- entries --------------------------------------------------------
-        if atr_value <= 0:
-            return self._hold(window, "ATR unavailable")
-
-        atr_pct = atr_value / price if price > 0 else 0.0
-        if atr_pct < self.min_atr_pct:
-            return self._hold(
-                window,
-                f"too quiet to pay for itself: costs would be "
-                f"{self.round_trip_cost_pct / atr_pct:.0%} of the amount risked "
-                f"(ATR {atr_pct:.2%}, limit {self.max_cost_share:.0%})"
-                if atr_pct > 0
-                else "ATR unavailable",
-            )
+        # Fixed-pct stop overrides the ATR cost gate entirely.
+        if self.stop_pct > 0:
+            effective_atr = price * self.stop_pct
+            cost_share = self.round_trip_cost_pct / self.stop_pct
+            if cost_share > self.max_cost_share:
+                return self._hold(
+                    window,
+                    f"too expensive: costs {cost_share:.0%} of stop (limit {self.max_cost_share:.0%})",
+                )
+        else:
+            if atr_value <= 0:
+                return self._hold(window, "ATR unavailable")
+            atr_pct = atr_value / price if price > 0 else 0.0
+            if atr_pct < self.min_atr_pct:
+                return self._hold(
+                    window,
+                    f"too quiet to pay for itself: costs would be "
+                    f"{self.round_trip_cost_pct / atr_pct:.0%} of the amount risked "
+                    f"(ATR {atr_pct:.2%}, limit {self.max_cost_share:.0%})"
+                    if atr_pct > 0
+                    else "ATR unavailable",
+                )
+            effective_atr = atr_value
 
         if price <= vwap_now:
             return self._hold(window, f"below session VWAP {vwap_now:,.0f}")
@@ -179,18 +199,24 @@ class Scalping(Strategy):
                 f"break rejected: volume {vol_ratio:.2f}x < {self.volume_mult}x",
             )
 
+        take_profit = price * (1 + self.take_profit_pct) if self.take_profit_pct > 0 else None
+        stop_label = (
+            f"{self.stop_pct:.0%} fixed stop" if self.stop_pct > 0
+            else f"ATR trail"
+        )
+        tp_label = f", TP {take_profit:,.0f}" if take_profit else ""
         return self._signal(
             window,
             Action.ENTER_LONG,
             f"{self.timeframe} break of {prior_high:,.0f} on {vol_ratio:.2f}x volume, "
-            f"above VWAP {vwap_now:,.0f}",
-            atr_value,
-            trail_stop=price - self.atr_trail_mult * atr_value,
+            f"above VWAP {vwap_now:,.0f} [{stop_label}{tp_label}]",
+            effective_atr,
+            trail_stop=price - self.atr_trail_mult * effective_atr if self.stop_pct == 0 else None,
+            take_profit=take_profit,
             meta={
                 "prior_high": prior_high,
                 "vwap": vwap_now,
                 "volume_ratio": vol_ratio,
-                "atr_pct": atr_pct,
             },
         )
 

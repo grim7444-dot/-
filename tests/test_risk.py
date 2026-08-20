@@ -484,7 +484,7 @@ def test_manager_sizes_in_whole_shares(portfolio, config):
     )
     assert result.ok
     assert result.qty == int(result.qty)
-    assert result.realised_risk() <= EQUITY * RISK_PCT
+    assert result.realised_risk() <= EQUITY * config["risk"]["per_trade_pct"]
 
 
 def test_manager_skips_when_atr_is_unavailable(portfolio, config):

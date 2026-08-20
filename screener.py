@@ -33,7 +33,10 @@ _SCALPING_CFG_TEMPLATE: dict[str, Any] = {
         "volume_mult": 1.5,
         "atr_trail_mult": 1.5,
         "stop_pct": 0.02,
-        "take_profit_pct": 0.04,
+        "take_profit_pct": 0.02,
+        "volume_exit_mult": 2.5,
+        "peak_trail_pct": 0.015,
+        "min_bar_strength": 0.5,
     },
 }
 

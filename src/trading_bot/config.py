@@ -45,6 +45,11 @@ class Config:
                 "apiKey": os.getenv("UPBIT_ACCESS_KEY", ""),
                 "secret": os.getenv("UPBIT_SECRET_KEY", ""),
             }
+        elif name == "kiwoom":
+            return {
+                "account_no": os.getenv("KIWOOM_ACCOUNT_NO", ""),
+                "market": os.getenv("KIWOOM_MARKET", "stock"),  # stock | futures
+            }
         return {}
 
     @property

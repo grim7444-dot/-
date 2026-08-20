@@ -1,0 +1,35 @@
+# 트레이딩 봇 설정 파일
+
+exchange:
+  name: binance          # binance 또는 upbit
+  testnet: true          # true: 테스트넷 사용 (Binance만 지원)
+
+trading:
+  symbol: BTC/USDT       # 거래 페어 (Upbit: BTC/KRW)
+  timeframe: 1h          # 캔들 주기: 1m, 5m, 15m, 1h, 4h, 1d
+  trade_amount: 100      # 1회 거래 금액 (USDT 또는 KRW)
+  max_positions: 3       # 최대 동시 보유 포지션 수
+
+strategy:
+  name: ma_crossover     # 전략: ma_crossover, rsi, macd
+  params:
+    # MA 크로스오버 전략 파라미터
+    fast_period: 9
+    slow_period: 21
+    # RSI 전략 파라미터
+    rsi_period: 14
+    rsi_oversold: 30
+    rsi_overbought: 70
+    # MACD 전략 파라미터
+    macd_fast: 12
+    macd_slow: 26
+    macd_signal: 9
+
+risk:
+  stop_loss_pct: 2.0     # 손절 비율 (%)
+  take_profit_pct: 4.0   # 익절 비율 (%)
+  max_drawdown_pct: 10.0 # 최대 낙폭 허용 비율 (%)
+
+logging:
+  level: INFO
+  file: logs/bot.log

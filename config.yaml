@@ -41,10 +41,11 @@ themes:
   # they are deliberately separate themes.
   auto_parts: ["073240"]                  # 금호타이어
   power_energy: ["006340", "009830"]      # 대원전선, 한화솔루션
-  battery_materials: ["093370"]           # 후성
+  battery_materials: ["093370", "247540"] # 후성, 에코프로비엠
   shipbuilding: ["460930"]                # 현대힘스
   robotics: ["439960"]                    # 코스모로보틱스
-  game: ["101730"]                        # 위메이드맥스
+  game: ["101730", "263750", "293490"]   # 위메이드맥스, 펄어비스, 카카오게임즈
+  pharma: ["028300"]                      # HLB
 
 # ---------------------------------------------------------------------------
 # Universe
@@ -206,10 +207,71 @@ universe:
     name: 코스모로보틱스
     market: KOSDAQ
     enabled: true
-    # Listed 2026-05-11, so a 200-day lookback cannot warm up. close_auction
-    # needs only 20 days, which this has -- one reason it suits a young
-    # listing better than the trend system it used to run.
     listed_on: "2026-05-11"
+    strategy: close_auction
+    timeframe: 1Day
+    min_qty: 1
+    entry_window: ["15:15", "15:19"]
+    force_exit_at: "09:05"
+    hold_overnight: true
+    params:
+      trend_ema: 20
+      volume_mult: 1.2
+      close_strength: 0.7
+      atr_trail_mult: 2.0
+
+  "247540":
+    name: 에코프로비엠
+    market: KOSDAQ
+    enabled: true
+    strategy: close_auction
+    timeframe: 1Day
+    min_qty: 1
+    entry_window: ["15:15", "15:19"]
+    force_exit_at: "09:05"
+    hold_overnight: true
+    params:
+      trend_ema: 20
+      volume_mult: 1.2
+      close_strength: 0.7
+      atr_trail_mult: 2.0
+
+  "028300":
+    name: HLB
+    market: KOSDAQ
+    enabled: true
+    strategy: close_auction
+    timeframe: 1Day
+    min_qty: 1
+    entry_window: ["15:15", "15:19"]
+    force_exit_at: "09:05"
+    hold_overnight: true
+    params:
+      trend_ema: 20
+      volume_mult: 1.2
+      close_strength: 0.7
+      atr_trail_mult: 2.0
+
+  "263750":
+    name: 펄어비스
+    market: KOSDAQ
+    enabled: true
+    strategy: close_auction
+    timeframe: 1Day
+    min_qty: 1
+    entry_window: ["15:15", "15:19"]
+    force_exit_at: "09:05"
+    hold_overnight: true
+    params:
+      trend_ema: 20
+      volume_mult: 1.2
+      close_strength: 0.7
+      atr_trail_mult: 2.0
+
+  "293490":
+    name: 카카오게임즈
+    market: KOSDAQ
+    enabled: true
     strategy: close_auction
     timeframe: 1Day
     min_qty: 1

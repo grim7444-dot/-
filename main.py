@@ -437,6 +437,11 @@ class TradingEngine:
 
         # Kiwoom has no bracket order, so the loop enforces the hard stop itself.
         if position is not None:
+            # Track the highest price seen since entry for peak-based exits.
+            if price > (position.highest_price or 0.0):
+                position.highest_price = price
+                rt.portfolio.update_position(position)
+
             new_trail = strategy.update_trailing_stop(bars, position)
             if new_trail is not None and new_trail != position.trail_stop:
                 position.trail_stop = new_trail

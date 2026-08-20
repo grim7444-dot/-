@@ -89,7 +89,9 @@ universe:
       volume_mult: 1.5
       atr_trail_mult: 1.5
       stop_pct: 0.02
-      take_profit_pct: 0.04
+      take_profit_pct: 0.02
+      volume_exit_mult: 2.5
+      peak_trail_pct: 0.015
       min_bar_strength: 0.5
 
   "002990":
@@ -106,7 +108,9 @@ universe:
       volume_mult: 1.5
       atr_trail_mult: 1.5
       stop_pct: 0.02
-      take_profit_pct: 0.04
+      take_profit_pct: 0.02
+      volume_exit_mult: 2.5
+      peak_trail_pct: 0.015
       min_bar_strength: 0.5
 
   "093370":
@@ -123,7 +127,9 @@ universe:
       volume_mult: 1.5
       atr_trail_mult: 1.5
       stop_pct: 0.02
-      take_profit_pct: 0.04
+      take_profit_pct: 0.02
+      volume_exit_mult: 2.5
+      peak_trail_pct: 0.015
       min_bar_strength: 0.5
 
   "006340":
@@ -140,7 +146,9 @@ universe:
       volume_mult: 1.5
       atr_trail_mult: 1.5
       stop_pct: 0.02
-      take_profit_pct: 0.04
+      take_profit_pct: 0.02
+      volume_exit_mult: 2.5
+      peak_trail_pct: 0.015
       min_bar_strength: 0.5
 
   "073240":
@@ -157,7 +165,9 @@ universe:
       volume_mult: 1.5
       atr_trail_mult: 1.5
       stop_pct: 0.02
-      take_profit_pct: 0.04
+      take_profit_pct: 0.02
+      volume_exit_mult: 2.5
+      peak_trail_pct: 0.015
       min_bar_strength: 0.5
 
   "086520":
@@ -174,7 +184,9 @@ universe:
       volume_mult: 1.5
       atr_trail_mult: 1.5
       stop_pct: 0.02
-      take_profit_pct: 0.04
+      take_profit_pct: 0.02
+      volume_exit_mult: 2.5
+      peak_trail_pct: 0.015
       min_bar_strength: 0.5
 
   "003670":
@@ -191,7 +203,9 @@ universe:
       volume_mult: 1.5
       atr_trail_mult: 1.5
       stop_pct: 0.02
-      take_profit_pct: 0.04
+      take_profit_pct: 0.02
+      volume_exit_mult: 2.5
+      peak_trail_pct: 0.015
       min_bar_strength: 0.5
 
   "068270":
@@ -208,7 +222,9 @@ universe:
       volume_mult: 1.5
       atr_trail_mult: 1.5
       stop_pct: 0.02
-      take_profit_pct: 0.04
+      take_profit_pct: 0.02
+      volume_exit_mult: 2.5
+      peak_trail_pct: 0.015
       min_bar_strength: 0.5
 
   "196170":
@@ -225,7 +241,9 @@ universe:
       volume_mult: 1.5
       atr_trail_mult: 1.5
       stop_pct: 0.02
-      take_profit_pct: 0.04
+      take_profit_pct: 0.02
+      volume_exit_mult: 2.5
+      peak_trail_pct: 0.015
       min_bar_strength: 0.5
 
   # --- Close-based trading (종가매매), daily bars ---------------------------

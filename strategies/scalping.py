@@ -82,8 +82,17 @@ class Scalping(Strategy):
         #: Fixed stop as a fraction of price (e.g. 0.02 = 2%). When set,
         #: overrides the ATR-based stop and cost gate.
         stop_pct: float = 0.0,
-        #: Fixed take-profit as a fraction of price (e.g. 0.04 = 4%).
+        #: Minimum take-profit as a fraction of price (e.g. 0.02 = 2%).
+        #: This is a FLOOR, not a ceiling: when volume is surging the bot
+        #: holds past this level and trails from the peak instead.
         take_profit_pct: float = 0.0,
+        #: Volume multiple required to hold past the minimum TP. When the
+        #: breakout bar's volume exceeds avg x this multiple the position is
+        #: kept open to capture the full move.
+        volume_exit_mult: float = 2.5,
+        #: Once past min TP, exit when price pulls back this fraction from
+        #: the highest price seen since entry (peak trail).
+        peak_trail_pct: float = 0.015,
         #: Minimum bar strength on the breakout bar: close must be this far
         #: into the bar's range (0=low, 1=high). 0.5 means the bar must close
         #: in the upper half -- i.e. buyers controlled the bar, not sellers.
@@ -105,6 +114,8 @@ class Scalping(Strategy):
         self.allow_short = allow_short
         self.stop_pct = stop_pct
         self.take_profit_pct = take_profit_pct
+        self.volume_exit_mult = volume_exit_mult
+        self.peak_trail_pct = peak_trail_pct
         self.min_bar_strength = min_bar_strength
 
     #: Bars in one 09:00-15:30 session, by timeframe label.
@@ -154,12 +165,38 @@ class Scalping(Strategy):
 
         # --- manage an open position ---------------------------------------
         if position is not None:
-            if position.take_profit and position.is_long and price >= position.take_profit:
-                return self._signal(
-                    window, Action.EXIT,
-                    f"take profit {position.take_profit:,.0f} reached (close={price:,.0f})",
-                    atr_value,
-                )
+            min_tp = position.take_profit  # entry × (1 + take_profit_pct), floor only
+            peak = position.highest_price or price
+            vol_ratio = (volume / avg_volume) if avg_volume > 0 else 0.0
+
+            if min_tp and position.is_long:
+                if price >= min_tp:
+                    # Minimum TP hit: stay in if volume is still surging.
+                    if vol_ratio >= self.volume_exit_mult:
+                        return self._hold(
+                            window,
+                            f"past min TP {min_tp:,.0f}, vol {vol_ratio:.1f}x surging - "
+                            f"holding for peak (high={peak:,.0f})",
+                        )
+                    # Volume fading at or above min TP: exit.
+                    return self._signal(
+                        window, Action.EXIT,
+                        f"min TP {min_tp:,.0f} hit, vol {vol_ratio:.1f}x (exit threshold "
+                        f"{self.volume_exit_mult:.1f}x)",
+                        atr_value,
+                    )
+
+                # Still below min TP but we have been above it (peak trail).
+                if peak >= min_tp:
+                    trail_price = peak * (1.0 - self.peak_trail_pct)
+                    if price <= trail_price:
+                        return self._signal(
+                            window, Action.EXIT,
+                            f"peak trail: {price:,.0f} pulled back {self.peak_trail_pct:.1%} "
+                            f"from peak {peak:,.0f}",
+                            atr_value,
+                        )
+
             if position.is_long and price < vwap_now:
                 return self._signal(
                     window,
@@ -167,7 +204,7 @@ class Scalping(Strategy):
                     f"lost session VWAP {vwap_now:,.0f}",
                     atr_value,
                 )
-            return self._hold(window, f"holding, VWAP {vwap_now:,.0f}")
+            return self._hold(window, f"holding, VWAP {vwap_now:,.0f}, vol {vol_ratio:.1f}x")
 
         # --- entries --------------------------------------------------------
         # Fixed-pct stop overrides the ATR cost gate entirely.

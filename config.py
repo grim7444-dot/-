@@ -17,10 +17,12 @@ SPORTS = {
     },
     "baseball": {
         "espn_sport": "baseball",
-        "aliases": ["야구", "baseball", "mlb"],
+        "aliases": ["야구", "baseball", "mlb", "kbo", "npb"],
         "emoji": "⚾",
         "leagues": {
-            "mlb": {"id": "mlb", "name": "MLB 🇺🇸"},
+            "mlb": {"id": "mlb",    "name": "MLB 🇺🇸"},
+            "kbo": {"id": "kor.1",  "name": "KBO 🇰🇷"},
+            "npb": {"id": "jpn.1",  "name": "NPB 🇯🇵"},
         },
         "default_league": "mlb",
     },

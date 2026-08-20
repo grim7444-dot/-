@@ -7,7 +7,7 @@
 | 스포츠 | 별칭 | 지원 리그 |
 |--------|------|-----------|
 | soccer (축구) | football, 축구, 풋볼 | Premier League, La Liga, Bundesliga, Serie A, Ligue 1, MLS, K League 1, UCL |
-| baseball (야구) | 야구, mlb | MLB |
+| baseball (야구) | 야구, mlb, kbo, npb | MLB 🇺🇸, KBO 🇰🇷, NPB 🇯🇵 |
 | basketball (농구) | 농구, nba | NBA, WNBA |
 | football (미식축구) | 미식축구, nfl | NFL, NCAA |
 | hockey (하키) | 아이스하키, 하키, nhl | NHL |

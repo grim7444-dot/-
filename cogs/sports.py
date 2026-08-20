@@ -14,13 +14,21 @@ from utils.formatter import (
 )
 
 
-def _lookup(sport_input: str) -> tuple[str, str, str] | None:
-    """Return (sport_key, espn_sport, default_league_id) or None."""
+def _lookup(sport_input: str) -> tuple[str, str, str, str] | None:
+    """Return (sport_key, espn_sport, league_id, league_name) or None.
+
+    If sport_input matches a league key directly (e.g. 'kbo', 'npb'),
+    return that league instead of the sport's default league.
+    """
     sport_input = sport_input.lower().strip()
     for key, data in SPORTS.items():
+        if sport_input in data["leagues"]:
+            league = data["leagues"][sport_input]
+            return key, data["espn_sport"], league["id"], league["name"]
         if sport_input == key or sport_input in data["aliases"]:
             default = data["default_league"]
-            return key, data["espn_sport"], data["leagues"][default]["id"]
+            league = data["leagues"][default]
+            return key, data["espn_sport"], league["id"], league["name"]
     return None
 
 
@@ -59,8 +67,7 @@ class Sports(commands.Cog):
             await ctx.send(f"❌ 알 수 없는 스포츠: `{sport_input}`\n`!sports` 명령어로 목록을 확인하세요.")
             return
 
-        sport_key, espn_sport, league_id = res
-        league_name = SPORTS[sport_key]["leagues"][SPORTS[sport_key]["default_league"]]["name"]
+        sport_key, espn_sport, league_id, league_name = res
 
         if league_input:
             result = _league_id(sport_key, league_input)
@@ -88,8 +95,7 @@ class Sports(commands.Cog):
             await ctx.send(f"❌ 알 수 없는 스포츠: `{sport_input}`\n`!sports` 명령어로 목록을 확인하세요.")
             return
 
-        sport_key, espn_sport, league_id = res
-        league_name = SPORTS[sport_key]["leagues"][SPORTS[sport_key]["default_league"]]["name"]
+        sport_key, espn_sport, league_id, league_name = res
 
         if league_input:
             result = _league_id(sport_key, league_input)
@@ -121,8 +127,7 @@ class Sports(commands.Cog):
             await ctx.send(f"❌ 알 수 없는 스포츠: `{sport_input}`")
             return
 
-        sport_key, espn_sport, league_id = res
-        league_name = SPORTS[sport_key]["leagues"][SPORTS[sport_key]["default_league"]]["name"]
+        sport_key, espn_sport, league_id, league_name = res
 
         # Second arg might be a league override; try it first
         team_query = " ".join(args)

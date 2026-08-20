@@ -41,11 +41,11 @@ themes:
   # they are deliberately separate themes.
   auto_parts: ["073240"]                  # 금호타이어
   power_energy: ["006340", "009830"]      # 대원전선, 한화솔루션
-  battery_materials: ["093370", "247540"] # 후성, 에코프로비엠
+  battery_materials: ["093370", "247540", "086520", "003670"] # 후성, 에코프로비엠, 에코프로, 포스코퓨처엠
   shipbuilding: ["460930"]                # 현대힘스
   robotics: ["439960"]                    # 코스모로보틱스
   game: ["101730", "263750", "293490"]   # 위메이드맥스, 펄어비스, 카카오게임즈
-  pharma: ["028300"]                      # HLB
+  pharma: ["028300", "068270", "196170"] # HLB, 셀트리온, 알테오젠
 
 # ---------------------------------------------------------------------------
 # Universe
@@ -142,6 +142,70 @@ universe:
   "073240":
     name: 금호타이어
     market: KOSPI
+    enabled: true
+    strategy: scalping
+    timeframe: 30Min
+    min_qty: 1
+    entry_window: ["09:15", "14:30"]
+    force_exit_at: "15:10"
+    params:
+      period: 10
+      volume_mult: 1.5
+      atr_trail_mult: 1.5
+      stop_pct: 0.02
+      take_profit_pct: 0.04
+
+  "086520":
+    name: 에코프로
+    market: KOSDAQ
+    enabled: true
+    strategy: scalping
+    timeframe: 30Min
+    min_qty: 1
+    entry_window: ["09:15", "14:30"]
+    force_exit_at: "15:10"
+    params:
+      period: 10
+      volume_mult: 1.5
+      atr_trail_mult: 1.5
+      stop_pct: 0.02
+      take_profit_pct: 0.04
+
+  "003670":
+    name: 포스코퓨처엠
+    market: KOSPI
+    enabled: true
+    strategy: scalping
+    timeframe: 30Min
+    min_qty: 1
+    entry_window: ["09:15", "14:30"]
+    force_exit_at: "15:10"
+    params:
+      period: 10
+      volume_mult: 1.5
+      atr_trail_mult: 1.5
+      stop_pct: 0.02
+      take_profit_pct: 0.04
+
+  "068270":
+    name: 셀트리온
+    market: KOSPI
+    enabled: true
+    strategy: scalping
+    timeframe: 30Min
+    min_qty: 1
+    entry_window: ["09:15", "14:30"]
+    force_exit_at: "15:10"
+    params:
+      period: 10
+      volume_mult: 1.5
+      atr_trail_mult: 1.5
+      stop_pct: 0.02
+      take_profit_pct: 0.04
+
+  "196170":
+    name: 알테오젠
+    market: KOSDAQ
     enabled: true
     strategy: scalping
     timeframe: 30Min
@@ -375,6 +439,22 @@ backtest:
   # Rule 10: fills happen on the bar *after* the signal bar.
   fill_delay_bars: 1
   respect_price_limits: true
+
+# ---------------------------------------------------------------------------
+# Daily theme screener
+#
+# Runs once at 09:00-09:10 each session. Fetches KOSDAQ/KOSPI top stocks by
+# trading value, filters by ATR% and liquidity, and injects up to n_stocks
+# into the scalping universe for the day. Stocks already in `universe` are
+# never duplicated. Set enabled: false to use only the static universe.
+# ---------------------------------------------------------------------------
+screener:
+  enabled: true
+  n_stocks: 5               # max dynamic stocks to add per session
+  markets: ["KOSDAQ", "KOSPI"]
+  min_price: 3000           # skip sub-3000 KRW stocks (wide spreads)
+  min_atr_pct: 0.015        # 1.5% daily ATR minimum (cost gate still applies)
+  min_trading_value_m: 5000 # 5000억 KRW daily trading value minimum
 
 telegram:
   # Rule 12: dry-run by default. A missing token prints a preview, not an error.

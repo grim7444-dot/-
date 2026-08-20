@@ -208,7 +208,7 @@ def test_dry_run_broker_gets_its_own_mode_label(workdir, monkeypatch):
     captured: dict[str, object] = {}
     real_build = main.build_runtime
 
-    def spy(args, cli_live, force_dry_run=False):
+    def spy(args, cli_live, force_dry_run=False, run_screener=False):
         rt = real_build(args, cli_live, force_dry_run)
         captured["portfolio"] = rt.portfolio
         return rt

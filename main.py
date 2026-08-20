@@ -147,6 +147,7 @@ def build_runtime(
     args: argparse.Namespace,
     cli_live: bool,
     force_dry_run: bool = False,
+    run_screener: bool = False,
 ) -> Runtime:
     env = load_env()
     config = load_config(getattr(args, "config", None))
@@ -157,6 +158,20 @@ def build_runtime(
     print_mode_notice(decision)
     if decision.demoted:
         logger.warning("demoted to paper: %s", "; ".join(decision.reasons))
+
+    # Inject daily screener stocks into the universe before building strategies.
+    if run_screener:
+        try:
+            from screener import DailyScreener
+            found = DailyScreener(config).scan()
+            if found:
+                universe = dict(config.get("universe") or {})
+                for ticker, asset_cfg in found:
+                    universe[ticker] = asset_cfg
+                config = {**config, "universe": universe}
+                print(f"  Screener added {len(found)} stock(s): {', '.join(t for t, _ in found)}")
+        except Exception as exc:
+            logger.warning("screener failed, using static universe: %s", exc)
 
     # Only the key set matching the resolved mode is read (safety rule 2).
     credentials = load_credentials(env, decision)
@@ -872,7 +887,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
 
 def cmd_trade(args: argparse.Namespace, cli_live: bool) -> int:
     force_dry_run = bool(getattr(args, "dry_run", False))
-    rt = build_runtime(args, cli_live=cli_live, force_dry_run=force_dry_run)
+    rt = build_runtime(args, cli_live=cli_live, force_dry_run=force_dry_run, run_screener=True)
 
     if rt.decision.live:
         try:

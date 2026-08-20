@@ -301,7 +301,7 @@ def test_cli_live_once_without_env_runs_on_paper(workdir, monkeypatch, capsys):
     captured: dict[str, object] = {}
     real_build = main.build_runtime
 
-    def spy(args, cli_live, force_dry_run=False):
+    def spy(args, cli_live, force_dry_run=False, run_screener=False):
         rt = real_build(args, cli_live, force_dry_run)
         captured["decision"] = rt.decision
         captured["broker"] = rt.broker
@@ -337,7 +337,7 @@ def test_cli_paper_dry_run_never_submits(workdir, monkeypatch):
     captured: dict[str, object] = {}
     real_build = main.build_runtime
 
-    def spy(args, cli_live, force_dry_run=False):
+    def spy(args, cli_live, force_dry_run=False, run_screener=False):
         rt = real_build(args, cli_live, force_dry_run)
         captured["broker"] = rt.broker
         captured["decision"] = rt.decision
@@ -360,7 +360,7 @@ def test_check_command_never_submits_an_order(workdir, monkeypatch):
     captured: dict[str, object] = {}
     real_build = main.build_runtime
 
-    def spy(args, cli_live, force_dry_run=False):
+    def spy(args, cli_live, force_dry_run=False, run_screener=False):
         rt = real_build(args, cli_live, force_dry_run)
         captured["broker"] = rt.broker
         captured["decision"] = rt.decision
@@ -384,7 +384,7 @@ def test_check_with_live_flag_still_needs_the_env(workdir, monkeypatch):
     captured: dict[str, object] = {}
     real_build = main.build_runtime
 
-    def spy(args, cli_live, force_dry_run=False):
+    def spy(args, cli_live, force_dry_run=False, run_screener=False):
         rt = real_build(args, cli_live, force_dry_run)
         captured["decision"] = rt.decision
         captured["credentials"] = rt.credentials

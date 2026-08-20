@@ -32,6 +32,8 @@ logger = logging.getLogger("bot.calendar")
 
 KST = ZoneInfo("Asia/Seoul")
 
+NXT_PREMARKET_START = time(8, 0)   # NXT (NextTrade ATS) opens for pre-market
+NXT_PREMARKET_END = time(8, 30)    # KRX opening auction starts; NXT bias is set
 OPENING_AUCTION_START = time(8, 30)
 REGULAR_OPEN = time(9, 0)
 CLOSING_AUCTION_START = time(15, 20)
@@ -40,6 +42,7 @@ REGULAR_CLOSE = time(15, 30)
 
 class SessionPhase(str, Enum):
     CLOSED = "CLOSED"
+    NXT_PREMARKET = "NXT_PREMARKET"
     OPENING_AUCTION = "OPENING_AUCTION"
     CONTINUOUS = "CONTINUOUS"
     CLOSING_AUCTION = "CLOSING_AUCTION"
@@ -123,6 +126,8 @@ class KrxCalendar:
         if not self.is_business_day(local.date()):
             return SessionPhase.CLOSED
         clock = local.time()
+        if NXT_PREMARKET_START <= clock < NXT_PREMARKET_END:
+            return SessionPhase.NXT_PREMARKET
         if OPENING_AUCTION_START <= clock < REGULAR_OPEN:
             return SessionPhase.OPENING_AUCTION
         if CLOSING_AUCTION_START <= clock < REGULAR_CLOSE:
@@ -131,24 +136,37 @@ class KrxCalendar:
             return SessionPhase.CONTINUOUS
         return SessionPhase.CLOSED
 
+    def is_nxt_premarket(self, moment: datetime | None = None) -> bool:
+        return self.phase(moment) is SessionPhase.NXT_PREMARKET
+
     def is_open(self, moment: datetime | None = None) -> bool:
         """True during continuous trading only."""
         return self.phase(moment) is SessionPhase.CONTINUOUS
 
     def in_session(self, moment: datetime | None = None) -> bool:
-        """True during continuous trading *or* either auction."""
-        return self.phase(moment) is not SessionPhase.CLOSED
+        """True during continuous trading or either auction (not NXT pre-market)."""
+        return self.phase(moment) not in (SessionPhase.CLOSED, SessionPhase.NXT_PREMARKET)
 
     def can_place_market_order(self, moment: datetime | None = None) -> tuple[bool, str]:
         """Market orders are only safe during continuous trading."""
         phase = self.phase(moment)
         if phase is SessionPhase.CONTINUOUS:
             return True, ""
+        if phase is SessionPhase.NXT_PREMARKET:
+            return False, "NXT pre-market (08:00-08:30): bias scan only, no orders"
         if phase is SessionPhase.OPENING_AUCTION:
             return False, "opening call auction (08:30-09:00): no continuous order book"
         if phase is SessionPhase.CLOSING_AUCTION:
             return False, "closing call auction (15:20-15:30): no continuous order book"
         return False, "market closed (KRX trades 09:00-15:30 KST on business days)"
+
+    def next_nxt_start(self, moment: datetime | None = None) -> datetime:
+        """The next NXT pre-market start after *moment*."""
+        local = self._to_kst(moment)
+        today_nxt = datetime.combine(local.date(), NXT_PREMARKET_START, tzinfo=KST)
+        if self.is_business_day(local.date()) and local < today_nxt:
+            return today_nxt
+        return datetime.combine(self.next_business_day(local.date()), NXT_PREMARKET_START, tzinfo=KST)
 
     def next_open(self, moment: datetime | None = None) -> datetime:
         """The next continuous-trading start after *moment*."""

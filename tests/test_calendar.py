@@ -91,7 +91,9 @@ def test_unparseable_holiday_entries_are_ignored():
 @pytest.mark.parametrize(
     "moment,expected",
     [
-        (at(2025, 1, 2, 8, 0), SessionPhase.CLOSED),
+        (at(2025, 1, 2, 7, 59), SessionPhase.CLOSED),
+        (at(2025, 1, 2, 8, 0), SessionPhase.NXT_PREMARKET),
+        (at(2025, 1, 2, 8, 29), SessionPhase.NXT_PREMARKET),
         (at(2025, 1, 2, 8, 30), SessionPhase.OPENING_AUCTION),
         (at(2025, 1, 2, 8, 59), SessionPhase.OPENING_AUCTION),
         (at(2025, 1, 2, 9, 0), SessionPhase.CONTINUOUS),

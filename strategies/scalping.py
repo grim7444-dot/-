@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from indicators import rolling_max, rolling_mean_volume
+from indicators import bar_strength, rolling_max, rolling_mean_volume
 from portfolio import Position
 from strategies.base import Action, Signal, Strategy
 
@@ -84,6 +84,10 @@ class Scalping(Strategy):
         stop_pct: float = 0.0,
         #: Fixed take-profit as a fraction of price (e.g. 0.04 = 4%).
         take_profit_pct: float = 0.0,
+        #: Minimum bar strength on the breakout bar: close must be this far
+        #: into the bar's range (0=low, 1=high). 0.5 means the bar must close
+        #: in the upper half -- i.e. buyers controlled the bar, not sellers.
+        min_bar_strength: float = 0.0,
         **params,
     ) -> None:
         super().__init__(
@@ -101,6 +105,7 @@ class Scalping(Strategy):
         self.allow_short = allow_short
         self.stop_pct = stop_pct
         self.take_profit_pct = take_profit_pct
+        self.min_bar_strength = min_bar_strength
 
     #: Bars in one 09:00-15:30 session, by timeframe label.
     _SESSION_BARS = {
@@ -198,6 +203,15 @@ class Scalping(Strategy):
                 window,
                 f"break rejected: volume {vol_ratio:.2f}x < {self.volume_mult}x",
             )
+
+        if self.min_bar_strength > 0:
+            strength = float(bar_strength(window).iloc[-1])
+            if strength < self.min_bar_strength:
+                return self._hold(
+                    window,
+                    f"breakout bar closed weak: {strength:.0%} of range "
+                    f"(need {self.min_bar_strength:.0%} -- sellers controlled bar)",
+                )
 
         take_profit = price * (1 + self.take_profit_pct) if self.take_profit_pct > 0 else None
         stop_label = (

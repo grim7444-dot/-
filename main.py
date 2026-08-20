@@ -24,7 +24,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
 from broker import BrokerAuthError, BrokerBase, BrokerError, DryRunBroker, build_broker
@@ -222,6 +222,9 @@ class TradingEngine:
         self.tick_seconds = int(schedule.get("tick_seconds", 30))
         self.closed_sleep = int(schedule.get("closed_market_sleep_seconds", 300))
         self._last_ran: dict[str, float] = {}
+        # NXT pre-market bias: code -> % change vs previous close (set at 08:00-08:30)
+        self._nxt_bias: dict[str, float] = {}
+        self._nxt_scan_date: "date | None" = None
         # Parsed once at construction so a malformed window fails at start-up
         # rather than at 15:19 on the one day it matters.
         self._session_rules: dict[str, SessionRules] = {
@@ -237,6 +240,60 @@ class TradingEngine:
         if timeframe in self.intervals:
             return int(self.intervals[timeframe])
         return int(timeframe_delta(timeframe).total_seconds())
+
+    # -- NXT pre-market bias -----------------------------------------------
+
+    def _run_nxt_scan(self) -> None:
+        """Query NXT pre-market prices and store directional bias per stock."""
+        today = datetime.now(KST).date()
+        if self._nxt_scan_date == today:
+            return
+        self._nxt_scan_date = today
+        self._nxt_bias.clear()
+
+        prev_day = self.rt.calendar.previous_business_day(today)
+        rt = self.rt
+        scalpers = [c for c, cfg in rt.universe.items() if cfg.get("strategy") == "scalping"]
+        if not scalpers:
+            return
+
+        logger.info("NXT pre-market scan starting for %d stocks", len(scalpers))
+        for code in scalpers:
+            try:
+                current = rt.broker.get_current_price(code)
+                if not current or current <= 0:
+                    continue
+                bars = rt.market_data.get_bars(
+                    code, "1Day",
+                    start=(prev_day - timedelta(days=5)).isoformat(),
+                    end=prev_day.isoformat(),
+                )
+                if bars is None or bars.empty:
+                    continue
+                prev_close = float(bars["close"].iloc[-1])
+                if prev_close <= 0:
+                    continue
+                chg = (current - prev_close) / prev_close
+                self._nxt_bias[code] = chg
+                label = "bullish" if chg > 0.003 else ("bearish" if chg < -0.003 else "neutral")
+                logger.info(
+                    "NXT %s %s: %.2f%% vs prev close %s (%s)",
+                    code, rt.name_of(code), chg * 100, f"{prev_close:,.0f}", label,
+                )
+            except Exception as exc:
+                logger.debug("NXT scan skipped %s: %s", code, exc)
+
+    def _nxt_allows_entry(self, code: str) -> bool:
+        """Return False only when NXT pre-market data shows a bearish gap."""
+        cfg = self.rt.universe.get(code, {})
+        if cfg.get("strategy") != "scalping":
+            return True
+        bias = self._nxt_bias.get(code)
+        if bias is None:
+            return True  # no NXT data -> do not block
+        nxt_cfg = self.rt.config.get("nxt") or {}
+        threshold = float(nxt_cfg.get("bearish_threshold_pct", -0.01))
+        return bias >= threshold
 
     #: Cadence while a stock's entry window is open, in seconds.
     ENTRY_WINDOW_INTERVAL = 60
@@ -523,6 +580,13 @@ class TradingEngine:
         rt = self.rt
         side = signal.action.side
 
+        if not self._nxt_allows_entry(code):
+            logger.info(
+                "%s: entry skipped - NXT pre-market bearish (%.2f%%)",
+                label, self._nxt_bias.get(code, 0) * 100,
+            )
+            return
+
         allowed, reason = rt.risk.can_open_new(code, side, equity=account.equity)
         if not allowed:
             logger.warning("%s: entry blocked - %s", label, reason)
@@ -609,9 +673,19 @@ class TradingEngine:
         )
         try:
             while True:
+                if self.rt.calendar.is_nxt_premarket():
+                    # 08:00-08:30: NXT pre-market -- scan prices, then nap.
+                    self._run_nxt_scan()
+                    time.sleep(self.closed_sleep)
+                    continue
                 if not self.rt.calendar.in_session():
-                    wait = min(self.rt.calendar.seconds_until_open(), self.closed_sleep)
-                    logger.info("KRX closed; sleeping %.0fs", wait)
+                    # Sleep until the earlier of next KRX open or next NXT start.
+                    secs_to_open = self.rt.calendar.seconds_until_open()
+                    secs_to_nxt = (
+                        self.rt.calendar.next_nxt_start() - datetime.now(KST)
+                    ).total_seconds()
+                    wait = min(secs_to_open, max(secs_to_nxt, 0), self.closed_sleep)
+                    logger.info("KRX closed; sleeping %.0fs", max(wait, 1.0))
                     time.sleep(max(wait, 1.0))
                     continue
 

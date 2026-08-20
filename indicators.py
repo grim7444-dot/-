@@ -83,6 +83,18 @@ def rolling_mean_volume(df: pd.DataFrame, period: int) -> pd.Series:
     return df["volume"].rolling(window=period, min_periods=period).mean()
 
 
+def bar_strength(df: pd.DataFrame) -> pd.Series:
+    """Fraction of each bar's range where the close landed, 0=low 1=high.
+
+    A value >= 0.5 means the bar closed in the upper half of its range,
+    which is a sign that buyers controlled the bar regardless of volume.
+    """
+    validate_ohlcv(df)
+    rng = df["high"] - df["low"]
+    strength = (df["close"] - df["low"]) / rng.replace(0, pd.NA)
+    return strength.fillna(0.5)
+
+
 def last_valid(series: pd.Series) -> float | None:
     """Return the last non-NaN value of *series*, or ``None`` if there is none."""
     if series is None or len(series) == 0:

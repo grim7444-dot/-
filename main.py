@@ -22,7 +22,7 @@ SPORTS_API = "https://v1.baseball.api-sports.io"
 # api-sports.io 리그 ID
 ASIA_LEAGUES = {
     "kbo": {"id": 6,  "name": "⚾ KBO 한국야구", "season": date.today().year},
-    "npb": {"id": 8,  "name": "⚾ NPB 일본야구", "season": date.today().year},
+    "npb": {"id": 2,  "name": "⚾ NPB 일본야구", "season": date.today().year},
 }
 
 LEAGUES = {
@@ -661,7 +661,8 @@ async def cmd_debugleagues(ctx):
             lines = []
             for lg in leagues:
                 country = lg.get("country", {}).get("name", "?")
-                if country.lower() in ("south korea", "korea", "japan", "united states"):
+                cl = country.lower()
+                if any(k in cl for k in ("korea", "japan", "united states", "usa")):
                     lid  = lg.get("id", "?")
                     name = lg.get("name", "?")
                     lines.append(f"`{lid}` {name} ({country})")

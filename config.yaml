@@ -80,7 +80,7 @@ universe:
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 30Min
+    timeframe: 10Min
     min_qty: 1
     entry_window: ["09:15", "14:30"]
     force_exit_at: "15:10"
@@ -99,7 +99,7 @@ universe:
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 30Min
+    timeframe: 10Min
     min_qty: 1
     entry_window: ["09:15", "14:30"]
     force_exit_at: "15:10"
@@ -118,7 +118,7 @@ universe:
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 30Min
+    timeframe: 10Min
     min_qty: 1
     entry_window: ["09:15", "14:30"]
     force_exit_at: "15:10"
@@ -137,7 +137,7 @@ universe:
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 30Min
+    timeframe: 10Min
     min_qty: 1
     entry_window: ["09:15", "14:30"]
     force_exit_at: "15:10"
@@ -156,7 +156,7 @@ universe:
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 30Min
+    timeframe: 10Min
     min_qty: 1
     entry_window: ["09:15", "14:30"]
     force_exit_at: "15:10"
@@ -175,7 +175,7 @@ universe:
     market: KOSDAQ
     enabled: true
     strategy: scalping
-    timeframe: 30Min
+    timeframe: 10Min
     min_qty: 1
     entry_window: ["09:15", "14:30"]
     force_exit_at: "15:10"
@@ -194,7 +194,7 @@ universe:
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 30Min
+    timeframe: 10Min
     min_qty: 1
     entry_window: ["09:15", "14:30"]
     force_exit_at: "15:10"
@@ -213,7 +213,7 @@ universe:
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 30Min
+    timeframe: 10Min
     min_qty: 1
     entry_window: ["09:15", "14:30"]
     force_exit_at: "15:10"
@@ -232,7 +232,7 @@ universe:
     market: KOSDAQ
     enabled: true
     strategy: scalping
-    timeframe: 30Min
+    timeframe: 10Min
     min_qty: 1
     entry_window: ["09:15", "14:30"]
     force_exit_at: "15:10"
@@ -452,6 +452,7 @@ schedule:
   # How often the outer loop wakes to see which strategies are due.
   tick_seconds: 20
   intervals:
+    10Min: 600
     30Min: 1800
     60Min: 3600
     # Daily strategies are looked at once a day for a *signal*. An open

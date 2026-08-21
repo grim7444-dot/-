@@ -37,9 +37,6 @@ LEAGUES = {
     "baseball":   ("baseball",   "mlb",            "⚾ MLB"),
     "야구":        ("baseball",   "mlb",            "⚾ MLB"),
     "mlb":        ("baseball",   "mlb",            "⚾ MLB"),
-    "kbo":        ("baseball",   "kbo",            "⚾ KBO 한국야구"),
-    "한국야구":    ("baseball",   "kbo",            "⚾ KBO 한국야구"),
-    "국내야구":    ("baseball",   "kbo",            "⚾ KBO 한국야구"),
     "basketball": ("basketball", "nba",            "🏀 NBA"),
     "농구":        ("basketball", "nba",            "🏀 NBA"),
     "nba":        ("basketball", "nba",            "🏀 NBA"),
@@ -540,12 +537,11 @@ def help_embed():
     ), inline=False)
     e.add_field(name="⚾ 분석 명령어", value=(
         "`!analyze mlb` — MLB 투수/타선 분석 + 승패 예측\n"
-        "`!analyze kbo` — KBO 오늘 경기 (ESPN)\n"
+        "`!analyze kbo` — KBO (현재 무료 API 미지원)\n"
         "`!analyze npb` — NPB 투수 분석 (SPORTS_API_KEY 필요)\n"
         "`!odds` — MLB 언오버 배당 (ODDS_API_KEY 필요)"
     ), inline=False)
     e.add_field(name="⚾ 경기 결과/순위", value=(
-        "`!scores kbo` — KBO 오늘 경기 결과\n"
         "`!scores mlb` — MLB 오늘 경기 결과\n"
         "`!standings mlb` — MLB 순위표"
     ), inline=False)
@@ -617,16 +613,11 @@ async def cmd_analyze(ctx, sport: str = "mlb"):
                 embed = await build_mlb_embed(games, odds_map)
                 await ctx.send(embed=embed)
             elif sport == "kbo" or sport == "한국야구" or sport == "국내야구":
-                # KBO는 api-sports.io 무료 플랜에 없어서 ESPN으로 점수만 제공
-                try:
-                    games = await fetch_scores("baseball", "kbo", date.today())
-                    await ctx.send(embed=scores_embed("⚾ KBO 한국야구", games))
-                except Exception:
-                    await ctx.send(
-                        "⚾ **KBO 한국야구**\n"
-                        "KBO 상세 분석은 현재 무료 API에서 지원되지 않습니다.\n"
-                        "`!scores kbo` 로 오늘 경기 일정은 확인할 수 있습니다."
-                    )
+                await ctx.send(
+                    "⚾ **KBO 한국야구**\n"
+                    "KBO는 현재 무료 API(api-sports.io / ESPN)에서 지원되지 않습니다.\n"
+                    "유료 플랜(api-sports.io Pro) 업그레이드 시 이용 가능합니다."
+                )
             elif sport in ASIA_LEAGUES:
                 if not SPORTS_KEY:
                     await ctx.send(

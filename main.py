@@ -50,6 +50,7 @@ from settings import (
 )
 from strategies import build_strategies
 from strategies.base import Action, Strategy
+from telegram_bot import TelegramCommandHandler, TelegramNotifier, build_telegram
 
 logger = logging.getLogger("bot.main")
 
@@ -231,9 +232,83 @@ class TradingEngine:
             code: SessionRules.from_config(rt.universe.get(code, {}))
             for code in rt.strategies
         }
+        # Telegram alerts + remote commands
+        self._tg_notifier, self._tg_handler = build_telegram(
+            rt.credentials, rt.config
+        )
+        self._entries_paused: bool = False  # set by /stop, cleared by /resume
+        self._wire_telegram_commands()
 
     def session_rules(self, code: str) -> SessionRules:
         return self._session_rules.get(code, SessionRules())
+
+    # -- Telegram wiring ---------------------------------------------------
+
+    def _wire_telegram_commands(self) -> None:
+        h = self._tg_handler
+        rt = self.rt
+
+        def _status() -> str:
+            try:
+                account = rt.broker.get_account()
+                equity = account.equity
+                cash = account.cash
+            except Exception:
+                equity = rt.portfolio.state.last_equity
+                cash = 0.0
+            positions = rt.portfolio.positions()
+            state = rt.portfolio.state
+            lines = [
+                f"*봇 상태* (`{rt.decision.label}`)",
+                f"자산: `{equity:,.0f} KRW`  현금: `{cash:,.0f} KRW`",
+                f"고점대비: `{rt.portfolio.drawdown_pct():.2%}`  상태: `{state.status}`",
+                f"진입: `{'일시정지' if self._entries_paused else '활성'}`",
+                "",
+                f"*포지션 {len(positions)}개*",
+            ]
+            for code, pos in positions.items():
+                name = rt.name_of(code)
+                lines.append(
+                    f"  `{code} {name}` {pos.side} {int(pos.qty)}주 "
+                    f"@ {pos.entry_price:,.0f} 손절 {pos.effective_stop():,.0f}"
+                )
+            if not positions:
+                lines.append("  없음")
+            return "\n".join(lines)
+
+        def _stop() -> str:
+            self._entries_paused = True
+            logger.warning("Telegram /stop: new entries paused")
+            self._tg_notifier.alert_paused("텔레그램 /stop 명령")
+            return "⏸ 신규 진입 중지됨. 기존 포지션 관리는 계속."
+
+        def _resume() -> str:
+            self._entries_paused = False
+            logger.info("Telegram /resume: entries re-enabled")
+            self._tg_notifier.alert_resumed()
+            return "▶️ 진입 재개."
+
+        def _close_all() -> str:
+            try:
+                closed = rt.broker.flatten(rt.portfolio.positions())
+                for code in list(rt.portfolio.positions()):
+                    pos = rt.portfolio.get(code)
+                    if pos:
+                        try:
+                            price = rt.broker.get_current_price(code) or pos.entry_price
+                        except Exception:
+                            price = pos.entry_price
+                        rt.portfolio.close_position(code, exit_price=price, exit_reason="telegram /close_all")
+                self._tg_notifier.alert_close_all_done(closed)
+                return f"🔒 전체 청산 완료 — {closed}개 포지션."
+            except Exception as exc:
+                logger.error("Telegram /close_all error: %s", exc)
+                return f"❌ 청산 실패: {exc}"
+
+        h.on_status = _status
+        h.on_stop = _stop
+        h.on_resume = _resume
+        h.on_close_all = _close_all
 
     def interval_for(self, code: str) -> int:
         timeframe = self.rt.universe.get(code, {}).get("timeframe", "1Day")
@@ -352,6 +427,9 @@ class TradingEngine:
         status = rt.risk.check_drawdown(account.equity)
         if status.breached and not rt.portfolio.stopped:
             rt.risk.trip_kill_switch(status, rt.broker)
+            self._tg_notifier.alert_kill_switch(
+                account.equity, rt.portfolio.state.peak_equity
+            )
         if rt.portfolio.stopped:
             logger.warning(
                 "bot is STOPPED (%s) - no new orders. Run `python main.py resume` to clear.",
@@ -452,6 +530,9 @@ class TradingEngine:
             if (position.is_long and price <= stop) or (position.is_short and price >= stop):
                 logger.warning(
                     "%s: STOP HIT at %s (stop %s) - closing", label, f"{price:,.0f}", f"{stop:,.0f}"
+                )
+                self._tg_notifier.alert_stop_hit(
+                    code, rt.name_of(code), price, stop
                 )
                 self._submit_exit(
                     code, position, price, "stop hit", open_orders, asset_cfg,
@@ -564,6 +645,14 @@ class TradingEngine:
         )
         if result.submitted:
             rt.portfolio.close_position(code, exit_price=price, exit_reason=reason)
+            self._tg_notifier.alert_exit(
+                code=code,
+                name=rt.name_of(code),
+                qty=int(position.qty),
+                price=price,
+                entry_price=float(position.entry_price),
+                reason=reason,
+            )
         else:
             logger.info("%s: exit simulated only - position left untouched in state", code)
 
@@ -590,6 +679,10 @@ class TradingEngine:
                 "%s: entry skipped - NXT pre-market bearish (%.2f%%)",
                 label, self._nxt_bias.get(code, 0) * 100,
             )
+            return
+
+        if self._entries_paused:
+            logger.info("%s: entry skipped - paused via Telegram /stop", label)
             return
 
         allowed, reason = rt.risk.can_open_new(code, side, equity=account.equity)
@@ -661,6 +754,15 @@ class TradingEngine:
                     take_profit=signal.take_profit,
                 )
             )
+            self._tg_notifier.alert_entry(
+                code=code,
+                name=rt.name_of(code),
+                side=side,
+                qty=int(sizing.qty),
+                price=price,
+                stop=stop,
+                equity=account.equity,
+            )
         else:
             logger.info("%s: order simulated only (dry run) - nothing sent", label)
 
@@ -676,6 +778,7 @@ class TradingEngine:
             self.tick_seconds,
             {c: self.interval_for(c) for c in self.rt.strategies},
         )
+        self._tg_handler.start()
         try:
             while True:
                 if self.rt.calendar.is_nxt_premarket():
@@ -709,6 +812,8 @@ class TradingEngine:
         except KeyboardInterrupt:
             logger.info("interrupted by user - shutting down cleanly")
             self.rt.portfolio.record_day(self.rt.portfolio.state.last_equity)
+        finally:
+            self._tg_handler.shutdown()
 
 
 # --------------------------------------------------------------------------

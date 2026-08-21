@@ -560,7 +560,9 @@ screener:
 
 telegram:
   # Rule 12: dry-run by default. A missing token prints a preview, not an error.
+  # Set dry_run: false and add TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID to .env to enable.
   dry_run: true
+  poll_interval_seconds: 3   # how often to poll for commands (/status, /stop, etc.)
   parse_mode: Markdown
 
 live_banner:

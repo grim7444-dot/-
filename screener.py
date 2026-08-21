@@ -24,19 +24,20 @@ logger = logging.getLogger("bot.screener")
 _SCALPING_CFG_TEMPLATE: dict[str, Any] = {
     "enabled": True,
     "strategy": "scalping",
-    "timeframe": "10Min",
+    "timeframe": "3Min",
     "min_qty": 1,
-    "entry_window": ["09:15", "14:30"],
+    "entry_window": ["09:10", "14:30"],
     "force_exit_at": "15:10",
     "params": {
-        "period": 10,
-        "volume_mult": 1.5,
+        "period": 5,
+        "volume_mult": 1.2,
         "atr_trail_mult": 1.5,
         "stop_pct": 0.02,
         "take_profit_pct": 0.02,
         "volume_exit_mult": 2.5,
         "peak_trail_pct": 0.015,
-        "min_bar_strength": 0.5,
+        "min_bar_strength": 0.3,
+        "use_vwap_filter": False,
     },
 }
 

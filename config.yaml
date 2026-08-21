@@ -81,171 +81,180 @@ universe:
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 10Min
+    timeframe: 3Min
     min_qty: 1
-    entry_window: ["09:15", "14:30"]
+    entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 10
-      volume_mult: 1.5
+      period: 5
+      volume_mult: 1.2
       atr_trail_mult: 1.5
       stop_pct: 0.02
       take_profit_pct: 0.02
       volume_exit_mult: 2.5
       peak_trail_pct: 0.015
-      min_bar_strength: 0.5
+      min_bar_strength: 0.3
+      use_vwap_filter: false
 
   "002990":
     name: 금호건설
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 10Min
+    timeframe: 3Min
     min_qty: 1
-    entry_window: ["09:15", "14:30"]
+    entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 10
-      volume_mult: 1.5
+      period: 5
+      volume_mult: 1.2
       atr_trail_mult: 1.5
       stop_pct: 0.02
       take_profit_pct: 0.02
       volume_exit_mult: 2.5
       peak_trail_pct: 0.015
-      min_bar_strength: 0.5
+      min_bar_strength: 0.3
+      use_vwap_filter: false
 
   "093370":
     name: 후성
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 10Min
+    timeframe: 3Min
     min_qty: 1
-    entry_window: ["09:15", "14:30"]
+    entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 10
-      volume_mult: 1.5
+      period: 5
+      volume_mult: 1.2
       atr_trail_mult: 1.5
       stop_pct: 0.02
       take_profit_pct: 0.02
       volume_exit_mult: 2.5
       peak_trail_pct: 0.015
-      min_bar_strength: 0.5
+      min_bar_strength: 0.3
+      use_vwap_filter: false
 
   "006340":
     name: 대원전선
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 10Min
+    timeframe: 3Min
     min_qty: 1
-    entry_window: ["09:15", "14:30"]
+    entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 10
-      volume_mult: 1.5
+      period: 5
+      volume_mult: 1.2
       atr_trail_mult: 1.5
       stop_pct: 0.02
       take_profit_pct: 0.02
       volume_exit_mult: 2.5
       peak_trail_pct: 0.015
-      min_bar_strength: 0.5
+      min_bar_strength: 0.3
+      use_vwap_filter: false
 
   "073240":
     name: 금호타이어
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 10Min
+    timeframe: 3Min
     min_qty: 1
-    entry_window: ["09:15", "14:30"]
+    entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 10
-      volume_mult: 1.5
+      period: 5
+      volume_mult: 1.2
       atr_trail_mult: 1.5
       stop_pct: 0.02
       take_profit_pct: 0.02
       volume_exit_mult: 2.5
       peak_trail_pct: 0.015
-      min_bar_strength: 0.5
+      min_bar_strength: 0.3
+      use_vwap_filter: false
 
   "086520":
     name: 에코프로
     market: KOSDAQ
     enabled: true
     strategy: scalping
-    timeframe: 10Min
+    timeframe: 3Min
     min_qty: 1
-    entry_window: ["09:15", "14:30"]
+    entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 10
-      volume_mult: 1.5
+      period: 5
+      volume_mult: 1.2
       atr_trail_mult: 1.5
       stop_pct: 0.02
       take_profit_pct: 0.02
       volume_exit_mult: 2.5
       peak_trail_pct: 0.015
-      min_bar_strength: 0.5
+      min_bar_strength: 0.3
+      use_vwap_filter: false
 
   "003670":
     name: 포스코퓨처엠
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 10Min
+    timeframe: 3Min
     min_qty: 1
-    entry_window: ["09:15", "14:30"]
+    entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 10
-      volume_mult: 1.5
+      period: 5
+      volume_mult: 1.2
       atr_trail_mult: 1.5
       stop_pct: 0.02
       take_profit_pct: 0.02
       volume_exit_mult: 2.5
       peak_trail_pct: 0.015
-      min_bar_strength: 0.5
+      min_bar_strength: 0.3
+      use_vwap_filter: false
 
   "068270":
     name: 셀트리온
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 10Min
+    timeframe: 3Min
     min_qty: 1
-    entry_window: ["09:15", "14:30"]
+    entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 10
-      volume_mult: 1.5
+      period: 5
+      volume_mult: 1.2
       atr_trail_mult: 1.5
       stop_pct: 0.02
       take_profit_pct: 0.02
       volume_exit_mult: 2.5
       peak_trail_pct: 0.015
-      min_bar_strength: 0.5
+      min_bar_strength: 0.3
+      use_vwap_filter: false
 
   "196170":
     name: 알테오젠
     market: KOSDAQ
     enabled: true
     strategy: scalping
-    timeframe: 10Min
+    timeframe: 3Min
     min_qty: 1
-    entry_window: ["09:15", "14:30"]
+    entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 10
-      volume_mult: 1.5
+      period: 5
+      volume_mult: 1.2
       atr_trail_mult: 1.5
       stop_pct: 0.02
       take_profit_pct: 0.02
       volume_exit_mult: 2.5
       peak_trail_pct: 0.015
-      min_bar_strength: 0.5
+      min_bar_strength: 0.3
+      use_vwap_filter: false
 
   # --- K-beauty OEM/ODM (뷰티 테마) ----------------------------------------
   "161890":
@@ -253,57 +262,60 @@ universe:
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 10Min
+    timeframe: 3Min
     min_qty: 1
-    entry_window: ["09:15", "14:30"]
+    entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 10
-      volume_mult: 1.5
+      period: 5
+      volume_mult: 1.2
       atr_trail_mult: 1.5
       stop_pct: 0.02
       take_profit_pct: 0.02
       volume_exit_mult: 2.5
       peak_trail_pct: 0.015
-      min_bar_strength: 0.5
+      min_bar_strength: 0.3
+      use_vwap_filter: false
 
   "192820":
     name: 코스맥스
     market: KOSPI
     enabled: true
     strategy: scalping
-    timeframe: 10Min
+    timeframe: 3Min
     min_qty: 1
-    entry_window: ["09:15", "14:30"]
+    entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 10
-      volume_mult: 1.5
+      period: 5
+      volume_mult: 1.2
       atr_trail_mult: 1.5
       stop_pct: 0.02
       take_profit_pct: 0.02
       volume_exit_mult: 2.5
       peak_trail_pct: 0.015
-      min_bar_strength: 0.5
+      min_bar_strength: 0.3
+      use_vwap_filter: false
 
   "278470":
     name: 에이피알
     market: KOSDAQ
     enabled: true
     strategy: scalping
-    timeframe: 10Min
+    timeframe: 3Min
     min_qty: 1
-    entry_window: ["09:15", "14:30"]
+    entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 10
-      volume_mult: 1.5
+      period: 5
+      volume_mult: 1.2
       atr_trail_mult: 1.5
       stop_pct: 0.02
       take_profit_pct: 0.02
       volume_exit_mult: 2.5
       peak_trail_pct: 0.015
-      min_bar_strength: 0.5
+      min_bar_strength: 0.3
+      use_vwap_filter: false
 
   # --- Close-based trading (종가매매), daily bars ---------------------------
   # The four quietest names. Their intraday range barely clears the round trip,
@@ -509,8 +521,9 @@ api:
 
 schedule:
   # How often the outer loop wakes to see which strategies are due.
-  tick_seconds: 20
+  tick_seconds: 10
   intervals:
+    3Min: 180
     10Min: 600
     30Min: 1800
     60Min: 3600

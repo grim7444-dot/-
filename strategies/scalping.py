@@ -97,6 +97,9 @@ class Scalping(Strategy):
         #: into the bar's range (0=low, 1=high). 0.5 means the bar must close
         #: in the upper half -- i.e. buyers controlled the bar, not sellers.
         min_bar_strength: float = 0.0,
+        #: When False, skip the "price > session VWAP" entry filter.
+        #: Disabling lets the bot enter on morning breakouts before VWAP forms.
+        use_vwap_filter: bool = True,
         **params,
     ) -> None:
         super().__init__(
@@ -117,6 +120,7 @@ class Scalping(Strategy):
         self.volume_exit_mult = volume_exit_mult
         self.peak_trail_pct = peak_trail_pct
         self.min_bar_strength = min_bar_strength
+        self.use_vwap_filter = use_vwap_filter
 
     #: Bars in one 09:00-15:30 session, by timeframe label.
     _SESSION_BARS = {
@@ -231,7 +235,7 @@ class Scalping(Strategy):
                 )
             effective_atr = atr_value
 
-        if price <= vwap_now:
+        if self.use_vwap_filter and price <= vwap_now:
             return self._hold(window, f"below session VWAP {vwap_now:,.0f}")
         if price <= prior_high:
             return self._hold(window, f"inside {self.period}-bar channel")

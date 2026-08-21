@@ -24,8 +24,6 @@ LEAGUES = {
     "baseball":    ("baseball", "mlb",            "⚾ MLB"),
     "야구":         ("baseball", "mlb",            "⚾ MLB"),
     "mlb":         ("baseball", "mlb",            "⚾ MLB"),
-    "kbo":         ("baseball", "kor.1",          "⚾ KBO 한국야구"),
-    "npb":         ("baseball", "jpn.1",          "⚾ NPB 일본야구"),
     "basketball":  ("basketball","nba",           "🏀 NBA"),
     "농구":         ("basketball","nba",           "🏀 NBA"),
     "nba":         ("basketball","nba",           "🏀 NBA"),

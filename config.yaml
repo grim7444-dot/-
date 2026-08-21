@@ -576,7 +576,8 @@ screener:
   min_price: 3000           # skip sub-3000 KRW stocks (wide spreads)
   max_price: 100000         # skip stocks above 10만원 (unaffordable with small capital)
   min_atr_pct: 0.015        # 1.5% daily ATR minimum (cost gate still applies)
-  min_trading_value_m: 1000 # 1000억 KRW daily trading value minimum (낮춰서 더 많은 후보)
+  min_trading_value_m: 1000 # 1000억 KRW daily trading value minimum
+  refresh_interval_minutes: 30  # 장중 30분마다 순위 재스캔 → 핫 종목으로 자동 교체
 
 telegram:
   # Rule 12: dry-run by default. A missing token prints a preview, not an error.

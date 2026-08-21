@@ -242,6 +242,12 @@ class TradingEngine:
         # Investor flow scanner (외국인·기관 순매수)
         self._flow_scanner = InvestorFlowScanner(rt.config)
         self._flow_scan_date: "date | None" = None
+        # Dynamic universe refresh
+        scr_cfg = (rt.config.get("screener") or {})
+        self._universe_refresh_interval: float = float(
+            scr_cfg.get("refresh_interval_minutes", 30)
+        ) * 60
+        self._last_universe_refresh: float = 0.0
 
     def session_rules(self, code: str) -> SessionRules:
         return self._session_rules.get(code, SessionRules())
@@ -336,6 +342,92 @@ class TradingEngine:
             return
         logger.info("investor_flow: scanning %d stocks", len(scalpers))
         self._flow_scanner.scan(scalpers)
+
+    def _refresh_dynamic_universe(self) -> None:
+        """Re-run the screener and hot-swap dynamic stocks in the universe.
+
+        Rules
+        -----
+        * Only stocks added by a previous screener run (_screener: True) are
+          eligible for removal. The static universe is never touched.
+        * A dynamic stock with an open position is never removed: the bot must
+          be able to manage it until it closes.
+        * New stocks from the latest scan are added even mid-session.
+        * The total dynamic stock count is capped by screener.n_stocks.
+        """
+        rt = self.rt
+        scr_cfg = rt.config.get("screener") or {}
+        if not scr_cfg.get("enabled"):
+            return
+
+        logger.info("universe refresh: re-running screener")
+        try:
+            from screener import DailyScreener
+            from strategies import build_strategies as _build
+
+            # Pass the current config so existing universe is excluded.
+            found = DailyScreener(rt.config).scan()
+        except Exception as exc:
+            logger.warning("universe refresh: screener failed: %s", exc)
+            return
+
+        current_universe = dict(rt.config.get("universe") or {})
+        open_positions = set(rt.portfolio.positions())
+
+        # Identify which tickers are currently screener-added and removable.
+        dynamic_current: set[str] = {
+            k for k, v in current_universe.items()
+            if (v or {}).get("_screener") and k not in open_positions
+        }
+
+        new_tickers: set[str] = {t for t, _ in found}
+
+        # Stocks to drop: were dynamic, not in the new scan, no open position.
+        to_remove = dynamic_current - new_tickers
+        # Stocks to add: in the new scan, not already in the universe.
+        to_add = [(t, cfg) for t, cfg in found if t not in current_universe]
+
+        if not to_remove and not to_add:
+            logger.info("universe refresh: no changes")
+            return
+
+        updated_universe = dict(current_universe)
+        for code in to_remove:
+            del updated_universe[code]
+            if code in rt.strategies:
+                del rt.strategies[code]
+            if code in self._session_rules:
+                del self._session_rules[code]
+            logger.info("universe refresh: removed %s (dropped from ranking)", code)
+
+        for ticker, asset_cfg in to_add:
+            updated_universe[ticker] = asset_cfg
+            logger.info("universe refresh: added %s", ticker)
+
+        # Rebuild strategies for new tickers only.
+        if to_add:
+            new_cfg = {**rt.config, "universe": {t: c for t, c in to_add}}
+            new_strats = _build(new_cfg)
+            rt.strategies.update(new_strats)
+            for code in new_strats:
+                self._session_rules[code] = SessionRules.from_config(
+                    updated_universe.get(code, {})
+                )
+
+        rt.config = {**rt.config, "universe": updated_universe}
+
+        removed_names = ", ".join(to_remove) if to_remove else "없음"
+        added_names = ", ".join(t for t, _ in to_add) if to_add else "없음"
+        logger.info(
+            "universe refresh done — removed [%s]  added [%s]  total dynamic: %d",
+            removed_names, added_names,
+            sum(1 for v in updated_universe.values() if (v or {}).get("_screener")),
+        )
+        self._tg_notifier.send(
+            f"🔄 *유니버스 업데이트*\n"
+            f"제거: `{removed_names}`\n"
+            f"추가: `{added_names}`"
+        )
 
     def _run_nxt_scan(self) -> None:
         """Query NXT pre-market prices and store directional bias per stock."""
@@ -829,6 +921,15 @@ class TradingEngine:
                     continue
 
                 now = time.time()
+
+                # Periodically hot-swap the dynamic universe mid-session.
+                if (
+                    self._universe_refresh_interval > 0
+                    and now - self._last_universe_refresh >= self._universe_refresh_interval
+                ):
+                    self._refresh_dynamic_universe()
+                    self._last_universe_refresh = now
+
                 due = self.due_codes(now)
                 if due:
                     self.run_cycle(due)

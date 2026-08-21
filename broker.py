@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -741,13 +742,31 @@ class KiwoomBroker(BrokerBase):
         data = self._call("order", api_id_key, body, f"submit_order({code})")
         order_id = str(data.get("ord_no") or "")
         return_code = str(data.get("return_code", "0"))
+        return_msg = str(data.get("return_msg", "(no message)"))
         if return_code not in ("0", "") or not order_id:
-            # An empty order number means the venue did not accept it. Logging
-            # "submitted" on that basis reports a fill that never happened.
-            raise BrokerError(
-                f"order for {code} was not accepted "
-                f"[return_code={return_code}] {data.get('return_msg', '(no message)')}"
-            )
+            # Kiwoom returns "N주 매수가능" when the requested qty exceeds
+            # available margin. Parse N and retry once with the reduced size.
+            if not is_exit and side == LONG:
+                m = re.search(r"(\d+)\s*주\s*매수가능", return_msg)
+                if m:
+                    reduced = int(m.group(1))
+                    if 0 < reduced < qty:
+                        logger.warning(
+                            "%s: broker capped qty to %d (requested %d); retrying",
+                            code, reduced, int(qty),
+                        )
+                        body["ord_qty"] = str(reduced)
+                        qty = reduced
+                        data = self._call("order", api_id_key, body, f"submit_order({code})")
+                        order_id = str(data.get("ord_no") or "")
+                        return_code = str(data.get("return_code", "0"))
+                        return_msg = str(data.get("return_msg", "(no message)"))
+            if return_code not in ("0", "") or not order_id:
+                # An empty order number means the venue did not accept it.
+                raise BrokerError(
+                    f"order for {code} was not accepted "
+                    f"[return_code={return_code}] {return_msg}"
+                )
         logger.info(
             "submitted %s %s x%s stop=%s id=%s",
             side,

@@ -761,6 +761,23 @@ class KiwoomBroker(BrokerBase):
                         order_id = str(data.get("ord_no") or "")
                         return_code = str(data.get("return_code", "0"))
                         return_msg = str(data.get("return_msg", "(no message)"))
+            # Kiwoom returns "N주 매도가능" when position state qty > actual held qty.
+            # This happens when a buy was retried at a lower qty. Always retry on exits.
+            elif is_exit or side == SHORT:
+                m = re.search(r"(\d+)\s*주\s*매도가능", return_msg)
+                if m:
+                    reduced = int(m.group(1))
+                    if 0 < reduced < qty:
+                        logger.warning(
+                            "%s: sell capped qty to %d (requested %d, state mismatch); retrying",
+                            code, reduced, int(qty),
+                        )
+                        body["ord_qty"] = str(reduced)
+                        qty = reduced
+                        data = self._call("order", api_id_key, body, f"submit_order({code})")
+                        order_id = str(data.get("ord_no") or "")
+                        return_code = str(data.get("return_code", "0"))
+                        return_msg = str(data.get("return_msg", "(no message)"))
             if return_code not in ("0", "") or not order_id:
                 # An empty order number means the venue did not accept it.
                 raise BrokerError(

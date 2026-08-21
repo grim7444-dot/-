@@ -659,12 +659,13 @@ async def cmd_debugleagues(ctx):
                 data = await r.json()
             leagues = data.get("response", [])
             lines = []
-            for lg in leagues[:30]:
-                lid  = lg.get("id", "?")
-                name = lg.get("name", "?")
+            for lg in leagues:
                 country = lg.get("country", {}).get("name", "?")
-                lines.append(f"`{lid}` {name} ({country})")
-            e = discord.Embed(title="API-Sports 야구 리그 목록", color=0x3D6CFF,
+                if country.lower() in ("south korea", "korea", "japan", "united states"):
+                    lid  = lg.get("id", "?")
+                    name = lg.get("name", "?")
+                    lines.append(f"`{lid}` {name} ({country})")
+            e = discord.Embed(title="한국/일본/미국 야구 리그", color=0x3D6CFF,
                               description="\n".join(lines) or "없음")
             await ctx.send(embed=e)
         except Exception as ex:

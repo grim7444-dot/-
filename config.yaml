@@ -562,6 +562,13 @@ nxt:
   # -0.01 = -1%. Leave positive (e.g. 0.0) to block neutral pre-markets too.
   bearish_threshold_pct: -0.01
 
+investor_flow:
+  enabled: true
+  lookback_days: 3          # 최근 3거래일 외국인·기관 순매수 합산
+  # require_smart_money: true 이면 외국인+기관 둘 다 순매도일 때 진입 차단
+  # false 이면 로그만 출력 (advisory), 진입은 허용
+  require_smart_money: false
+
 screener:
   enabled: true
   n_stocks: 10              # max dynamic stocks to add per session

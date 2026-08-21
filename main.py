@@ -51,6 +51,7 @@ from settings import (
 from strategies import build_strategies
 from strategies.base import Action, Strategy
 from telegram_bot import TelegramCommandHandler, TelegramNotifier, build_telegram
+from investor_flow import InvestorFlowScanner
 
 logger = logging.getLogger("bot.main")
 
@@ -238,6 +239,9 @@ class TradingEngine:
         )
         self._entries_paused: bool = False  # set by /stop, cleared by /resume
         self._wire_telegram_commands()
+        # Investor flow scanner (외국인·기관 순매수)
+        self._flow_scanner = InvestorFlowScanner(rt.config)
+        self._flow_scan_date: "date | None" = None
 
     def session_rules(self, code: str) -> SessionRules:
         return self._session_rules.get(code, SessionRules())
@@ -317,6 +321,21 @@ class TradingEngine:
         return int(timeframe_delta(timeframe).total_seconds())
 
     # -- NXT pre-market bias -----------------------------------------------
+
+    def _run_flow_scan(self) -> None:
+        """Fetch foreign + institutional net-buying for all scalping stocks."""
+        today = datetime.now(KST).date()
+        if self._flow_scan_date == today:
+            return
+        self._flow_scan_date = today
+        scalpers = [
+            c for c, cfg in self.rt.universe.items()
+            if cfg.get("strategy") == "scalping"
+        ]
+        if not scalpers or not self._flow_scanner.enabled:
+            return
+        logger.info("investor_flow: scanning %d stocks", len(scalpers))
+        self._flow_scanner.scan(scalpers)
 
     def _run_nxt_scan(self) -> None:
         """Query NXT pre-market prices and store directional bias per stock."""
@@ -685,6 +704,17 @@ class TradingEngine:
             logger.info("%s: entry skipped - paused via Telegram /stop", label)
             return
 
+        # Investor flow filter (외국인·기관 순매수)
+        flow_sig = self._flow_scanner.signal_for(code)
+        flow_ok, flow_reason = flow_sig.allows_entry(
+            self._flow_scanner.require_smart_money
+        )
+        if not flow_ok:
+            logger.warning("%s: entry blocked by investor flow — %s", label, flow_reason)
+            return
+        if flow_sig.bias.value != "neutral":
+            logger.info("%s: investor flow — %s", label, flow_reason)
+
         allowed, reason = rt.risk.can_open_new(code, side, equity=account.equity)
         if not allowed:
             logger.warning("%s: entry blocked - %s", label, reason)
@@ -784,6 +814,7 @@ class TradingEngine:
                 if self.rt.calendar.is_nxt_premarket():
                     # 08:00-08:30: NXT pre-market -- scan prices, then nap.
                     self._run_nxt_scan()
+                    self._run_flow_scan()
                     time.sleep(self.closed_sleep)
                     continue
                 if not self.rt.calendar.in_session():

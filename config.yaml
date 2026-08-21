@@ -86,14 +86,14 @@ universe:
     entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 3
-      volume_mult: 1.0
+      period: 5
+      volume_mult: 1.5
       atr_trail_mult: 1.5
-      stop_pct: 0.02
-      take_profit_pct: 0.02
+      stop_pct: 0.015
+      take_profit_pct: 0.03
       volume_exit_mult: 2.0
-      peak_trail_pct: 0.015
-      min_bar_strength: 0.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.5
       use_vwap_filter: false
 
   "002990":
@@ -106,14 +106,14 @@ universe:
     entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 3
-      volume_mult: 1.0
+      period: 5
+      volume_mult: 1.5
       atr_trail_mult: 1.5
-      stop_pct: 0.02
-      take_profit_pct: 0.02
+      stop_pct: 0.015
+      take_profit_pct: 0.03
       volume_exit_mult: 2.0
-      peak_trail_pct: 0.015
-      min_bar_strength: 0.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.5
       use_vwap_filter: false
 
   "093370":
@@ -126,14 +126,14 @@ universe:
     entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 3
-      volume_mult: 1.0
+      period: 5
+      volume_mult: 1.5
       atr_trail_mult: 1.5
-      stop_pct: 0.02
-      take_profit_pct: 0.02
+      stop_pct: 0.015
+      take_profit_pct: 0.03
       volume_exit_mult: 2.0
-      peak_trail_pct: 0.015
-      min_bar_strength: 0.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.5
       use_vwap_filter: false
 
   "006340":
@@ -146,14 +146,14 @@ universe:
     entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 3
-      volume_mult: 1.0
+      period: 5
+      volume_mult: 1.5
       atr_trail_mult: 1.5
-      stop_pct: 0.02
-      take_profit_pct: 0.02
+      stop_pct: 0.015
+      take_profit_pct: 0.03
       volume_exit_mult: 2.0
-      peak_trail_pct: 0.015
-      min_bar_strength: 0.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.5
       use_vwap_filter: false
 
   "073240":
@@ -166,14 +166,14 @@ universe:
     entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 3
-      volume_mult: 1.0
+      period: 5
+      volume_mult: 1.5
       atr_trail_mult: 1.5
-      stop_pct: 0.02
-      take_profit_pct: 0.02
+      stop_pct: 0.015
+      take_profit_pct: 0.03
       volume_exit_mult: 2.0
-      peak_trail_pct: 0.015
-      min_bar_strength: 0.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.5
       use_vwap_filter: false
 
   "086520":
@@ -186,14 +186,14 @@ universe:
     entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 3
-      volume_mult: 1.0
+      period: 5
+      volume_mult: 1.5
       atr_trail_mult: 1.5
-      stop_pct: 0.02
-      take_profit_pct: 0.02
+      stop_pct: 0.015
+      take_profit_pct: 0.03
       volume_exit_mult: 2.0
-      peak_trail_pct: 0.015
-      min_bar_strength: 0.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.5
       use_vwap_filter: false
 
   "003670":
@@ -206,14 +206,14 @@ universe:
     entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 3
-      volume_mult: 1.0
+      period: 5
+      volume_mult: 1.5
       atr_trail_mult: 1.5
-      stop_pct: 0.02
-      take_profit_pct: 0.02
+      stop_pct: 0.015
+      take_profit_pct: 0.03
       volume_exit_mult: 2.0
-      peak_trail_pct: 0.015
-      min_bar_strength: 0.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.5
       use_vwap_filter: false
 
   "068270":
@@ -226,14 +226,14 @@ universe:
     entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 3
-      volume_mult: 1.0
+      period: 5
+      volume_mult: 1.5
       atr_trail_mult: 1.5
-      stop_pct: 0.02
-      take_profit_pct: 0.02
+      stop_pct: 0.015
+      take_profit_pct: 0.03
       volume_exit_mult: 2.0
-      peak_trail_pct: 0.015
-      min_bar_strength: 0.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.5
       use_vwap_filter: false
 
   "196170":
@@ -246,14 +246,14 @@ universe:
     entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 3
-      volume_mult: 1.0
+      period: 5
+      volume_mult: 1.5
       atr_trail_mult: 1.5
-      stop_pct: 0.02
-      take_profit_pct: 0.02
+      stop_pct: 0.015
+      take_profit_pct: 0.03
       volume_exit_mult: 2.0
-      peak_trail_pct: 0.015
-      min_bar_strength: 0.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.5
       use_vwap_filter: false
 
   # --- K-beauty OEM/ODM (뷰티 테마) ----------------------------------------
@@ -267,14 +267,14 @@ universe:
     entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 3
-      volume_mult: 1.0
+      period: 5
+      volume_mult: 1.5
       atr_trail_mult: 1.5
-      stop_pct: 0.02
-      take_profit_pct: 0.02
+      stop_pct: 0.015
+      take_profit_pct: 0.03
       volume_exit_mult: 2.0
-      peak_trail_pct: 0.015
-      min_bar_strength: 0.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.5
       use_vwap_filter: false
 
   "192820":
@@ -287,14 +287,14 @@ universe:
     entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 3
-      volume_mult: 1.0
+      period: 5
+      volume_mult: 1.5
       atr_trail_mult: 1.5
-      stop_pct: 0.02
-      take_profit_pct: 0.02
+      stop_pct: 0.015
+      take_profit_pct: 0.03
       volume_exit_mult: 2.0
-      peak_trail_pct: 0.015
-      min_bar_strength: 0.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.5
       use_vwap_filter: false
 
   "278470":
@@ -307,14 +307,14 @@ universe:
     entry_window: ["09:10", "14:30"]
     force_exit_at: "15:10"
     params:
-      period: 3
-      volume_mult: 1.0
+      period: 5
+      volume_mult: 1.5
       atr_trail_mult: 1.5
-      stop_pct: 0.02
-      take_profit_pct: 0.02
+      stop_pct: 0.015
+      take_profit_pct: 0.03
       volume_exit_mult: 2.0
-      peak_trail_pct: 0.015
-      min_bar_strength: 0.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.5
       use_vwap_filter: false
 
   # --- Close-based trading (종가매매), daily bars ---------------------------

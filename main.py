@@ -645,6 +645,31 @@ async def cmd_odds(ctx):
         except Exception as ex:
             await ctx.send(f"❌ 오류: {ex}")
 
+@bot.command(name="debugleagues", aliases=["리그확인"])
+async def cmd_debugleagues(ctx):
+    """api-sports.io에서 사용 가능한 야구 리그 목록 확인"""
+    if not SPORTS_KEY:
+        await ctx.send("❌ SPORTS_API_KEY가 없습니다.")
+        return
+    async with ctx.typing():
+        try:
+            s = await http()
+            headers = {"x-apisports-key": SPORTS_KEY}
+            async with s.get(f"{SPORTS_API}/leagues", headers=headers) as r:
+                data = await r.json()
+            leagues = data.get("response", [])
+            lines = []
+            for lg in leagues[:30]:
+                lid  = lg.get("id", "?")
+                name = lg.get("name", "?")
+                country = lg.get("country", {}).get("name", "?")
+                lines.append(f"`{lid}` {name} ({country})")
+            e = discord.Embed(title="API-Sports 야구 리그 목록", color=0x3D6CFF,
+                              description="\n".join(lines) or "없음")
+            await ctx.send(embed=e)
+        except Exception as ex:
+            await ctx.send(f"❌ 오류: {ex}")
+
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):

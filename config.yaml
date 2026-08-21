@@ -35,6 +35,7 @@ risk:
 # Two stocks in one theme are one thesis sized twice, so only one position per
 # theme is allowed at a time. Single-member themes never block anything.
 themes:
+  beauty: ["161890", "192820", "278470"]  # 한국콜마, 코스맥스, 에이피알
   construction: ["002990", "228340"]      # 금호건설, 동양파일 (건설 + PHC파일)
   # 금호타이어 shares a name with 금호건설 but not an owner: it was sold to
   # Doublestar in 2018. Tyres track the auto cycle, construction does not, so
@@ -229,6 +230,64 @@ universe:
 
   "196170":
     name: 알테오젠
+    market: KOSDAQ
+    enabled: true
+    strategy: scalping
+    timeframe: 10Min
+    min_qty: 1
+    entry_window: ["09:15", "14:30"]
+    force_exit_at: "15:10"
+    params:
+      period: 10
+      volume_mult: 1.5
+      atr_trail_mult: 1.5
+      stop_pct: 0.02
+      take_profit_pct: 0.02
+      volume_exit_mult: 2.5
+      peak_trail_pct: 0.015
+      min_bar_strength: 0.5
+
+  # --- K-beauty OEM/ODM (뷰티 테마) ----------------------------------------
+  "161890":
+    name: 한국콜마
+    market: KOSPI
+    enabled: true
+    strategy: scalping
+    timeframe: 10Min
+    min_qty: 1
+    entry_window: ["09:15", "14:30"]
+    force_exit_at: "15:10"
+    params:
+      period: 10
+      volume_mult: 1.5
+      atr_trail_mult: 1.5
+      stop_pct: 0.02
+      take_profit_pct: 0.02
+      volume_exit_mult: 2.5
+      peak_trail_pct: 0.015
+      min_bar_strength: 0.5
+
+  "192820":
+    name: 코스맥스
+    market: KOSPI
+    enabled: true
+    strategy: scalping
+    timeframe: 10Min
+    min_qty: 1
+    entry_window: ["09:15", "14:30"]
+    force_exit_at: "15:10"
+    params:
+      period: 10
+      volume_mult: 1.5
+      atr_trail_mult: 1.5
+      stop_pct: 0.02
+      take_profit_pct: 0.02
+      volume_exit_mult: 2.5
+      peak_trail_pct: 0.015
+      min_bar_strength: 0.5
+
+  "278470":
+    name: 에이피알
     market: KOSDAQ
     enabled: true
     strategy: scalping

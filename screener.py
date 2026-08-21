@@ -90,6 +90,7 @@ class DailyScreener:
         self.enabled: bool = bool(scr.get("enabled", False))
         self.n_stocks: int = int(scr.get("n_stocks", 5))
         self.min_price: int = int(scr.get("min_price", 2000))
+        self.max_price: int = int(scr.get("max_price", 0))  # 0 = no cap
         self.min_atr_pct: float = float(scr.get("min_atr_pct", 0.015))
         self.min_trading_value: float = float(scr.get("min_trading_value_m", 5000)) * 1_000_000
         self.atr_period: int = int((config.get("risk") or {}).get("atr_period", 14))
@@ -127,6 +128,8 @@ class DailyScreener:
             if "trading_value" in snap.columns:
                 snap = snap[snap["trading_value"] >= self.min_trading_value]
             snap = snap[snap["close"] >= self.min_price]
+            if self.max_price > 0:
+                snap = snap[snap["close"] <= self.max_price]
             snap = snap[~snap.index.astype(str).isin(self._existing)]
 
             if "trading_value" in snap.columns:

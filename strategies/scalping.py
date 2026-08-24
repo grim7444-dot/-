@@ -201,7 +201,7 @@ class Scalping(Strategy):
                             atr_value,
                         )
 
-            if position.is_long and price < vwap_now:
+            if self.use_vwap_filter and position.is_long and price < vwap_now:
                 return self._signal(
                     window,
                     Action.EXIT,

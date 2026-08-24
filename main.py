@@ -254,9 +254,11 @@ class TradingEngine:
         }
         self._dart_monitor = DartMonitor(rt.config, cred_dict)
         self._dart_monitor.set_notifier(self._tg_notifier)
-        # 트럼프 관련 뉴스 모니터 (참고용 알림 전용, 매매 신호 아님)
+        # 트럼프 관련 뉴스 모니터: 텔레그램 알림 + 테마 매칭 시 진입 우선 부스트.
+        # 부스트는 실제 매수를 걸지 않는다 -- 진입은 항상 기술적 신호가 조건.
         self._news_monitor = NewsMonitor(rt.config)
         self._news_monitor.set_notifier(self._tg_notifier)
+        self._news_monitor.set_theme_map(rt.config.get("themes") or {})
         # Dynamic universe refresh
         scr_cfg = (rt.config.get("screener") or {})
         self._universe_refresh_interval: float = float(
@@ -822,6 +824,8 @@ class TradingEngine:
             return
         if self._dart_monitor.is_boosted(code):
             logger.info("%s: DART 긍정 공시 부스트 활성 — 진입 우선", label)
+        if self._news_monitor.is_boosted(code):
+            logger.info("%s: 트럼프 뉴스 테마 부스트 활성 — 진입 우선", label)
 
         # Investor flow filter (외국인·기관 순매수)
         flow_sig = self._flow_scanner.signal_for(code)

@@ -623,6 +623,7 @@ news:
   enabled: true
   query: "트럼프"
   poll_interval_seconds: 300     # 5분마다 체크
+  boost_duration_minutes: 20     # 테마 매칭 시 진입 우선 부스트 지속시간
 
 screener:
   enabled: true

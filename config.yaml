@@ -184,7 +184,7 @@ universe:
   "086520":
     name: 에코프로
     market: KOSDAQ
-    enabled: true
+    enabled: false  # 85,700원 — 현재 자본으로 매수 불가
     strategy: scalping
     timeframe: 3Min
     min_qty: 1
@@ -205,7 +205,7 @@ universe:
   "003670":
     name: 포스코퓨처엠
     market: KOSPI
-    enabled: true
+    enabled: false  # 167,900원 — 현재 자본으로 매수 불가
     strategy: scalping
     timeframe: 3Min
     min_qty: 1
@@ -226,7 +226,7 @@ universe:
   "068270":
     name: 셀트리온
     market: KOSPI
-    enabled: true
+    enabled: false  # 192,800원 — 현재 자본으로 매수 불가
     strategy: scalping
     timeframe: 3Min
     min_qty: 1
@@ -247,7 +247,7 @@ universe:
   "196170":
     name: 알테오젠
     market: KOSDAQ
-    enabled: true
+    enabled: false  # 321,000원 — 현재 자본으로 매수 불가
     strategy: scalping
     timeframe: 3Min
     min_qty: 1
@@ -269,7 +269,7 @@ universe:
   "161890":
     name: 한국콜마
     market: KOSPI
-    enabled: true
+    enabled: false  # 139,700원 — 현재 자본으로 매수 불가
     strategy: scalping
     timeframe: 3Min
     min_qty: 1
@@ -290,7 +290,7 @@ universe:
   "192820":
     name: 코스맥스
     market: KOSPI
-    enabled: true
+    enabled: false  # 280,500원 — 현재 자본으로 매수 불가
     strategy: scalping
     timeframe: 3Min
     min_qty: 1
@@ -311,7 +311,7 @@ universe:
   "278470":
     name: 에이피알
     market: KOSDAQ
-    enabled: true
+    enabled: false  # 408,000원 — 현재 자본으로 매수 불가
     strategy: scalping
     timeframe: 3Min
     min_qty: 1
@@ -407,7 +407,7 @@ universe:
   "247540":
     name: 에코프로비엠
     market: KOSDAQ
-    enabled: true
+    enabled: false  # 고가 — 현재 자본으로 매수 불가
     strategy: close_auction
     timeframe: 1Day
     min_qty: 1
@@ -423,7 +423,7 @@ universe:
   "028300":
     name: HLB
     market: KOSDAQ
-    enabled: true
+    enabled: false  # 고가 바이오 — 현재 자본으로 매수 불가
     strategy: close_auction
     timeframe: 1Day
     min_qty: 1
@@ -611,9 +611,9 @@ screener:
   n_stocks: 10              # max dynamic stocks to add per session
   markets: ["KOSDAQ", "KOSPI"]
   min_price: 3000           # skip sub-3000 KRW stocks (wide spreads)
-  max_price: 100000         # skip stocks above 10만원 (unaffordable with small capital)
+  max_price: 40000          # skip stocks above 4만원 (afford 10+ shares with current capital)
   min_atr_pct: 0.015        # 1.5% daily ATR minimum (cost gate still applies)
-  min_trading_value_m: 1000 # 1000억 KRW daily trading value minimum
+  min_trading_value_m: 500  # 500억 KRW daily trading value minimum (more picks)
   refresh_interval_minutes: 30  # 장중 30분마다 순위 재스캔 → 핫 종목으로 자동 교체
 
 telegram:

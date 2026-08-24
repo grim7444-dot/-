@@ -80,106 +80,111 @@ universe:
     name: 한화솔루션
     market: KOSPI
     enabled: true
-    strategy: scalping
+    strategy: pullback_bounce
     timeframe: 3Min
     min_qty: 1
-    entry_window: ["09:10", "14:30"]
+    entry_window: ["09:00", "11:00"]
     force_exit_at: "15:10"
     params:
-      period: 3
-      volume_mult: 1.3
-      atr_trail_mult: 1.5
-      stop_pct: 0.020
-      take_profit_pct: 0.04
-      max_cost_share: 0.35
-      volume_exit_mult: 2.0
-      peak_trail_pct: 0.02
+      trend_ema: 20
+      swing_lookback: 10
+      pullback_bars: 3
+      pullback_min_pct: 0.008
       min_bar_strength: 0.3
-      use_vwap_filter: false
+      stop_pct: 0.02
+      arm_pct: 0.02
+      lock_pct: 0.03
+      cap_pct: 0.05
+      peak_trail_pct: 0.02
+      max_cost_share: 0.35
 
   "002990":
     name: 금호건설
     market: KOSPI
     enabled: true
-    strategy: scalping
+    strategy: pullback_bounce
     timeframe: 3Min
     min_qty: 1
-    entry_window: ["09:10", "14:30"]
+    entry_window: ["09:00", "11:00"]
     force_exit_at: "15:10"
     params:
-      period: 3
-      volume_mult: 1.3
-      atr_trail_mult: 1.5
-      stop_pct: 0.020
-      take_profit_pct: 0.04
-      max_cost_share: 0.35
-      volume_exit_mult: 2.0
-      peak_trail_pct: 0.02
+      trend_ema: 20
+      swing_lookback: 10
+      pullback_bars: 3
+      pullback_min_pct: 0.008
       min_bar_strength: 0.3
-      use_vwap_filter: false
+      stop_pct: 0.02
+      arm_pct: 0.02
+      lock_pct: 0.03
+      cap_pct: 0.05
+      peak_trail_pct: 0.02
+      max_cost_share: 0.35
 
   "093370":
     name: 후성
     market: KOSPI
     enabled: true
-    strategy: scalping
+    strategy: pullback_bounce
     timeframe: 3Min
     min_qty: 1
-    entry_window: ["09:10", "14:30"]
+    entry_window: ["09:00", "11:00"]
     force_exit_at: "15:10"
     params:
-      period: 3
-      volume_mult: 1.3
-      atr_trail_mult: 1.5
-      stop_pct: 0.020
-      take_profit_pct: 0.04
-      max_cost_share: 0.35
-      volume_exit_mult: 2.0
-      peak_trail_pct: 0.02
+      trend_ema: 20
+      swing_lookback: 10
+      pullback_bars: 3
+      pullback_min_pct: 0.008
       min_bar_strength: 0.3
-      use_vwap_filter: false
+      stop_pct: 0.02
+      arm_pct: 0.02
+      lock_pct: 0.03
+      cap_pct: 0.05
+      peak_trail_pct: 0.02
+      max_cost_share: 0.35
 
   "006340":
     name: 대원전선
     market: KOSPI
     enabled: true
-    strategy: scalping
+    strategy: pullback_bounce
     timeframe: 3Min
     min_qty: 1
-    entry_window: ["09:10", "14:30"]
+    entry_window: ["09:00", "11:00"]
     force_exit_at: "15:10"
     params:
-      period: 3
-      volume_mult: 1.3
-      atr_trail_mult: 1.5
-      stop_pct: 0.020
-      take_profit_pct: 0.04
-      max_cost_share: 0.35
-      volume_exit_mult: 2.0
-      peak_trail_pct: 0.02
+      trend_ema: 20
+      swing_lookback: 10
+      pullback_bars: 3
+      pullback_min_pct: 0.008
       min_bar_strength: 0.3
-      use_vwap_filter: false
+      stop_pct: 0.02
+      arm_pct: 0.02
+      lock_pct: 0.03
+      cap_pct: 0.05
+      peak_trail_pct: 0.02
+      max_cost_share: 0.35
 
   "073240":
     name: 금호타이어
     market: KOSPI
     enabled: true
-    strategy: scalping
+    strategy: pullback_bounce
     timeframe: 3Min
     min_qty: 1
-    entry_window: ["09:10", "14:30"]
+    entry_window: ["09:00", "11:00"]
     force_exit_at: "15:10"
     params:
-      period: 3
-      volume_mult: 1.3
-      atr_trail_mult: 1.5
-      stop_pct: 0.020
-      take_profit_pct: 0.04
-      max_cost_share: 0.35
-      volume_exit_mult: 2.0
-      peak_trail_pct: 0.02
+      trend_ema: 20
+      swing_lookback: 10
+      pullback_bars: 3
+      pullback_min_pct: 0.008
       min_bar_strength: 0.3
-      use_vwap_filter: false
+      stop_pct: 0.02
+      arm_pct: 0.02
+      lock_pct: 0.03
+      cap_pct: 0.05
+      peak_trail_pct: 0.02
+      max_cost_share: 0.35
 
   "086520":
     name: 에코프로
@@ -439,7 +444,7 @@ universe:
   "263750":
     name: 펄어비스
     market: KOSDAQ
-    enabled: true
+    enabled: false  # 종가매매 비활성 — 갭하락 위험
     strategy: close_auction
     timeframe: 1Day
     min_qty: 1
@@ -455,7 +460,7 @@ universe:
   "293490":
     name: 카카오게임즈
     market: KOSDAQ
-    enabled: true
+    enabled: false  # 종가매매 비활성 — 갭하락 위험
     strategy: close_auction
     timeframe: 1Day
     min_qty: 1

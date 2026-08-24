@@ -17,6 +17,7 @@ from strategies.base import Action, Signal, Strategy
 from strategies.breakout import Breakout
 from strategies.close_auction import CloseAuction
 from strategies.mean_reversion import MeanReversion
+from strategies.pullback import PullbackBounce
 from strategies.scalping import Scalping
 from strategies.trend_following import TrendFollowing
 
@@ -26,6 +27,7 @@ STRATEGY_CLASSES: dict[str, type[Strategy]] = {
     "trend_following": TrendFollowing,
     "scalping": Scalping,
     "close_auction": CloseAuction,
+    "pullback_bounce": PullbackBounce,
 }
 
 __all__ = [
@@ -35,6 +37,7 @@ __all__ = [
     "Breakout",
     "CloseAuction",
     "MeanReversion",
+    "PullbackBounce",
     "Scalping",
     "TrendFollowing",
     "STRATEGY_CLASSES",

@@ -274,6 +274,7 @@ class Credentials:
     account_no: Secret
     telegram_token: Secret
     telegram_chat_id: Secret
+    dart_api_key: Secret
     #: Which key set was loaded. Should always match the ModeDecision.
     loaded_for: str = "PAPER"
 
@@ -324,6 +325,7 @@ def load_credentials(
         account_no=Secret(env.get("KIWOOM_ACCOUNT_NO")),
         telegram_token=Secret(env.get("TELEGRAM_BOT_TOKEN")),
         telegram_chat_id=Secret(env.get("TELEGRAM_CHAT_ID")),
+        dart_api_key=Secret(env.get("DART_API_KEY")),
         loaded_for="LIVE" if live else "PAPER",
     )
 

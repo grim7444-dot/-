@@ -52,6 +52,8 @@ from strategies import build_strategies
 from strategies.base import Action, Strategy
 from telegram_bot import TelegramCommandHandler, TelegramNotifier, build_telegram
 from investor_flow import InvestorFlowScanner
+from us_market import USMarketMonitor
+from dart_monitor import DartMonitor
 
 logger = logging.getLogger("bot.main")
 
@@ -242,6 +244,15 @@ class TradingEngine:
         # Investor flow scanner (외국인·기관 순매수)
         self._flow_scanner = InvestorFlowScanner(rt.config)
         self._flow_scan_date: "date | None" = None
+        # S&P 500 선물 방향 모니터
+        self._us_monitor = USMarketMonitor(rt.config)
+        # DART 공시 모니터
+        cred_dict = {
+            "dart_api_key": rt.credentials.dart_api_key.reveal()
+            if hasattr(rt.credentials, "dart_api_key") else "",
+        }
+        self._dart_monitor = DartMonitor(rt.config, cred_dict)
+        self._dart_monitor.set_notifier(self._tg_notifier)
         # Dynamic universe refresh
         scr_cfg = (rt.config.get("screener") or {})
         self._universe_refresh_interval: float = float(
@@ -796,6 +807,18 @@ class TradingEngine:
             logger.info("%s: entry skipped - paused via Telegram /stop", label)
             return
 
+        # S&P 500 선물 방향 필터
+        if not self._us_monitor.check():
+            logger.info("%s: entry skipped - %s", label, self._us_monitor.status_line)
+            return
+
+        # DART 공시 차단 (CB·유상증자 등)
+        if self._dart_monitor.is_bearish_blocked(code):
+            logger.warning("%s: entry blocked - DART 부정 공시 감지 (오늘 차단)", label)
+            return
+        if self._dart_monitor.is_boosted(code):
+            logger.info("%s: DART 긍정 공시 부스트 활성 — 진입 우선", label)
+
         # Investor flow filter (외국인·기관 순매수)
         flow_sig = self._flow_scanner.signal_for(code)
         flow_ok, flow_reason = flow_sig.allows_entry(
@@ -901,6 +924,8 @@ class TradingEngine:
             {c: self.interval_for(c) for c in self.rt.strategies},
         )
         self._tg_handler.start()
+        self._dart_monitor.set_universe({str(c) for c in self.rt.strategies})
+        self._dart_monitor.start()
         try:
             while True:
                 if self.rt.calendar.is_nxt_premarket():
@@ -945,6 +970,7 @@ class TradingEngine:
             logger.info("interrupted by user - shutting down cleanly")
             self.rt.portfolio.record_day(self.rt.portfolio.state.last_equity)
         finally:
+            self._dart_monitor.stop()
             self._tg_handler.shutdown()
 
 

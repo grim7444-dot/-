@@ -581,6 +581,31 @@ investor_flow:
   # false 이면 로그만 출력 (advisory), 진입은 허용
   require_smart_money: false
 
+# ---------------------------------------------------------------------------
+# S&P 500 선물 실시간 방향 모니터
+#
+# 장 중 ES=F(E-mini S&P 500) 선물을 check_interval_seconds마다 조회해
+# 세션 시작 대비 bearish_threshold 이상 하락하면 신규 진입을 막는다.
+# yfinance 설치 필요: pip install yfinance
+# ---------------------------------------------------------------------------
+us_market:
+  enabled: true
+  symbol: "ES=F"                 # E-mini S&P 500 선물 (Yahoo Finance 티커)
+  check_interval_seconds: 300    # 5분마다 조회
+  bearish_threshold: -0.005      # -0.5% 이상 하락 시 진입 차단
+
+# ---------------------------------------------------------------------------
+# DART 전자공시 실시간 모니터
+#
+# https://opendart.fss.or.kr/ 에서 무료 API키 발급 후 .env에 추가:
+#   DART_API_KEY=발급받은키
+# 유니버스 종목의 계약·실적 공시는 진입 우선, CB·유상증자 공시는 진입 차단
+# ---------------------------------------------------------------------------
+dart:
+  enabled: false                 # DART_API_KEY 설정 후 true로 변경
+  poll_interval_seconds: 60      # 1분마다 신규 공시 체크
+  boost_duration_minutes: 30     # 긍정 공시 후 30분간 진입 우선
+
 screener:
   enabled: true
   n_stocks: 10              # max dynamic stocks to add per session

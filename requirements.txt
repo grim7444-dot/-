@@ -9,6 +9,7 @@ numpy>=1.24.0
 PyYAML>=6.0
 python-dotenv>=1.0.0
 requests>=2.31.0       # Kiwoom REST transport
+yfinance>=0.2.40       # S&P 500 futures direction (us_market.py)
 
 # --- development / testing ---
 pytest>=7.4.0

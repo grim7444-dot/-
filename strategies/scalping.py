@@ -100,6 +100,14 @@ class Scalping(Strategy):
         #: When False, skip the "price > session VWAP" entry filter.
         #: Disabling lets the bot enter on morning breakouts before VWAP forms.
         use_vwap_filter: bool = True,
+        #: Fast exit when a held position sees a high-volume bar close weak
+        #: (sellers in control) -- fires ahead of the fixed stop / peak trail.
+        use_sell_pressure_exit: bool = True,
+        #: Volume multiple (of the rolling average) that counts as "매도 급증".
+        sell_volume_mult: float = 2.0,
+        #: Bar must close in the bottom this-much of its range to count as a
+        #: weak/seller-controlled bar (mirrors min_bar_strength for entries).
+        sell_bar_strength_max: float = 0.3,
         **params,
     ) -> None:
         super().__init__(
@@ -121,6 +129,9 @@ class Scalping(Strategy):
         self.peak_trail_pct = peak_trail_pct
         self.min_bar_strength = min_bar_strength
         self.use_vwap_filter = use_vwap_filter
+        self.use_sell_pressure_exit = use_sell_pressure_exit
+        self.sell_volume_mult = sell_volume_mult
+        self.sell_bar_strength_max = sell_bar_strength_max
 
     #: Bars in one 09:00-15:30 session, by timeframe label.
     _SESSION_BARS = {
@@ -172,6 +183,21 @@ class Scalping(Strategy):
             min_tp = position.take_profit  # entry × (1 + take_profit_pct), floor only
             peak = position.highest_price or price
             vol_ratio = (volume / avg_volume) if avg_volume > 0 else 0.0
+
+            # Sell-pressure fast exit: heavy volume on a bar that closed weak
+            # (sellers controlled it) overrides everything else below -- this
+            # is meant to fire *faster* than the fixed stop or peak trail when
+            # the tape itself turns, not just the price.
+            if self.use_sell_pressure_exit and position.is_long and avg_volume > 0:
+                if vol_ratio >= self.sell_volume_mult:
+                    weakness = float(bar_strength(window).iloc[-1])
+                    if weakness <= self.sell_bar_strength_max:
+                        return self._signal(
+                            window, Action.EXIT,
+                            f"매도 거래량 급증 {vol_ratio:.1f}x, 약세 마감 "
+                            f"{weakness:.0%} - 즉시 손절",
+                            atr_value,
+                        )
 
             if min_tp and position.is_long:
                 if price >= min_tp:

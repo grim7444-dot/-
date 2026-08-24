@@ -54,6 +54,7 @@ from telegram_bot import TelegramCommandHandler, TelegramNotifier, build_telegra
 from investor_flow import InvestorFlowScanner
 from us_market import USMarketMonitor
 from dart_monitor import DartMonitor
+from news_monitor import NewsMonitor
 
 logger = logging.getLogger("bot.main")
 
@@ -253,6 +254,9 @@ class TradingEngine:
         }
         self._dart_monitor = DartMonitor(rt.config, cred_dict)
         self._dart_monitor.set_notifier(self._tg_notifier)
+        # 트럼프 관련 뉴스 모니터 (참고용 알림 전용, 매매 신호 아님)
+        self._news_monitor = NewsMonitor(rt.config)
+        self._news_monitor.set_notifier(self._tg_notifier)
         # Dynamic universe refresh
         scr_cfg = (rt.config.get("screener") or {})
         self._universe_refresh_interval: float = float(
@@ -926,6 +930,7 @@ class TradingEngine:
         self._tg_handler.start()
         self._dart_monitor.set_universe({str(c) for c in self.rt.strategies})
         self._dart_monitor.start()
+        self._news_monitor.start()
         try:
             while True:
                 if self.rt.calendar.is_nxt_premarket():
@@ -971,6 +976,7 @@ class TradingEngine:
             self.rt.portfolio.record_day(self.rt.portfolio.state.last_equity)
         finally:
             self._dart_monitor.stop()
+            self._news_monitor.stop()
             self._tg_handler.shutdown()
 
 

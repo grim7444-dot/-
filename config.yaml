@@ -342,7 +342,7 @@ universe:
   "460930":
     name: 현대힘스
     market: KOSDAQ
-    enabled: true
+    enabled: false  # 종가매매 비활성 — 갭하락 위험
     strategy: close_auction
     timeframe: 1Day
     min_qty: 1
@@ -358,7 +358,7 @@ universe:
   "101730":
     name: 위메이드맥스
     market: KOSDAQ
-    enabled: true
+    enabled: false  # 종가매매 비활성 — 갭하락 위험
     strategy: close_auction
     timeframe: 1Day
     min_qty: 1
@@ -374,7 +374,7 @@ universe:
   "228340":
     name: 동양파일
     market: KOSDAQ
-    enabled: true
+    enabled: false  # 종가매매 비활성 — 갭하락 위험
     strategy: close_auction
     timeframe: 1Day
     min_qty: 1
@@ -390,7 +390,7 @@ universe:
   "439960":
     name: 코스모로보틱스
     market: KOSDAQ
-    enabled: true
+    enabled: false  # 종가매매 비활성 — 갭하락 위험
     listed_on: "2026-05-11"
     strategy: close_auction
     timeframe: 1Day

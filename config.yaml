@@ -97,8 +97,7 @@ universe:
       stop_pct: 0.02
       arm_pct: 0.012
       lock_pct: 0.018
-      cap_pct: 0.03
-      peak_trail_pct: 0.02
+      peak_trail_pct: 0.005
       max_cost_share: 0.35
 
   "002990":
@@ -119,8 +118,7 @@ universe:
       stop_pct: 0.02
       arm_pct: 0.012
       lock_pct: 0.018
-      cap_pct: 0.03
-      peak_trail_pct: 0.02
+      peak_trail_pct: 0.005
       max_cost_share: 0.35
 
   "093370":
@@ -141,8 +139,7 @@ universe:
       stop_pct: 0.02
       arm_pct: 0.012
       lock_pct: 0.018
-      cap_pct: 0.03
-      peak_trail_pct: 0.02
+      peak_trail_pct: 0.005
       max_cost_share: 0.35
 
   "006340":
@@ -163,8 +160,7 @@ universe:
       stop_pct: 0.02
       arm_pct: 0.012
       lock_pct: 0.018
-      cap_pct: 0.03
-      peak_trail_pct: 0.02
+      peak_trail_pct: 0.005
       max_cost_share: 0.35
 
   "073240":
@@ -185,8 +181,7 @@ universe:
       stop_pct: 0.02
       arm_pct: 0.012
       lock_pct: 0.018
-      cap_pct: 0.03
-      peak_trail_pct: 0.02
+      peak_trail_pct: 0.005
       max_cost_share: 0.35
 
   "086520":
@@ -366,8 +361,7 @@ universe:
       stop_pct: 0.02
       arm_pct: 0.012
       lock_pct: 0.018
-      cap_pct: 0.03
-      peak_trail_pct: 0.02
+      peak_trail_pct: 0.005
       max_cost_share: 0.35
 
   "101730":

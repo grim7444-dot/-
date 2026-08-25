@@ -6,17 +6,17 @@
 
 익절은 3단계다.
 
-1. +arm_pct(기본 2%) 미만: 그냥 보유, stop_pct 손절만 작동.
-2. +arm_pct~+lock_pct(기본 2~3%) 구간: "무장"됐지만 아직 확정 구간은 아니다 --
-   그냥 기다린다 (여기서 반락해도 exit은 손절가에서만 발생, 즉 최악이라도
-   원래 손절폭 이상은 잃지 않는다).
-3. +lock_pct(기본 3%) 이상: 최소 lock_pct는 확정 -- 진입가 대비 +lock_pct
-   아래로 못 내려가게 바닥을 고정한다. +cap_pct(기본 5%) 이상부터는 고점 대비
-   peak_trail_pct만큼만 트레일해 더 먹을 건 먹는다.
+1. +arm_pct 미만: 그냥 보유, stop_pct 손절만 작동.
+2. +arm_pct~+lock_pct 구간: "무장"됐지만 아직 확정 구간은 아니다 -- 그냥
+   기다린다 (여기서 반락해도 exit은 손절가에서만 발생, 즉 최악이라도 원래
+   손절폭 이상은 잃지 않는다).
+3. +lock_pct 이상: 바닥이 진입가 대비 +lock_pct 아래로는 절대 안 내려가고,
+   그 위로는 고점 대비 peak_trail_pct만큼만 밀리면 바로 청산 -- 확정 구간에
+   들어온 뒤로는 고점에서 조금만 꺾여도 빠르게 이익을 챙긴다.
 
 peak_trail_pct를 고점 기준으로만 걸면 무장 직후(고점이 arm_pct를 살짝 넘은
 수준)에 반락할 때 "익절"이라면서 실제로는 손실로 마감되는 문제가 생긴다 --
-그래서 3단계로 나눠 lock_pct 이상에서만 "확정 바닥"을 건다.
+그래서 3단계로 나눠 lock_pct 이상에서만 트레일을 건다.
 """
 
 from __future__ import annotations
@@ -59,10 +59,8 @@ class PullbackBounce(Strategy):
         arm_pct: float = 0.02,
         #: 이 수익률부터 진입가 대비 최소 이만큼은 확정 (바닥을 여기 고정).
         lock_pct: float = 0.03,
-        #: 이 수익률 이상부터는 확정 바닥 대신 고점 대비 peak_trail_pct로 트레일.
-        cap_pct: float = 0.05,
-        #: cap_pct 이상 구간에서 고점 대비 이 폭만큼 밀리면 청산.
-        peak_trail_pct: float = 0.02,
+        #: lock_pct 이상 구간에서 고점 대비 이 폭만큼 밀리면 즉시 청산.
+        peak_trail_pct: float = 0.005,
         #: 비용 대비 손절폭 상한 (round_trip_cost_pct / stop_pct 가 이 값을 넘으면
         #: 진입 자체를 막는다 -- 손절폭이 너무 좁아 수수료·세금만 내는 상황 방지).
         max_cost_share: float = 0.35,
@@ -104,7 +102,6 @@ class PullbackBounce(Strategy):
         self.stop_pct = stop_pct
         self.arm_pct = arm_pct
         self.lock_pct = lock_pct
-        self.cap_pct = cap_pct
         self.peak_trail_pct = peak_trail_pct
         self.max_cost_share = max_cost_share
         self.round_trip_cost_pct = round_trip_cost_pct
@@ -163,9 +160,11 @@ class PullbackBounce(Strategy):
 
             if peak_gain >= self.lock_pct:
                 # 최소 lock_pct는 확정 -- 바닥이 진입가 아래로 절대 안 내려간다.
-                floor = entry * (1 + self.lock_pct)
-                if peak_gain >= self.cap_pct:
-                    floor = max(floor, peak * (1.0 - self.peak_trail_pct))
+                # 그 위로는 고점 대비 peak_trail_pct만큼만 밀리면 바로 청산.
+                floor = max(
+                    entry * (1 + self.lock_pct),
+                    peak * (1.0 - self.peak_trail_pct),
+                )
                 if price <= floor:
                     return self._signal(
                         window, Action.EXIT,
@@ -295,7 +294,7 @@ class PullbackBounce(Strategy):
             window, Action.ENTER_LONG,
             f"눌림목 반등: 고점 {swing_high:,.0f} 대비 {pullback_depth:.2%} 조정 후 "
             f"{prev_high:,.0f} 재돌파 [손절 {self.stop_pct:.0%}, 무장 {self.arm_pct:.0%}, "
-            f"확정 {self.lock_pct:.0%}, 캡 {self.cap_pct:.0%}]{extra_note}",
+            f"확정 {self.lock_pct:.0%}, 트레일 {self.peak_trail_pct:.1%}]{extra_note}",
             effective_atr if effective_atr > 0 else atr_value,
             meta={
                 "swing_high": swing_high,

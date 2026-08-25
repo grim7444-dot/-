@@ -24,28 +24,26 @@ logger = logging.getLogger("bot.screener")
 
 _SCALPING_CFG_TEMPLATE: dict[str, Any] = {
     "enabled": True,
-    # Fast breakout + volume-burst entry, sell-pressure fast exit -- the
-    # screener already picks the day's highest-momentum names, so a
-    # breakout-chasing style fits better here than the patient pullback
-    # entry used on the static core universe.
-    "strategy": "scalping",
+    # 오프닝레인지 브레이크아웃(ORB) -- 09:00-09:15 레인지를 거래량+VWAP+
+    # 추세+반등봉강도 4중 확인 후 돌파할 때만 진입. 스크리너가 이미 당일
+    # 최고 모멘텀 종목을 고르므로, 첫 15분의 노이즈만 걸러내면 이 종목들의
+    # 실제 방향성 있는 움직임을 잡기에 정석 돌파 스타일이 잘 맞는다.
+    "strategy": "orb",
     "timeframe": "3Min",
     "min_qty": 1,
-    "entry_window": ["09:10", "14:30"],
+    "entry_window": ["09:15", "14:30"],  # 레인지(09:00-09:15) 완성 직후부터
     "force_exit_at": "15:10",
     "params": {
-        "period": 3,
+        "range_minutes": 15,
+        "volume_lookback": 10,
         "volume_mult": 1.5,
-        "stop_pct": 0.02,
-        "take_profit_pct": 0.02,
+        "trend_ema": 21,
+        "min_bar_strength": 0.5,
+        "stop_pct": 0.017,
+        "arm_pct": 0.012,
+        "lock_pct": 0.018,
+        "peak_trail_pct": 0.005,
         "max_cost_share": 0.35,
-        "volume_exit_mult": 2.0,
-        "peak_trail_pct": 0.02,
-        "min_bar_strength": 0.3,
-        "use_vwap_filter": False,
-        "use_sell_pressure_exit": True,
-        "sell_volume_mult": 2.0,
-        "sell_bar_strength_max": 0.3,
     },
 }
 

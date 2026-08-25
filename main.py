@@ -2032,6 +2032,51 @@ def cmd_resume(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_diagnose_orderbook(args: argparse.Namespace) -> int:
+    """실시간 호가/체결강도 필드명 확인용 진단 -- 주문은 절대 못 나간다.
+
+    force_dry_run=True로 build_runtime을 호출하므로 ReadOnlyBroker가 실제
+    KiwoomBroker를 감싼다 (읽기는 전부 통과, 쓰기는 전부 거부) -- cmd_status
+    와 동일한 안전장치. stock_info(ka10001) 응답을 파싱하지 않고 원본
+    그대로 찍어서, 매수/매도 호가·잔량 필드가 실제로 어떤 키 이름으로
+    오는지 확인한다. 이게 확정돼야 실시간 호가 불균형 필터를 안전하게
+    연결할 수 있다.
+    """
+    cli_live = bool(getattr(args, "live", False))
+    rt = build_runtime(args, cli_live=cli_live, force_dry_run=True)
+    code = str(args.code)
+
+    print()
+    print("=" * 78)
+    print("  ORDERBOOK FIELD DIAGNOSTIC -- READ ONLY, NO ORDERS CAN BE SENT".center(78))
+    print("=" * 78)
+    print(f"  Mode : {rt.decision.label}")
+    print(f"  Code : {code}")
+    print()
+
+    broker = rt.broker
+    inner = getattr(broker, "inner", broker)
+    if not hasattr(inner, "_call"):
+        print("  이 브로커는 원시 TR 호출을 지원하지 않습니다 (인증 정보나")
+        print("  네트워크가 없어 dry-run/synthetic 브로커로 대체된 상태입니다).")
+        return 1
+
+    try:
+        data = inner._call("stock_info", "stock_info", {"stk_cd": code}, f"diagnose({code})")
+    except Exception as exc:
+        print(f"  조회 실패: {exc}")
+        return 1
+
+    print("  전체 응답 필드:")
+    for key, value in data.items():
+        print(f"    {key:<24} = {value!r}")
+    print()
+    print("  위 목록을 통째로 복사해서 Claude에게 붙여넣어 주세요.")
+    print("  매수호가/매도호가/매수잔량/매도잔량 비슷한 필드를 찾아서")
+    print("  실시간 호가 불균형 필터를 마저 연결하겠습니다.")
+    return 0
+
+
 # --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
@@ -2180,6 +2225,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("resume", help="clear STOPPED and allow trading again")
+
+    diag = sub.add_parser(
+        "diagnose-orderbook",
+        help="read-only: print raw stock_info fields to find bid/ask key names",
+    )
+    diag.add_argument("code", help="6-digit stock code, e.g. 005930")
+    diag.add_argument(
+        "--live", action="store_true", help="query the live account (still read-only)"
+    )
     return parser
 
 
@@ -2212,6 +2266,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return cmd_stop(args)
     if args.command == "resume":
         return cmd_resume(args)
+    if args.command == "diagnose-orderbook":
+        return cmd_diagnose_orderbook(args)
     parser.error(f"unknown command {args.command!r}")
     return 2
 

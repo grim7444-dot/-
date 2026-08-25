@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from indicators import bar_strength, ema, rolling_max
+from indicators import bar_strength, ema, macd, nearest_resistance, rolling_max, rsi
 from portfolio import Position
 from strategies.base import Action, Signal, Strategy
 
@@ -59,6 +59,20 @@ class PullbackBounce(Strategy):
         #: 진입 자체를 막는다 -- 손절폭이 너무 좁아 수수료·세금만 내는 상황 방지).
         max_cost_share: float = 0.35,
         round_trip_cost_pct: float = 0.0038,
+        #: RSI 과매수 필터 -- 반등이 이미 다 써버린 상태에서 쫓아 사는 것 방지.
+        use_rsi_filter: bool = True,
+        rsi_period: int = 14,
+        rsi_overbought: float = 75.0,
+        #: MACD 히스토그램이 양(+)이거나 개선 중이어야 진입 -- 가격만 오른 게
+        #: 아니라 모멘텀 자체가 붙고 있다는 확인.
+        use_macd_filter: bool = True,
+        macd_fast: int = 12,
+        macd_slow: int = 26,
+        macd_signal: int = 9,
+        #: 최근 고점(저항) 근처면 진입 보류 -- 돌파 여지 없이 바로 막힐 수 있음.
+        use_resistance_filter: bool = True,
+        resistance_lookback: int = 20,
+        resistance_min_room_pct: float = 0.005,
         atr_period: int = 14,
         hard_stop_atr_mult: float = 1.0,
         **params,
@@ -80,10 +94,25 @@ class PullbackBounce(Strategy):
         self.peak_trail_pct = peak_trail_pct
         self.max_cost_share = max_cost_share
         self.round_trip_cost_pct = round_trip_cost_pct
+        self.use_rsi_filter = use_rsi_filter
+        self.rsi_period = rsi_period
+        self.rsi_overbought = rsi_overbought
+        self.use_macd_filter = use_macd_filter
+        self.macd_fast = macd_fast
+        self.macd_slow = macd_slow
+        self.macd_signal = macd_signal
+        self.use_resistance_filter = use_resistance_filter
+        self.resistance_lookback = resistance_lookback
+        self.resistance_min_room_pct = resistance_min_room_pct
 
     @property
     def warmup(self) -> int:
-        return max(self.trend_ema, self.swing_lookback) + self.pullback_bars + 2
+        macd_bars = (self.macd_slow + self.macd_signal) if self.use_macd_filter else 0
+        rsi_bars = self.rsi_period if self.use_rsi_filter else 0
+        return (
+            max(self.trend_ema, self.swing_lookback, macd_bars, rsi_bars)
+            + self.pullback_bars + 2
+        )
 
     @property
     def window_bars(self) -> int:
@@ -179,13 +208,57 @@ class PullbackBounce(Strategy):
                     f"반등봉 약함: 범위의 {strength:.0%} (필요 {self.min_bar_strength:.0%})",
                 )
 
+        # RSI: don't chase a bounce that already spent most of its room.
+        rsi_now = None
+        if self.use_rsi_filter:
+            rsi_now = float(rsi(window["close"], self.rsi_period).iloc[-1])
+            if pd.notna(rsi_now) and rsi_now >= self.rsi_overbought:
+                return self._hold(
+                    window, f"RSI {rsi_now:.0f} 과매수 (기준 {self.rsi_overbought:.0f})",
+                )
+
+        # MACD: histogram must confirm momentum is actually building, not just
+        # that the last bar ticked up.
+        macd_hist = None
+        if self.use_macd_filter:
+            _, _, hist = macd(window["close"], self.macd_fast, self.macd_slow, self.macd_signal)
+            if len(hist) >= 2 and pd.notna(hist.iloc[-1]) and pd.notna(hist.iloc[-2]):
+                macd_hist = float(hist.iloc[-1])
+                rising = macd_hist > float(hist.iloc[-2])
+                if macd_hist <= 0 and not rising:
+                    return self._hold(
+                        window,
+                        f"MACD 모멘텀 부족: 히스토그램 {macd_hist:+.1f} (하락 중)",
+                    )
+
+        # Resistance: give the breakout room instead of buying into a ceiling.
+        resistance = None
+        if self.use_resistance_filter:
+            resistance = nearest_resistance(window, self.resistance_lookback, price)
+            if resistance is not None:
+                room = (resistance - price) / price if price > 0 else 0.0
+                if room < self.resistance_min_room_pct:
+                    return self._hold(
+                        window,
+                        f"저항 {resistance:,.0f} 근접 (여유 {room:.2%}, "
+                        f"필요 {self.resistance_min_room_pct:.2%})",
+                    )
+
         atr_value = self._atr(window)
         effective_atr = price * self.stop_pct
+        extra = []
+        if rsi_now is not None:
+            extra.append(f"RSI {rsi_now:.0f}")
+        if macd_hist is not None:
+            extra.append(f"MACD {macd_hist:+.1f}")
+        if resistance is not None:
+            extra.append(f"저항 {resistance:,.0f}")
+        extra_note = f" ({', '.join(extra)})" if extra else ""
         return self._signal(
             window, Action.ENTER_LONG,
             f"눌림목 반등: 고점 {swing_high:,.0f} 대비 {pullback_depth:.2%} 조정 후 "
             f"{prev_high:,.0f} 재돌파 [손절 {self.stop_pct:.0%}, 무장 {self.arm_pct:.0%}, "
-            f"확정 {self.lock_pct:.0%}, 캡 {self.cap_pct:.0%}]",
+            f"확정 {self.lock_pct:.0%}, 캡 {self.cap_pct:.0%}]{extra_note}",
             effective_atr if effective_atr > 0 else atr_value,
             meta={
                 "swing_high": swing_high,

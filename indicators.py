@@ -83,6 +83,59 @@ def rolling_mean_volume(df: pd.DataFrame, period: int) -> pd.Series:
     return df["volume"].rolling(window=period, min_periods=period).mean()
 
 
+def rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    """Relative Strength Index, Wilder smoothing (0-100).
+
+    >70 is the conventional "overbought" line -- a bounce entered up there is
+    chasing a move that has already used up most of its room. <30 is
+    "oversold", the mirror case for a short.
+    """
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
+    avg_loss = loss.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
+    rs = avg_gain / avg_loss.replace(0.0, pd.NA)
+    result = 100 - (100 / (1 + rs))
+    # avg_loss == 0 and avg_gain > 0: every move was up -- maximally strong.
+    # avg_loss == 0 and avg_gain == 0 too (a flat window): no moves at all,
+    # which is neutral, not "overbought".
+    result = result.where(avg_loss != 0, 100.0)
+    return result.where((avg_loss != 0) | (avg_gain != 0), 50.0)
+
+
+def macd(
+    series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """MACD line, signal line and histogram (line - signal).
+
+    The histogram turning from negative to positive is the standard momentum
+    confirmation professionals look for on top of a price-action entry -- it
+    says the *rate* of the move is accelerating, not just that price ticked
+    up one bar.
+    """
+    ema_fast = ema(series, fast)
+    ema_slow = ema(series, slow)
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False, min_periods=signal).mean()
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+
+def nearest_resistance(df: pd.DataFrame, lookback: int, price: float) -> float | None:
+    """Highest high in the last *lookback* bars that sits above *price*.
+
+    A simple, defensible read of "resistance": the last place sellers showed
+    up in size. Buying within a hair of it means the very next tick can stall
+    the trade -- professionals give a breakout room, not a fresh high.
+    """
+    recent_high = df["high"].tail(lookback)
+    above = recent_high[recent_high > price]
+    if above.empty:
+        return None
+    return float(above.max())
+
+
 def bar_strength(df: pd.DataFrame) -> pd.Series:
     """Fraction of each bar's range where the close landed, 0=low 1=high.
 

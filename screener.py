@@ -12,6 +12,7 @@ warning and returns [] so the bot carries on with its static universe.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, timedelta
 from typing import Any
 
@@ -49,16 +50,30 @@ _SCALPING_CFG_TEMPLATE: dict[str, Any] = {
 }
 
 
-def _get_market_snapshot(date_str: str, market: str) -> "pd.DataFrame | None":
-    try:
-        from pykrx import stock as krx
-        df = krx.get_market_ohlcv_by_ticker(date_str, market=market)
-        if df is None or df.empty:
-            return None
-        return df
-    except Exception as exc:
-        logger.debug("pykrx snapshot failed %s %s: %s", market, date_str, exc)
-        return None
+def _get_market_snapshot(
+    date_str: str, market: str, retries: int = 2, retry_delay: float = 2.0
+) -> "pd.DataFrame | None":
+    """Fetch one market's full snapshot, retrying transient KRX/pykrx blips.
+
+    KRX occasionally answers with an empty body (pykrx then raises a JSON
+    decode error) under load or rate limiting; a couple of short retries
+    clear most of those without meaningfully slowing the scan down.
+    """
+    from pykrx import stock as krx
+
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            df = krx.get_market_ohlcv_by_ticker(date_str, market=market)
+            if df is None or df.empty:
+                return None
+            return df
+        except Exception as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(retry_delay)
+    logger.debug("pykrx snapshot failed %s %s: %s", market, date_str, last_exc)
+    return None
 
 
 def _fetch_history(ticker: str, fromdate: str, todate: str) -> "pd.DataFrame | None":
@@ -104,12 +119,18 @@ class DailyScreener:
         self.atr_period: int = int((config.get("risk") or {}).get("atr_period", 14))
         self.markets: list[str] = list(scr.get("markets") or ["KOSDAQ", "KOSPI"])
         self._existing: set[str] = {str(k) for k in (config.get("universe") or {})}
+        #: True when every configured market's snapshot fetch failed on the
+        #: last scan() call -- distinguishes "pykrx/KRX is down" from
+        #: "nothing qualified today", which the caller needs to tell apart to
+        #: decide whether a fallback universe is warranted.
+        self.last_scan_failed: bool = False
 
     def scan(self) -> list[tuple[str, dict[str, Any]]]:
         """Return (ticker, asset_cfg) pairs for today's hot scalping stocks.
 
         Safe to call even when pykrx is unavailable - returns [] on any error.
         """
+        self.last_scan_failed = False
         if not self.enabled:
             return []
 
@@ -118,12 +139,14 @@ class DailyScreener:
 
         # (ticker, name, market, atr_pct, trading_value)
         candidates: list[tuple[str, str, str, float, float]] = []
+        markets_ok = 0
 
         for market in self.markets:
             snap = _get_market_snapshot(today, market)
             if snap is None:
                 logger.warning("screener: could not fetch %s snapshot for %s", market, today)
                 continue
+            markets_ok += 1
 
             col_map = {
                 "시가": "open", "고가": "high", "저가": "low", "종가": "close",
@@ -161,6 +184,13 @@ class DailyScreener:
                     tv = float(snap.loc[ticker, "trading_value"]) if ticker in snap.index else 0.0
                 name = _ticker_name(ticker)
                 candidates.append((ticker, name, market, atr_pct, tv))
+
+        if markets_ok == 0 and self.markets:
+            self.last_scan_failed = True
+            logger.warning(
+                "screener: every configured market failed to fetch -- "
+                "treating this as an infra failure, not zero matches"
+            )
 
         candidates.sort(key=lambda x: x[3], reverse=True)
 

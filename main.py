@@ -48,7 +48,7 @@ from settings import (
     resolve_mode,
     setup_logging,
 )
-from strategies import build_strategies
+from strategies import build_strategy, build_strategies
 from strategies.base import Action, Strategy
 from telegram_bot import TelegramCommandHandler, TelegramNotifier, build_telegram
 from investor_flow import InvestorFlowScanner
@@ -148,6 +148,35 @@ class Runtime:
         return str(self.universe.get(code, {}).get("market") or KOSPI)
 
 
+def _fallback_static_stocks(config: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Disabled *pullback_bounce* universe entries, re-enabled as a last resort.
+
+    Used only when the screener itself fails to fetch data (KRX/pykrx
+    unreachable) so the bot isn't left with zero stocks to trade for the
+    whole session. Never mutates config.yaml -- purely a runtime fallback.
+
+    Deliberately scoped to ``strategy: pullback_bounce`` only -- that is
+    exactly the tag on the five originally-static, day-trade, affordable
+    core stocks. Other disabled entries were turned off for a reason that
+    still applies: ``close_auction`` stocks carry overnight gap risk with no
+    resting stop, and the disabled ``scalping`` entries are priced above
+    what this account can size into. Falling back to *those* would silently
+    reintroduce risks this session already paid to remove.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for code, asset_cfg in (config.get("universe") or {}).items():
+        asset_cfg = asset_cfg or {}
+        if asset_cfg.get("enabled", True):
+            continue
+        if asset_cfg.get("strategy") != "pullback_bounce":
+            continue
+        cfg = dict(asset_cfg)
+        cfg["enabled"] = True
+        cfg["_fallback"] = True
+        out[str(code)] = cfg
+    return out
+
+
 def build_runtime(
     args: argparse.Namespace,
     cli_live: bool,
@@ -168,13 +197,29 @@ def build_runtime(
     if run_screener:
         try:
             from screener import DailyScreener
-            found = DailyScreener(config).scan()
+            daily_screener = DailyScreener(config)
+            found = daily_screener.scan()
             if found:
                 universe = dict(config.get("universe") or {})
                 for ticker, asset_cfg in found:
                     universe[ticker] = asset_cfg
                 config = {**config, "universe": universe}
                 print(f"  Screener added {len(found)} stock(s): {', '.join(t for t, _ in found)}")
+            elif daily_screener.last_scan_failed:
+                fallback = _fallback_static_stocks(config)
+                if fallback:
+                    universe = {**fallback, **(config.get("universe") or {})}
+                    config = {**config, "universe": universe}
+                    logger.error(
+                        "screener: KRX/pykrx unreachable - falling back to %d "
+                        "static stock(s) so the bot has something to trade: %s",
+                        len(fallback), ", ".join(fallback),
+                    )
+                    print(
+                        f"  WARNING: screener failed (KRX/pykrx unreachable). "
+                        f"Falling back to {len(fallback)} static stock(s): "
+                        f"{', '.join(fallback)}"
+                    )
         except Exception as exc:
             logger.warning("screener failed, using static universe: %s", exc)
 
@@ -383,9 +428,30 @@ class TradingEngine:
             from strategies import build_strategies as _build
 
             # Pass the current config so existing universe is excluded.
-            found = DailyScreener(rt.config).scan()
+            daily_screener = DailyScreener(rt.config)
+            found = daily_screener.scan()
         except Exception as exc:
             logger.warning("universe refresh: screener failed: %s", exc)
+            return
+
+        if not found and daily_screener.last_scan_failed and not rt.strategies:
+            fallback = _fallback_static_stocks(rt.config)
+            if fallback:
+                universe = {**fallback, **(rt.config.get("universe") or {})}
+                rt.config = {**rt.config, "universe": universe}
+                for code, asset_cfg in fallback.items():
+                    rt.strategies[code] = build_strategy(
+                        code, asset_cfg, rt.config.get("risk") or {}
+                    )
+                    self._session_rules[code] = SessionRules.from_config(asset_cfg)
+                logger.error(
+                    "universe refresh: screener still down, falling back to "
+                    "%d static stock(s): %s", len(fallback), ", ".join(fallback),
+                )
+                self._tg_notifier.send(
+                    "스크리너 계속 실패 (KRX/pykrx 접속 불가) -- 대체 종목 투입: "
+                    + ", ".join(f"{c}({rt.name_of(c)})" for c in fallback)
+                )
             return
 
         current_universe = dict(rt.config.get("universe") or {})
@@ -935,6 +1001,14 @@ class TradingEngine:
         self._dart_monitor.set_universe({str(c) for c in self.rt.strategies})
         self._dart_monitor.start()
         self._news_monitor.start()
+        fallback_codes = [
+            c for c in self.rt.strategies if self.rt.universe.get(c, {}).get("_fallback")
+        ]
+        if fallback_codes:
+            self._tg_notifier.send(
+                "스크리너 실패 (KRX/pykrx 접속 불가) -- 대체 종목으로 시작함: "
+                + ", ".join(f"{c}({self.rt.name_of(c)})" for c in fallback_codes)
+            )
         try:
             while True:
                 if self.rt.calendar.is_nxt_premarket():

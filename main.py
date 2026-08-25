@@ -182,6 +182,56 @@ def _fallback_static_stocks(config: Mapping[str, Any]) -> dict[str, dict[str, An
     return out
 
 
+def _cover_open_positions(
+    config: Mapping[str, Any], portfolio: Portfolio
+) -> Mapping[str, Any]:
+    """Guarantee a strategy config exists for every code with an open position.
+
+    ``due_codes()`` only ever looks at ``rt.strategies``, so a code that
+    disappears from the universe -- because it was a disabled static
+    fallback, or a screener pick from a process that no longer exists --
+    stops being evaluated entirely: no more stop-loss checks, no more
+    exit signals, while the position itself stays open for real money.
+    This runs on every ``build_runtime()`` call (i.e. every restart) since a
+    fresh screener run rebuilds the universe from scratch with no memory of
+    what the previous process had open.
+    """
+    universe = dict(config.get("universe") or {})
+    changed = False
+    for code, position in portfolio.positions().items():
+        entry = universe.get(code)
+        if entry and entry.get("enabled", True):
+            continue
+        if entry:
+            cfg = dict(entry)
+            cfg["enabled"] = True
+            cfg["_open_position_keepalive"] = True
+            universe[code] = cfg
+            logger.error(
+                "%s: open position but disabled in the universe -- "
+                "re-enabling so exits keep firing", code,
+            )
+        else:
+            from screener import _SCALPING_CFG_TEMPLATE
+            cfg = {
+                **_SCALPING_CFG_TEMPLATE,
+                "name": code,
+                "strategy": position.strategy or _SCALPING_CFG_TEMPLATE["strategy"],
+                "params": dict(_SCALPING_CFG_TEMPLATE["params"]),
+                "_open_position_keepalive": True,
+            }
+            universe[code] = cfg
+            logger.error(
+                "%s: open position with no universe entry at all (likely a "
+                "dynamic pick from a previous process) -- rebuilding a "
+                "fallback config so exits keep firing", code,
+            )
+        changed = True
+    if not changed:
+        return config
+    return {**config, "universe": universe}
+
+
 def build_runtime(
     args: argparse.Namespace,
     cli_live: bool,
@@ -244,6 +294,7 @@ def build_runtime(
         daily_path=paths.get("daily_pnl_csv", "daily_pnl.csv"),
         mode_label=mode_label,
     )
+    config = _cover_open_positions(config, portfolio)
     return Runtime(
         config=config,
         decision=decision,

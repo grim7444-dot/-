@@ -277,6 +277,14 @@ class TradingEngine:
         self.tick_seconds = int(schedule.get("tick_seconds", 30))
         self.closed_sleep = int(schedule.get("closed_market_sleep_seconds", 300))
         self._last_ran: dict[str, float] = {}
+        # Re-entry cooldown: code -> monotonic time of last exit. Prevents
+        # immediately chasing back into the same level a position was just
+        # closed near (e.g. profit-locked at a local high, then re-entering
+        # the same resistance minutes later on ordinary bar noise).
+        self._last_exit_time: dict[str, float] = {}
+        self._entry_cooldown_seconds: float = float(
+            (rt.config.get("risk") or {}).get("entry_cooldown_minutes", 15)
+        ) * 60
         # NXT pre-market bias: code -> % change vs previous close (set at 08:00-08:30)
         self._nxt_bias: dict[str, float] = {}
         self._nxt_scan_date: "date | None" = None
@@ -844,6 +852,7 @@ class TradingEngine:
         )
         if result.submitted:
             rt.portfolio.close_position(code, exit_price=price, exit_reason=reason)
+            self._last_exit_time[code] = time.monotonic()
             self._tg_notifier.alert_exit(
                 code=code,
                 name=rt.name_of(code),
@@ -883,6 +892,17 @@ class TradingEngine:
         if self._entries_paused:
             logger.info("%s: entry skipped - paused via Telegram /stop", label)
             return
+
+        last_exit = self._last_exit_time.get(code)
+        if last_exit is not None:
+            elapsed = time.monotonic() - last_exit
+            if elapsed < self._entry_cooldown_seconds:
+                remaining = (self._entry_cooldown_seconds - elapsed) / 60
+                logger.info(
+                    "%s: entry skipped - 재진입 쿨다운 %.1f분 남음 (같은 자리 추격매수 방지)",
+                    label, remaining,
+                )
+                return
 
         # S&P 500 선물 방향 필터
         if not self._us_monitor.check():

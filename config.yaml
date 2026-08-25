@@ -11,6 +11,9 @@ account:
   currency: KRW
 
 risk:
+  # 청산 직후 같은 종목 재진입 금지 시간(분) -- 방금 매도한 저항선을
+  # 바로 다시 쫓아 사는 것을 막는다.
+  entry_cooldown_minutes: 15
   # Rule 4: every trade risks exactly this fraction of *current* equity.
   per_trade_pct: 0.02
   # Portfolio-wide caps. 1% x 8 stocks would put 8% at risk at once; these

@@ -23,7 +23,15 @@ from __future__ import annotations
 
 import pandas as pd
 
-from indicators import bar_strength, ema, macd, nearest_resistance, rolling_max, rsi
+from indicators import (
+    bar_strength,
+    bollinger_bands,
+    ema,
+    macd,
+    nearest_resistance,
+    rolling_max,
+    rsi,
+)
 from portfolio import Position
 from strategies.base import Action, Signal, Strategy
 
@@ -73,6 +81,12 @@ class PullbackBounce(Strategy):
         use_resistance_filter: bool = True,
         resistance_lookback: int = 20,
         resistance_min_room_pct: float = 0.005,
+        #: 볼린저밴드(중심선 = 20이평) -- 상단밴드 위로 이미 벗어난 상태에서는
+        #: 진입 보류. 자기 자신의 최근 변동성 대비 얼마나 뻗었는지를 본다는
+        #: 점에서 RSI와 다르다.
+        use_bb_filter: bool = True,
+        bb_period: int = 20,
+        bb_mult: float = 2.0,
         atr_period: int = 14,
         hard_stop_atr_mult: float = 1.0,
         **params,
@@ -104,13 +118,17 @@ class PullbackBounce(Strategy):
         self.use_resistance_filter = use_resistance_filter
         self.resistance_lookback = resistance_lookback
         self.resistance_min_room_pct = resistance_min_room_pct
+        self.use_bb_filter = use_bb_filter
+        self.bb_period = bb_period
+        self.bb_mult = bb_mult
 
     @property
     def warmup(self) -> int:
         macd_bars = (self.macd_slow + self.macd_signal) if self.use_macd_filter else 0
         rsi_bars = self.rsi_period if self.use_rsi_filter else 0
+        bb_bars = self.bb_period if self.use_bb_filter else 0
         return (
-            max(self.trend_ema, self.swing_lookback, macd_bars, rsi_bars)
+            max(self.trend_ema, self.swing_lookback, macd_bars, rsi_bars, bb_bars)
             + self.pullback_bars + 2
         )
 
@@ -244,6 +262,23 @@ class PullbackBounce(Strategy):
                         f"필요 {self.resistance_min_room_pct:.2%})",
                     )
 
+        # Bollinger Bands: block entries already riding above the upper band
+        # -- extended relative to the stock's own recent volatility, not just
+        # in absolute terms. The middle band is the same 20-period average
+        # the trend filter above already uses.
+        bb_mid = bb_upper = bb_lower = None
+        if self.use_bb_filter:
+            mid, upper, lower = bollinger_bands(window["close"], self.bb_period, self.bb_mult)
+            if pd.notna(mid.iloc[-1]) and pd.notna(upper.iloc[-1]) and pd.notna(lower.iloc[-1]):
+                bb_mid = float(mid.iloc[-1])
+                bb_upper = float(upper.iloc[-1])
+                bb_lower = float(lower.iloc[-1])
+                if price > bb_upper:
+                    return self._hold(
+                        window,
+                        f"볼린저 상단({bb_upper:,.0f}) 위로 이탈 -- 변동성 대비 과도한 확장",
+                    )
+
         atr_value = self._atr(window)
         effective_atr = price * self.stop_pct
         extra = []
@@ -253,6 +288,8 @@ class PullbackBounce(Strategy):
             extra.append(f"MACD {macd_hist:+.1f}")
         if resistance is not None:
             extra.append(f"저항 {resistance:,.0f}")
+        if bb_mid is not None:
+            extra.append(f"BB중심 {bb_mid:,.0f}/상단 {bb_upper:,.0f}")
         extra_note = f" ({', '.join(extra)})" if extra else ""
         return self._signal(
             window, Action.ENTER_LONG,

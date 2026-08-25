@@ -49,6 +49,24 @@ def zscore(series: pd.Series, period: int) -> pd.Series:
     return (series - mean) / std
 
 
+def bollinger_bands(
+    series: pd.Series, period: int = 20, mult: float = 2.0
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Bollinger Bands: (middle, upper, lower).
+
+    Middle is the plain SMA(period) -- the same 20-bar average professionals
+    read as "the trend" on its own. The bands widen and narrow with recent
+    volatility (rolling std), so price riding the upper band is extended
+    relative to its *own* recent range, not just up in absolute terms; a dip
+    to the lower band inside an uptrend is the classic "buy the band" entry.
+    """
+    mid = sma(series, period)
+    std = rolling_std(series, period)
+    upper = mid + mult * std
+    lower = mid - mult * std
+    return mid, upper, lower
+
+
 def true_range(df: pd.DataFrame) -> pd.Series:
     """Wilder's true range."""
     validate_ohlcv(df)

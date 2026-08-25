@@ -173,6 +173,11 @@ def _fallback_static_stocks(config: Mapping[str, Any]) -> dict[str, dict[str, An
         cfg = dict(asset_cfg)
         cfg["enabled"] = True
         cfg["_fallback"] = True
+        # The normal 09:00-11:00 window is a morning-only design choice for
+        # this strategy; a fallback stepping in mid-day needs the rest of the
+        # session to actually be useful, so it gets the wider window the
+        # screener's own picks use (still flat by the same force_exit_at).
+        cfg["entry_window"] = ["09:00", "14:30"]
         out[str(code)] = cfg
     return out
 

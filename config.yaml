@@ -92,9 +92,9 @@ universe:
       pullback_min_pct: 0.008
       min_bar_strength: 0.3
       stop_pct: 0.02
-      arm_pct: 0.02
-      lock_pct: 0.03
-      cap_pct: 0.05
+      arm_pct: 0.012
+      lock_pct: 0.018
+      cap_pct: 0.03
       peak_trail_pct: 0.02
       max_cost_share: 0.35
 
@@ -114,9 +114,9 @@ universe:
       pullback_min_pct: 0.008
       min_bar_strength: 0.3
       stop_pct: 0.02
-      arm_pct: 0.02
-      lock_pct: 0.03
-      cap_pct: 0.05
+      arm_pct: 0.012
+      lock_pct: 0.018
+      cap_pct: 0.03
       peak_trail_pct: 0.02
       max_cost_share: 0.35
 
@@ -136,9 +136,9 @@ universe:
       pullback_min_pct: 0.008
       min_bar_strength: 0.3
       stop_pct: 0.02
-      arm_pct: 0.02
-      lock_pct: 0.03
-      cap_pct: 0.05
+      arm_pct: 0.012
+      lock_pct: 0.018
+      cap_pct: 0.03
       peak_trail_pct: 0.02
       max_cost_share: 0.35
 
@@ -158,9 +158,9 @@ universe:
       pullback_min_pct: 0.008
       min_bar_strength: 0.3
       stop_pct: 0.02
-      arm_pct: 0.02
-      lock_pct: 0.03
-      cap_pct: 0.05
+      arm_pct: 0.012
+      lock_pct: 0.018
+      cap_pct: 0.03
       peak_trail_pct: 0.02
       max_cost_share: 0.35
 
@@ -180,9 +180,9 @@ universe:
       pullback_min_pct: 0.008
       min_bar_strength: 0.3
       stop_pct: 0.02
-      arm_pct: 0.02
-      lock_pct: 0.03
-      cap_pct: 0.05
+      arm_pct: 0.012
+      lock_pct: 0.018
+      cap_pct: 0.03
       peak_trail_pct: 0.02
       max_cost_share: 0.35
 

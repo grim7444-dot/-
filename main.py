@@ -55,6 +55,7 @@ from investor_flow import InvestorFlowScanner
 from us_market import USMarketMonitor
 from dart_monitor import DartMonitor
 from news_monitor import NewsMonitor
+from daily_trend import DailyTrendScanner
 
 logger = logging.getLogger("bot.main")
 
@@ -368,6 +369,9 @@ class TradingEngine:
         self._news_monitor = NewsMonitor(rt.config)
         self._news_monitor.set_notifier(self._tg_notifier)
         self._news_monitor.set_theme_map(rt.config.get("themes") or {})
+        # 다중 시간프레임 확인: 일봉 EMA 추세가 하락이면 3분봉 신호와 무관하게
+        # 진입 차단. 세션 시작 시 한 번 스캔.
+        self._daily_trend = DailyTrendScanner(rt.config)
         # Dynamic universe refresh
         scr_cfg = (rt.config.get("screener") or {})
         self._universe_refresh_interval: float = float(
@@ -940,6 +944,13 @@ class TradingEngine:
             )
             return
 
+        if side == LONG and not self._daily_trend.allows_long(code):
+            logger.info(
+                "%s: entry skipped - 일봉 EMA 추세 하락 (다중 시간프레임 필터)",
+                label,
+            )
+            return
+
         if self._entries_paused:
             logger.info("%s: entry skipped - paused via Telegram /stop", label)
             return
@@ -1105,6 +1116,12 @@ class TradingEngine:
                     continue
 
                 now = time.time()
+
+                # 일봉 추세 스캔 -- 날짜당 한 번만 실제로 조회한다 (내부에서 캐싱).
+                self._daily_trend.scan(
+                    self.rt.market_data,
+                    {c: self.rt.universe[c] for c in self.rt.strategies},
+                )
 
                 # Periodically hot-swap the dynamic universe mid-session.
                 if (

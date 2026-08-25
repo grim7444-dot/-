@@ -79,7 +79,7 @@ universe:
   "009830":
     name: 한화솔루션
     market: KOSPI
-    enabled: true
+    enabled: false  # 고정 종목 비활성 -- 스크리너가 매일 거래량 터진 종목으로 대체
     strategy: pullback_bounce
     timeframe: 3Min
     min_qty: 1
@@ -101,7 +101,7 @@ universe:
   "002990":
     name: 금호건설
     market: KOSPI
-    enabled: true
+    enabled: false  # 고정 종목 비활성 -- 스크리너가 매일 거래량 터진 종목으로 대체
     strategy: pullback_bounce
     timeframe: 3Min
     min_qty: 1
@@ -123,7 +123,7 @@ universe:
   "093370":
     name: 후성
     market: KOSPI
-    enabled: true
+    enabled: false  # 고정 종목 비활성 -- 스크리너가 매일 거래량 터진 종목으로 대체
     strategy: pullback_bounce
     timeframe: 3Min
     min_qty: 1
@@ -145,7 +145,7 @@ universe:
   "006340":
     name: 대원전선
     market: KOSPI
-    enabled: true
+    enabled: false  # 고정 종목 비활성 -- 스크리너가 매일 거래량 터진 종목으로 대체
     strategy: pullback_bounce
     timeframe: 3Min
     min_qty: 1
@@ -167,7 +167,7 @@ universe:
   "073240":
     name: 금호타이어
     market: KOSPI
-    enabled: true
+    enabled: false  # 고정 종목 비활성 -- 스크리너가 매일 거래량 터진 종목으로 대체
     strategy: pullback_bounce
     timeframe: 3Min
     min_qty: 1
@@ -627,7 +627,8 @@ news:
 
 screener:
   enabled: true
-  n_stocks: 10              # max dynamic stocks to add per session
+  n_stocks: 12              # max dynamic stocks to add per session -- now the
+                             # ONLY source of the universe (static core disabled)
   markets: ["KOSDAQ", "KOSPI"]
   min_price: 3000           # skip sub-3000 KRW stocks (wide spreads)
   max_price: 40000          # skip stocks above 4만원 (afford 10+ shares with current capital)

@@ -94,7 +94,7 @@ universe:
       pullback_bars: 2
       pullback_min_pct: 0.005
       min_bar_strength: 0.25
-      stop_pct: 0.02
+      stop_pct: 0.017
       arm_pct: 0.012
       lock_pct: 0.018
       peak_trail_pct: 0.005
@@ -115,7 +115,7 @@ universe:
       pullback_bars: 2
       pullback_min_pct: 0.005
       min_bar_strength: 0.25
-      stop_pct: 0.02
+      stop_pct: 0.017
       arm_pct: 0.012
       lock_pct: 0.018
       peak_trail_pct: 0.005
@@ -136,7 +136,7 @@ universe:
       pullback_bars: 2
       pullback_min_pct: 0.005
       min_bar_strength: 0.25
-      stop_pct: 0.02
+      stop_pct: 0.017
       arm_pct: 0.012
       lock_pct: 0.018
       peak_trail_pct: 0.005
@@ -157,7 +157,7 @@ universe:
       pullback_bars: 2
       pullback_min_pct: 0.005
       min_bar_strength: 0.25
-      stop_pct: 0.02
+      stop_pct: 0.017
       arm_pct: 0.012
       lock_pct: 0.018
       peak_trail_pct: 0.005
@@ -178,7 +178,7 @@ universe:
       pullback_bars: 2
       pullback_min_pct: 0.005
       min_bar_strength: 0.25
-      stop_pct: 0.02
+      stop_pct: 0.017
       arm_pct: 0.012
       lock_pct: 0.018
       peak_trail_pct: 0.005
@@ -358,7 +358,7 @@ universe:
       pullback_bars: 2
       pullback_min_pct: 0.005
       min_bar_strength: 0.25
-      stop_pct: 0.02
+      stop_pct: 0.017
       arm_pct: 0.012
       lock_pct: 0.018
       peak_trail_pct: 0.005

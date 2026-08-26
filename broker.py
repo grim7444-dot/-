@@ -49,6 +49,7 @@ DEFAULT_ENDPOINTS: dict[str, str] = {
     "account": "/api/dostk/acnt",
     "chart": "/api/dostk/chart",
     "stock_info": "/api/dostk/stkinfo",
+    "quote": "/api/dostk/mrkcond",  # 호가(주문 잔량) 조회
 }
 
 DEFAULT_API_IDS: dict[str, str] = {
@@ -65,6 +66,7 @@ DEFAULT_API_IDS: dict[str, str] = {
     "minute_chart": "ka10080",
     "daily_chart": "ka10081",
     "stock_info": "ka10001",
+    "orderbook": "ka10004",      # 주식호가요청 (매수/매도 잔량) -- 필드명 미검증
 }
 
 #: How many continuation pages a single logical request may pull.

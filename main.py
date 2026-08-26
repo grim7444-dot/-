@@ -2064,14 +2064,28 @@ def cmd_diagnose_orderbook(args: argparse.Namespace) -> int:
     try:
         data = inner._call("stock_info", "stock_info", {"stk_cd": code}, f"diagnose({code})")
     except Exception as exc:
-        print(f"  조회 실패: {exc}")
+        print(f"  stock_info 조회 실패: {exc}")
+        data = None
+
+    if data is not None:
+        print("  [1] stock_info(ka10001) 응답 필드 -- 참고용, 호가는 없음:")
+        for key, value in data.items():
+            print(f"    {key:<24} = {value!r}")
+        print()
+
+    try:
+        ob = inner._call("quote", "orderbook", {"stk_cd": code}, f"diagnose_orderbook({code})")
+    except Exception as exc:
+        print(f"  quote(ka10004) 조회 실패: {exc}")
+        print("  -- endpoint(/api/dostk/mrkcond)나 api-id(ka10004)가 아직 안 맞을 수")
+        print("     있습니다. 이 에러 메시지를 그대로 Claude에게 붙여넣어 주세요.")
         return 1
 
-    print("  전체 응답 필드:")
-    for key, value in data.items():
+    print("  [2] quote(ka10004, 호가) 응답 필드:")
+    for key, value in ob.items():
         print(f"    {key:<24} = {value!r}")
     print()
-    print("  위 목록을 통째로 복사해서 Claude에게 붙여넣어 주세요.")
+    print("  위 [2] 목록을 통째로 복사해서 Claude에게 붙여넣어 주세요.")
     print("  매수호가/매도호가/매수잔량/매도잔량 비슷한 필드를 찾아서")
     print("  실시간 호가 불균형 필터를 마저 연결하겠습니다.")
     return 0

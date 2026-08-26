@@ -659,6 +659,16 @@ screener:
   refresh_interval_minutes: 30  # 장중 30분마다 순위 재스캔 → 핫 종목으로 자동 교체
   require_uptrend: true     # 일봉 종가가 EMA(daily_trend.ema_period) 위인 종목만 후보로 (변동성만 크고 하락 중인 종목 제외)
 
+macro_gauge:
+  # 미국증시(S&P500)/WTI유/미국10년물금리/비트코인/달러지수 -- 사용자 정의로
+  # 다섯 다 "상승 = 강세"로 취급한다 (실제 매크로 상관관계는 더 복잡하지만,
+  # 명시적으로 이렇게 정의했다). 세션 시작 시 하루 한 번만 조회.
+  enabled: true
+  bullish_threshold: 4        # 5개 중 이 개수 이상 상승이면 "강세장(공격 모드)"
+  entry_relax_pct: 0.15       # 강세일 때 진입 조건(거래량배수/봉강도/눌림폭) 15% 완화
+  extra_positions: 1          # 강세일 때 동시 보유 종목 수 +1 (기본 6 -> 7)
+  risk_pct_boost: 1.2         # 강세일 때 종목당 리스크 배수 (1% -> 1.2%)
+
 telegram:
   # Rule 12: dry-run by default. A missing token prints a preview, not an error.
   # Set dry_run: false and add TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID to .env to enable.

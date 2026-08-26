@@ -50,12 +50,15 @@ from settings import (
 )
 from strategies import build_strategy, build_strategies
 from strategies.base import Action, Strategy
+from strategies.orb import ORB
+from strategies.pullback import PullbackBounce
 from telegram_bot import TelegramCommandHandler, TelegramNotifier, build_telegram
 from investor_flow import InvestorFlowScanner
 from us_market import USMarketMonitor
 from dart_monitor import DartMonitor
 from news_monitor import NewsMonitor
 from daily_trend import DailyTrendScanner
+from macro_gauge import MacroGauge
 
 logger = logging.getLogger("bot.main")
 
@@ -402,9 +405,50 @@ class TradingEngine:
             scr_cfg.get("refresh_interval_minutes", 30)
         ) * 60
         self._last_universe_refresh: float = 0.0
+        # 거시 게이지 (미국증시/WTI/미국10년물금리/비트코인/달러지수, 사용자
+        # 정의: 다섯 다 "상승 = 강세") -- 강세일 때 진입 조건 완화, 동시 보유
+        # 종목 수 확대, 종목당 리스크 확대에 쓴다. 세션 시작 시 한 번만 조회.
+        self._macro = MacroGauge(rt.config)
+        self._base_risk_pct: float = rt.risk.risk_pct
+        self._base_max_positions: int = rt.risk.max_positions
 
     def session_rules(self, code: str) -> SessionRules:
         return self._session_rules.get(code, SessionRules())
+
+    def _apply_macro_aggressiveness(self) -> None:
+        """Loosen/restore entries, position cap, and per-trade risk from the gauge.
+
+        Always recomputed from the *template* defaults (screener.py's
+        _SCALPING_CFG_TEMPLATE / _PULLBACK_CFG_TEMPLATE), never from whatever
+        the previous call left in place -- otherwise a bullish->neutral->
+        bullish flip across two days would compound the relaxation instead of
+        resetting it. Static universe entries currently mirror those template
+        values exactly, so this applies consistently to both the screener's
+        dynamic picks and the fixed fallback stocks; a future stock-specific
+        override would get overwritten while the gauge is active, which is a
+        known trade-off for keeping this simple.
+        """
+        bullish = self._macro.is_bullish
+        factor = (1.0 - self._macro.entry_relax_pct) if bullish else 1.0
+
+        from screener import _PULLBACK_CFG_TEMPLATE, _SCALPING_CFG_TEMPLATE
+        orb_base = _SCALPING_CFG_TEMPLATE["params"]
+        pb_base = _PULLBACK_CFG_TEMPLATE["params"]
+
+        for strategy in self.rt.strategies.values():
+            if isinstance(strategy, ORB):
+                strategy.volume_mult = orb_base["volume_mult"] * factor
+                strategy.min_bar_strength = orb_base["min_bar_strength"] * factor
+            elif isinstance(strategy, PullbackBounce):
+                strategy.min_bar_strength = pb_base["min_bar_strength"] * factor
+                strategy.pullback_min_pct = pb_base["pullback_min_pct"] * factor
+
+        self.rt.risk.risk_pct = self._base_risk_pct * (
+            self._macro.risk_pct_boost if bullish else 1.0
+        )
+        self.rt.risk.max_positions = self._base_max_positions + (
+            self._macro.extra_positions if bullish else 0
+        )
 
     # -- Telegram wiring ---------------------------------------------------
 
@@ -1195,6 +1239,11 @@ class TradingEngine:
                     self.rt.market_data,
                     {c: self.rt.universe[c] for c in self.rt.strategies},
                 )
+
+                # 거시 게이지 -- 날짜당 한 번만 조회, 결과는 매 틱 재적용
+                # (전략 인스턴스가 유니버스 리프레시로 새로 생겨도 항상 반영되게).
+                self._macro.scan()
+                self._apply_macro_aggressiveness()
 
                 # Periodically hot-swap the dynamic universe mid-session.
                 if (

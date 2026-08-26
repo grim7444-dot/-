@@ -50,6 +50,10 @@ DEFAULT_ENDPOINTS: dict[str, str] = {
     "chart": "/api/dostk/chart",
     "stock_info": "/api/dostk/stkinfo",
     "quote": "/api/dostk/mrkcond",  # 호가(주문 잔량) 조회
+    # 순위정보(랭킹) 카테고리 -- stkinfo/mrkcond/chart/ordr/acnt와 같은 명명
+    # 규칙을 따른 추정치. ka10046/ka10047이 실제로 이 경로에 있는지는
+    # diagnose-orderbook으로 아직 검증 전이다.
+    "ranking": "/api/dostk/rkinfo",
 }
 
 DEFAULT_API_IDS: dict[str, str] = {
@@ -67,6 +71,9 @@ DEFAULT_API_IDS: dict[str, str] = {
     "daily_chart": "ka10081",
     "stock_info": "ka10001",
     "orderbook": "ka10004",      # 주식호가요청 (매수/매도 잔량) -- 필드명 미검증
+    # 체결강도(매수/매도 체결 비율) -- endpoint("ranking")와 함께 미검증.
+    "strength_hourly": "ka10046",  # 체결강도추이시간별요청
+    "strength_daily": "ka10047",   # 체결강도추이일별요청
 }
 
 #: How many continuation pages a single logical request may pull.

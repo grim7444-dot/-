@@ -2112,9 +2112,31 @@ def cmd_diagnose_orderbook(args: argparse.Namespace) -> int:
     for key, value in ob.items():
         print(f"    {key:<24} = {value!r}")
     print()
-    print("  위 [2] 목록을 통째로 복사해서 Claude에게 붙여넣어 주세요.")
-    print("  매수호가/매도호가/매수잔량/매도잔량 비슷한 필드를 찾아서")
-    print("  실시간 호가 불균형 필터를 마저 연결하겠습니다.")
+
+    try:
+        strength = inner._call(
+            "ranking", "strength_hourly", {"stk_cd": code}, f"diagnose_strength({code})"
+        )
+    except Exception as exc:
+        print(f"  strength_hourly(ka10046) 조회 실패: {exc}")
+        print("  -- endpoint(/api/dostk/rkinfo)나 api-id(ka10046)가 아직 안 맞을 수")
+        print("     있습니다 (이 부분은 아직 확인 전입니다). 이 에러 메시지를")
+        print("     그대로 Claude에게 붙여넣어 주세요.")
+    else:
+        print("  [3] strength_hourly(ka10046, 체결강도) 응답 필드:")
+        if isinstance(strength, list):
+            for i, row in enumerate(strength[:3]):
+                print(f"    -- row {i} --")
+                for key, value in row.items():
+                    print(f"    {key:<24} = {value!r}")
+        else:
+            for key, value in strength.items():
+                print(f"    {key:<24} = {value!r}")
+        print()
+
+    print("  위 [2], [3] 목록을 통째로 복사해서 Claude에게 붙여넣어 주세요.")
+    print("  매수호가/매도호가/매수잔량/매도잔량, 체결강도 비슷한 필드를 찾아서")
+    print("  실시간 필터를 마저 연결하겠습니다.")
     return 0
 
 
@@ -2269,7 +2291,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     diag = sub.add_parser(
         "diagnose-orderbook",
-        help="read-only: print raw stock_info fields to find bid/ask key names",
+        help="read-only: print raw bid/ask + 체결강도 fields to find key names",
     )
     diag.add_argument("code", help="6-digit stock code, e.g. 005930")
     diag.add_argument(

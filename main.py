@@ -748,11 +748,21 @@ class TradingEngine:
         label = f"{code} {rt.name_of(code)}".strip()
 
         timeframe = str(asset_cfg.get("timeframe", "1Day"))
+        # get_bars() grants intraday bars a 2-bar-interval grace period before
+        # calling them stale (is_current() in data.py) -- for a 3-minute
+        # timeframe that's up to 6 minutes of a cached, unmoving close price.
+        # Fine for scanning candidates; not for a stock we're already holding,
+        # where the hard stop and profit-lock trail must see the live price
+        # every cycle. A real position sat at a frozen +2.22% for six minutes
+        # on 2026-08-26 while the cache served the same stale bar, giving back
+        # most of the gain before the next live fetch finally caught up.
+        has_position = rt.portfolio.get(code) is not None
         barset = rt.market_data.get_bars(
             code=code,
             timeframe=timeframe,
             lookback_bars=max(strategy.warmup + 60, 260),
             market=market,
+            use_cache=not has_position,
         )
         bars = barset.bars
         if len(bars) < strategy.warmup:

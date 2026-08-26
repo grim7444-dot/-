@@ -86,8 +86,8 @@ _SCALPING_CFG_TEMPLATE: dict[str, Any] = {
         "min_bar_strength": 0.35,
         "stop_pct": 0.017,
         "arm_pct": 0.012,
-        "lock_pct": 0.018,
-        "peak_trail_pct": 0.005,
+        "lock_pct": 0.02,
+        "peak_trail_pct": 0.003,
         "max_cost_share": 0.35,
     },
 }
@@ -111,8 +111,8 @@ _PULLBACK_CFG_TEMPLATE: dict[str, Any] = {
         "min_bar_strength": 0.25,
         "stop_pct": 0.017,
         "arm_pct": 0.012,
-        "lock_pct": 0.018,
-        "peak_trail_pct": 0.005,
+        "lock_pct": 0.02,
+        "peak_trail_pct": 0.003,
         "max_cost_share": 0.35,
     },
 }

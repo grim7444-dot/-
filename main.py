@@ -213,12 +213,24 @@ def _cover_open_positions(
                 "re-enabling so exits keep firing", code,
             )
         else:
-            from screener import _SCALPING_CFG_TEMPLATE
+            from screener import _PULLBACK_CFG_TEMPLATE, _SCALPING_CFG_TEMPLATE, _ticker_name
+            # Match the template to what the position was actually opened
+            # with -- pullback_bounce and ORB take different param names
+            # (swing_lookback/pullback_bars vs range_minutes/volume_mult),
+            # so defaulting to the ORB template regardless of position.strategy
+            # would hand a recovered pullback_bounce position ORB's params,
+            # silently falling back to PullbackBounce's class defaults for
+            # every field ORB doesn't share -- including its tuned stop/lock.
+            template = (
+                _PULLBACK_CFG_TEMPLATE
+                if position.strategy == _PULLBACK_CFG_TEMPLATE["strategy"]
+                else _SCALPING_CFG_TEMPLATE
+            )
             cfg = {
-                **_SCALPING_CFG_TEMPLATE,
-                "name": code,
-                "strategy": position.strategy or _SCALPING_CFG_TEMPLATE["strategy"],
-                "params": dict(_SCALPING_CFG_TEMPLATE["params"]),
+                **template,
+                "name": _ticker_name(code),
+                "strategy": position.strategy or template["strategy"],
+                "params": dict(template["params"]),
                 "_open_position_keepalive": True,
             }
             universe[code] = cfg

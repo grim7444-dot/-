@@ -145,6 +145,25 @@ class OrderBookSnapshot:
 
 
 @dataclass(frozen=True)
+class ExecutionStrength:
+    """체결강도 (매수/매도 체결량 비율, %) -- from ka10046 (체결강도추이시간별요청).
+
+    Field names confirmed against a live response on 2026-08-26.  100 is
+    neutral: above means buy-side fills have been dominating recent trades,
+    below means sell-side fills have. The 5/20/60-min figures are the same
+    ratio smoothed over longer windows, useful for telling a brief spike
+    apart from a sustained shift.
+    """
+
+    code: str
+    as_of: str = ""  # HHmmss, from cntr_tm
+    strength: float = 100.0        # cntr_str
+    strength_5min: float = 100.0   # cntr_str_5min
+    strength_20min: float = 100.0  # cntr_str_20min
+    strength_60min: float = 100.0  # cntr_str_60min
+
+
+@dataclass(frozen=True)
 class Holding:
     """A position the account actually holds, as the broker reports it."""
 
@@ -267,6 +286,10 @@ class BrokerBase:
         must treat it as advisory-not-available, same as every other optional
         signal in this bot (investor flow, daily trend, DART).
         """
+        return None
+
+    def get_execution_strength(self, code: str) -> "ExecutionStrength | None":
+        """Latest 체결강도 snapshot, or None when unavailable (advisory-not-available)."""
         return None
 
     def open_order_codes(self) -> list[str]:
@@ -727,6 +750,29 @@ class KiwoomBroker(BrokerBase):
             total_ask_qty=_to_float(data.get("tot_sel_req")),
         )
 
+    def get_execution_strength(self, code: str) -> ExecutionStrength | None:
+        try:
+            data = self._call("quote", "strength_hourly", {"stk_cd": code}, f"strength({code})")
+        except BrokerError:
+            return None
+        rows = data.get("cntr_str_tm") or []
+        if not rows:
+            return None
+        latest = rows[0]  # newest-first, same convention as minute charts
+
+        def _pct(key: str) -> float:
+            raw = latest.get(key)
+            return _to_float(raw) if raw not in (None, "") else 100.0
+
+        return ExecutionStrength(
+            code=code,
+            as_of=str(latest.get("cntr_tm") or ""),
+            strength=_pct("cntr_str"),
+            strength_5min=_pct("cntr_str_5min"),
+            strength_20min=_pct("cntr_str_20min"),
+            strength_60min=_pct("cntr_str_60min"),
+        )
+
     def open_order_codes(self) -> list[str]:
         data = self._call("account", "open_orders", {"stex_tp": "0"}, "open_orders")
         rows = data.get("output") or data.get("oso") or []
@@ -1037,6 +1083,9 @@ class ReadOnlyBroker(BrokerBase):
 
     def get_orderbook(self, code: str) -> OrderBookSnapshot | None:
         return self.inner.get_orderbook(code)
+
+    def get_execution_strength(self, code: str) -> ExecutionStrength | None:
+        return self.inner.get_execution_strength(code)
 
     def open_order_codes(self) -> list[str]:
         return self.inner.open_order_codes()

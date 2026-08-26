@@ -653,6 +653,11 @@ orderbook:
   require_confirm: false
   min_imbalance: 1.0   # 매수잔량 >= 매도잔량일 때만 통과 (require_confirm: true 시)
 
+execution_strength:
+  enabled: true
+  require_confirm: false
+  min_strength: 100.0   # 체결강도 100 = 매수/매도 체결량 균형 (require_confirm: true 시 기준)
+
 screener:
   enabled: true
   n_stocks: 12              # max dynamic stocks to add per session -- now the

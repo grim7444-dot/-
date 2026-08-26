@@ -378,6 +378,12 @@ class TradingEngine:
         self._orderbook_enabled: bool = bool(ob_cfg.get("enabled", True))
         self._orderbook_require_confirm: bool = bool(ob_cfg.get("require_confirm", False))
         self._orderbook_min_imbalance: float = float(ob_cfg.get("min_imbalance", 1.0))
+        # 체결강도 (매수/매도 체결량 비율, 100이 중립) -- 기본은 참고용 로그만.
+        # require_confirm을 켜면 기준 미만일 때 진입을 실제로 막는다.
+        st_cfg = rt.config.get("execution_strength") or {}
+        self._strength_enabled: bool = bool(st_cfg.get("enabled", True))
+        self._strength_require_confirm: bool = bool(st_cfg.get("require_confirm", False))
+        self._strength_min: float = float(st_cfg.get("min_strength", 100.0))
         # Dynamic universe refresh
         scr_cfg = (rt.config.get("screener") or {})
         self._universe_refresh_interval: float = float(
@@ -975,6 +981,24 @@ class TradingEngine:
                     logger.warning(
                         "%s: entry blocked - 호가 매도 우위 (잔량비 %.2f < 기준 %.2f)",
                         label, orderbook.imbalance, self._orderbook_min_imbalance,
+                    )
+                    return
+
+        if side == LONG and self._strength_enabled:
+            strength = rt.broker.get_execution_strength(code)
+            if strength is not None:
+                logger.info(
+                    "%s: 체결강도 %.2f (5분 %.2f, 20분 %.2f, 60분 %.2f, %s 기준)",
+                    label, strength.strength, strength.strength_5min,
+                    strength.strength_20min, strength.strength_60min, strength.as_of,
+                )
+                if (
+                    self._strength_require_confirm
+                    and strength.strength < self._strength_min
+                ):
+                    logger.warning(
+                        "%s: entry blocked - 체결강도 매도 우위 (%.2f < 기준 %.2f)",
+                        label, strength.strength, self._strength_min,
                     )
                     return
 

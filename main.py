@@ -2115,22 +2115,24 @@ def cmd_diagnose_orderbook(args: argparse.Namespace) -> int:
 
     try:
         strength = inner._call(
-            "ranking", "strength_hourly", {"stk_cd": code}, f"diagnose_strength({code})"
+            "quote", "strength_hourly", {"stk_cd": code}, f"diagnose_strength({code})"
         )
     except Exception as exc:
         print(f"  strength_hourly(ka10046) 조회 실패: {exc}")
-        print("  -- endpoint(/api/dostk/rkinfo)나 api-id(ka10046)가 아직 안 맞을 수")
-        print("     있습니다 (이 부분은 아직 확인 전입니다). 이 에러 메시지를")
-        print("     그대로 Claude에게 붙여넣어 주세요.")
+        print("  -- 이 에러 메시지를 그대로 Claude에게 붙여넣어 주세요.")
     else:
         print("  [3] strength_hourly(ka10046, 체결강도) 응답 필드:")
-        if isinstance(strength, list):
-            for i, row in enumerate(strength[:3]):
-                print(f"    -- row {i} --")
-                for key, value in row.items():
-                    print(f"    {key:<24} = {value!r}")
-        else:
-            for key, value in strength.items():
+        for key, value in strength.items():
+            if isinstance(value, list):
+                print(f"    {key} (리스트, {len(value)}건) -- 최신 3건만 표시:")
+                for i, row in enumerate(value[:3]):
+                    if isinstance(row, dict):
+                        print(f"      -- row {i} --")
+                        for rk, rv in row.items():
+                            print(f"      {rk:<24} = {rv!r}")
+                    else:
+                        print(f"      row {i} = {row!r}")
+            else:
                 print(f"    {key:<24} = {value!r}")
         print()
 

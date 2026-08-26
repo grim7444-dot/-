@@ -113,6 +113,34 @@ class StockInfo:
 
 
 @dataclass(frozen=True)
+class OrderBookSnapshot:
+    """Best bid/ask plus 10-level totals, from ka10004 (주식호가요청).
+
+    Field names confirmed against a live response on 2026-08-26 -- see
+    ``KiwoomBroker.get_orderbook`` for the exact mapping.
+    """
+
+    code: str
+    best_bid: float = 0.0
+    best_ask: float = 0.0
+    best_bid_qty: float = 0.0
+    best_ask_qty: float = 0.0
+    total_bid_qty: float = 0.0
+    total_ask_qty: float = 0.0
+
+    @property
+    def imbalance(self) -> float:
+        """총매수잔량 / 총매도잔량. >1이면 매수 우위, <1이면 매도 우위.
+
+        매도잔량이 0인 극단적인 경우(상한가 근처 등) 무한대 대신 큰 값으로
+        캡을 씌워, 이 값을 쓰는 쪽에서 나눗셈 예외를 신경 쓸 필요가 없게 한다.
+        """
+        if self.total_ask_qty <= 0:
+            return 10.0 if self.total_bid_qty > 0 else 1.0
+        return self.total_bid_qty / self.total_ask_qty
+
+
+@dataclass(frozen=True)
 class Holding:
     """A position the account actually holds, as the broker reports it."""
 
@@ -227,6 +255,15 @@ class BrokerBase:
 
     def get_stock_info(self, code: str) -> StockInfo:
         raise NotImplementedError
+
+    def get_orderbook(self, code: str) -> "OrderBookSnapshot | None":
+        """Best bid/ask + 10-level totals, or None when unavailable.
+
+        None (not a neutral snapshot) is the "don't know" answer -- callers
+        must treat it as advisory-not-available, same as every other optional
+        signal in this bot (investor flow, daily trend, DART).
+        """
+        return None
 
     def open_order_codes(self) -> list[str]:
         raise NotImplementedError
@@ -671,6 +708,21 @@ class KiwoomBroker(BrokerBase):
             previous_close=abs(_to_float(data.get("base_pric") or data.get("prev_close"))),
         )
 
+    def get_orderbook(self, code: str) -> OrderBookSnapshot | None:
+        try:
+            data = self._call("quote", "orderbook", {"stk_cd": code}, f"orderbook({code})")
+        except BrokerError:
+            return None
+        return OrderBookSnapshot(
+            code=code,
+            best_bid=abs(_to_float(data.get("buy_fpr_bid"))),
+            best_ask=abs(_to_float(data.get("sel_fpr_bid"))),
+            best_bid_qty=_to_float(data.get("buy_fpr_req")),
+            best_ask_qty=_to_float(data.get("sel_fpr_req")),
+            total_bid_qty=_to_float(data.get("tot_buy_req")),
+            total_ask_qty=_to_float(data.get("tot_sel_req")),
+        )
+
     def open_order_codes(self) -> list[str]:
         data = self._call("account", "open_orders", {"stex_tp": "0"}, "open_orders")
         rows = data.get("output") or data.get("oso") or []
@@ -978,6 +1030,9 @@ class ReadOnlyBroker(BrokerBase):
 
     def get_stock_info(self, code: str) -> StockInfo:
         return self.inner.get_stock_info(code)
+
+    def get_orderbook(self, code: str) -> OrderBookSnapshot | None:
+        return self.inner.get_orderbook(code)
 
     def open_order_codes(self) -> list[str]:
         return self.inner.open_order_codes()

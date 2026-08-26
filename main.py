@@ -372,6 +372,12 @@ class TradingEngine:
         # 다중 시간프레임 확인: 일봉 EMA 추세가 하락이면 3분봉 신호와 무관하게
         # 진입 차단. 세션 시작 시 한 번 스캔.
         self._daily_trend = DailyTrendScanner(rt.config)
+        # 실시간 호가 불균형 (매수/매도 잔량비) -- 기본은 참고용 로그만.
+        # require_confirm을 켜면 잔량비가 기준 미만일 때 진입을 실제로 막는다.
+        ob_cfg = rt.config.get("orderbook") or {}
+        self._orderbook_enabled: bool = bool(ob_cfg.get("enabled", True))
+        self._orderbook_require_confirm: bool = bool(ob_cfg.get("require_confirm", False))
+        self._orderbook_min_imbalance: float = float(ob_cfg.get("min_imbalance", 1.0))
         # Dynamic universe refresh
         scr_cfg = (rt.config.get("screener") or {})
         self._universe_refresh_interval: float = float(
@@ -950,6 +956,27 @@ class TradingEngine:
                 label,
             )
             return
+
+        if side == LONG and self._orderbook_enabled:
+            orderbook = rt.broker.get_orderbook(code)
+            if orderbook is not None:
+                logger.info(
+                    "%s: 호가 매수/매도 잔량비 %.2f (매수 %.0f / 매도 %.0f, "
+                    "1차 매수 %.0f/%.0f 매도 %.0f/%.0f)",
+                    label, orderbook.imbalance,
+                    orderbook.total_bid_qty, orderbook.total_ask_qty,
+                    orderbook.best_bid, orderbook.best_bid_qty,
+                    orderbook.best_ask, orderbook.best_ask_qty,
+                )
+                if (
+                    self._orderbook_require_confirm
+                    and orderbook.imbalance < self._orderbook_min_imbalance
+                ):
+                    logger.warning(
+                        "%s: entry blocked - 호가 매도 우위 (잔량비 %.2f < 기준 %.2f)",
+                        label, orderbook.imbalance, self._orderbook_min_imbalance,
+                    )
+                    return
 
         if self._entries_paused:
             logger.info("%s: entry skipped - paused via Telegram /stop", label)

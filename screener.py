@@ -154,34 +154,58 @@ class DailyScreener:
             if "close" not in snap.columns:
                 continue
 
+            n_total = len(snap)
             if "trading_value" in snap.columns:
                 snap = snap[snap["trading_value"] >= self.min_trading_value]
+            n_after_value = len(snap)
             snap = snap[snap["close"] >= self.min_price]
             if self.max_price > 0:
                 snap = snap[snap["close"] <= self.max_price]
+            n_after_price = len(snap)
             snap = snap[~snap.index.astype(str).isin(self._existing)]
+            n_after_existing = len(snap)
+            logger.info(
+                "screener: %s 필터 단계 -- 전체 %d -> 거래대금(%.0f억+) %d -> "
+                "가격(%d~%d) %d -> 기존제외 %d",
+                market, n_total, self.min_trading_value / 100_000_000,
+                n_after_value, self.min_price, self.max_price or 999999999,
+                n_after_price, n_after_existing,
+            )
 
             if "trading_value" in snap.columns:
                 snap = snap.sort_values("trading_value", ascending=False)
 
             # ATR-check on the top 30 candidates (network-intensive; limit it)
+            n_checked = n_no_hist = n_bad_atr = n_low_atr = n_passed = 0
             for ticker in snap.head(30).index.astype(str):
+                n_checked += 1
                 hist = _fetch_history(ticker, fromdate, today)
                 if hist is None or len(hist) < self.atr_period + 2:
+                    n_no_hist += 1
                     continue
                 atr_series = atr_indicator(hist, self.atr_period)
                 last_atr = atr_series.iloc[-1]
                 last_close = float(hist["close"].iloc[-1])
                 if last_close <= 0 or pd.isna(last_atr) or float(last_atr) <= 0:
+                    n_bad_atr += 1
                     continue
                 atr_pct = float(last_atr) / last_close
                 if atr_pct < self.min_atr_pct:
+                    n_low_atr += 1
                     continue
+                n_passed += 1
                 tv = 0.0
                 if "trading_value" in snap.columns:
                     tv = float(snap.loc[ticker, "trading_value"]) if ticker in snap.index else 0.0
                 name = _ticker_name(ticker)
                 candidates.append((ticker, name, market, atr_pct, tv))
+            if n_checked:
+                logger.info(
+                    "screener: %s ATR 검사 %d종목 -- 이력부족 %d, ATR계산불가 %d, "
+                    "ATR미달(%.1f%%) %d, 통과 %d",
+                    market, n_checked, n_no_hist, n_bad_atr,
+                    self.min_atr_pct * 100, n_low_atr, n_passed,
+                )
 
         if markets_ok == 0 and self.markets:
             self.last_scan_failed = True

@@ -668,6 +668,7 @@ screener:
   min_atr_pct: 0.015        # 1.5% daily ATR minimum (cost gate still applies)
   min_trading_value_m: 500  # 500억 KRW daily trading value minimum (more picks)
   refresh_interval_minutes: 30  # 장중 30분마다 순위 재스캔 → 핫 종목으로 자동 교체
+  require_uptrend: true     # 일봉 종가가 EMA(daily_trend.ema_period) 위인 종목만 후보로 (변동성만 크고 하락 중인 종목 제외)
 
 telegram:
   # Rule 12: dry-run by default. A missing token prints a preview, not an error.

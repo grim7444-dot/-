@@ -21,6 +21,7 @@ from typing import Any, Callable, TypeVar
 import pandas as pd
 
 from indicators import atr as atr_indicator
+from indicators import ema as ema_indicator
 
 logger = logging.getLogger("bot.screener")
 
@@ -155,6 +156,10 @@ class DailyScreener:
         self.min_atr_pct: float = float(scr.get("min_atr_pct", 0.015))
         self.min_trading_value: float = float(scr.get("min_trading_value_m", 5000)) * 1_000_000
         self.atr_period: int = int((config.get("risk") or {}).get("atr_period", 14))
+        # 변동성(ATR)만 크고 실제로는 하락 추세인 종목을 걸러낸다 -- daily_trend.py가
+        # 진입 단계에서 쓰는 것과 같은 EMA 기간을 재사용해 두 필터가 어긋나지 않게 한다.
+        self.require_uptrend: bool = bool(scr.get("require_uptrend", True))
+        self.trend_ema_period: int = int((config.get("daily_trend") or {}).get("ema_period", 20))
         self.markets: list[str] = list(scr.get("markets") or ["KOSDAQ", "KOSPI"])
         self._existing: set[str] = {str(k) for k in (config.get("universe") or {})}
         #: True when every configured market's snapshot fetch failed on the
@@ -216,11 +221,12 @@ class DailyScreener:
                 snap = snap.sort_values("trading_value", ascending=False)
 
             # ATR-check on the top 30 candidates (network-intensive; limit it)
-            n_checked = n_no_hist = n_bad_atr = n_low_atr = n_passed = 0
+            n_checked = n_no_hist = n_bad_atr = n_low_atr = n_downtrend = n_passed = 0
             for ticker in snap.head(30).index.astype(str):
                 n_checked += 1
                 hist = _fetch_history(ticker, fromdate, today)
-                if hist is None or len(hist) < self.atr_period + 2:
+                min_hist = max(self.atr_period, self.trend_ema_period) + 2
+                if hist is None or len(hist) < min_hist:
                     n_no_hist += 1
                     continue
                 atr_series = atr_indicator(hist, self.atr_period)
@@ -233,6 +239,12 @@ class DailyScreener:
                 if atr_pct < self.min_atr_pct:
                     n_low_atr += 1
                     continue
+                if self.require_uptrend:
+                    trend_series = ema_indicator(hist["close"], self.trend_ema_period)
+                    last_trend = trend_series.iloc[-1]
+                    if pd.isna(last_trend) or last_close <= float(last_trend):
+                        n_downtrend += 1
+                        continue
                 n_passed += 1
                 tv = 0.0
                 if "trading_value" in snap.columns:
@@ -241,10 +253,11 @@ class DailyScreener:
                 candidates.append((ticker, name, market, atr_pct, tv))
             if n_checked:
                 logger.info(
-                    "screener: %s ATR 검사 %d종목 -- 이력부족 %d, ATR계산불가 %d, "
-                    "ATR미달(%.1f%%) %d, 통과 %d",
+                    "screener: %s ATR/추세 검사 %d종목 -- 이력부족 %d, ATR계산불가 %d, "
+                    "ATR미달(%.1f%%) %d, 하락추세(EMA%d) %d, 통과 %d",
                     market, n_checked, n_no_hist, n_bad_atr,
-                    self.min_atr_pct * 100, n_low_atr, n_passed,
+                    self.min_atr_pct * 100, n_low_atr,
+                    self.trend_ema_period, n_downtrend, n_passed,
                 )
 
         if markets_ok == 0 and self.markets:

@@ -12,15 +12,54 @@ warning and returns [] so the bot carries on with its static universe.
 from __future__ import annotations
 
 import logging
+import queue
+import threading
 import time
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 import pandas as pd
 
 from indicators import atr as atr_indicator
 
 logger = logging.getLogger("bot.screener")
+
+T = TypeVar("T")
+
+#: pykrx's internal HTTP calls carry no timeout of their own. One
+#: unresponsive request used to freeze the whole scan -- and since the
+#: screener runs on the bot's main loop, that meant freezing the whole bot,
+#: with no exception and no log line to explain why. Every pykrx call in
+#: this module goes through this wrapper so a single bad request can never
+#: hang longer than HTTP_TIMEOUT_SECONDS.
+HTTP_TIMEOUT_SECONDS = 8.0
+
+
+def _with_timeout(fn: Callable[[], T], timeout_seconds: float = HTTP_TIMEOUT_SECONDS) -> T | None:
+    """Run *fn* on a daemon thread and give up after *timeout_seconds*.
+
+    Python cannot forcibly kill a thread, so a timed-out call's thread is
+    simply abandoned (daemon=True keeps it from blocking process exit) --
+    the point is that the CALLER moves on instead of hanging forever.
+    """
+    result: "queue.Queue[tuple[str, Any]]" = queue.Queue(maxsize=1)
+
+    def _worker() -> None:
+        try:
+            result.put(("ok", fn()))
+        except Exception as exc:  # noqa: BLE001 - surfaced to the caller below
+            result.put(("error", exc))
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    try:
+        status, value = result.get(timeout=timeout_seconds)
+    except queue.Empty:
+        logger.debug("screener: pykrx call timed out after %.0fs", timeout_seconds)
+        return None
+    if status == "error":
+        raise value
+    return value
 
 _SCALPING_CFG_TEMPLATE: dict[str, Any] = {
     "enabled": True,
@@ -62,7 +101,7 @@ def _get_market_snapshot(
     last_exc: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            df = krx.get_market_ohlcv_by_ticker(date_str, market=market)
+            df = _with_timeout(lambda: krx.get_market_ohlcv_by_ticker(date_str, market=market))
             if df is None or df.empty:
                 return None
             return df
@@ -77,7 +116,7 @@ def _get_market_snapshot(
 def _fetch_history(ticker: str, fromdate: str, todate: str) -> "pd.DataFrame | None":
     try:
         from pykrx import stock as krx
-        df = krx.get_market_ohlcv_by_date(fromdate, todate, ticker)
+        df = _with_timeout(lambda: krx.get_market_ohlcv_by_date(fromdate, todate, ticker))
         if df is None or df.empty:
             return None
         # pykrx returns Korean column names; normalise them.
@@ -98,7 +137,8 @@ def _fetch_history(ticker: str, fromdate: str, todate: str) -> "pd.DataFrame | N
 def _ticker_name(ticker: str) -> str:
     try:
         from pykrx import stock as krx
-        return krx.get_market_ticker_name(ticker) or ticker
+        name = _with_timeout(lambda: krx.get_market_ticker_name(ticker))
+        return name or ticker
     except Exception:
         return ticker
 

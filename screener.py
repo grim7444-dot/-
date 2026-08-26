@@ -68,6 +68,11 @@ _SCALPING_CFG_TEMPLATE: dict[str, Any] = {
     # 추세+반등봉강도 4중 확인 후 돌파할 때만 진입. 스크리너가 이미 당일
     # 최고 모멘텀 종목을 고르므로, 첫 15분의 노이즈만 걸러내면 이 종목들의
     # 실제 방향성 있는 움직임을 잡기에 정석 돌파 스타일이 잘 맞는다.
+    #
+    # volume_mult/min_bar_strength는 2026-08-26 약세장에서 하루 종일 거래 0건
+    # (조건 미충족)이 나온 뒤 완화했다 -- 1.5x/0.5는 기관 데스크 기준으로는
+    # 정석이지만, 소형주 위주 스크리너 유니버스에는 너무 깐깐해서 방향성 있는
+    # 돌파도 자주 걸렀다. 여전히 거래량 동반 + 봉 상단 마감은 요구한다.
     "strategy": "orb",
     "timeframe": "3Min",
     "min_qty": 1,
@@ -76,9 +81,34 @@ _SCALPING_CFG_TEMPLATE: dict[str, Any] = {
     "params": {
         "range_minutes": 15,
         "volume_lookback": 10,
-        "volume_mult": 1.5,
+        "volume_mult": 1.2,
         "trend_ema": 21,
-        "min_bar_strength": 0.5,
+        "min_bar_strength": 0.35,
+        "stop_pct": 0.017,
+        "arm_pct": 0.012,
+        "lock_pct": 0.018,
+        "peak_trail_pct": 0.005,
+        "max_cost_share": 0.35,
+    },
+}
+
+_PULLBACK_CFG_TEMPLATE: dict[str, Any] = {
+    "enabled": True,
+    # 눌림목 반등 -- 돌파를 기다리는 ORB와 달리 상승 추세 중 단기 눌림에서
+    # 반등을 잡는다. 돌파가 잘 안 나오는 약세/횡보장에서도 진입 기회를 주기
+    # 위해 스크리너 유니버스 절반에 ORB와 번갈아 배정한다 (병행 운영).
+    # 파라미터는 기존 고정 6종목에서 이미 검증된 값을 그대로 사용.
+    "strategy": "pullback_bounce",
+    "timeframe": "3Min",
+    "min_qty": 1,
+    "entry_window": ["09:15", "14:30"],
+    "force_exit_at": "15:10",
+    "params": {
+        "trend_ema": 20,
+        "swing_lookback": 7,
+        "pullback_bars": 2,
+        "pullback_min_pct": 0.005,
+        "min_bar_strength": 0.25,
         "stop_pct": 0.017,
         "arm_pct": 0.012,
         "lock_pct": 0.018,
@@ -270,17 +300,20 @@ class DailyScreener:
         candidates.sort(key=lambda x: x[3], reverse=True)
 
         results: list[tuple[str, dict[str, Any]]] = []
-        for ticker, name, market, atr_pct, tv in candidates[: self.n_stocks]:
+        for i, (ticker, name, market, atr_pct, tv) in enumerate(candidates[: self.n_stocks]):
+            # ORB(돌파 대기)와 눌림목(하락 없이도 진입) 을 절반씩 번갈아 배정 --
+            # 돌파가 잘 안 나오는 장에서도 눌림목 쪽에서 기회를 잡을 수 있게.
+            template = _SCALPING_CFG_TEMPLATE if i % 2 == 0 else _PULLBACK_CFG_TEMPLATE
             cfg: dict[str, Any] = {
-                **_SCALPING_CFG_TEMPLATE,
+                **template,
                 "name": name,
                 "market": market,
-                "params": dict(_SCALPING_CFG_TEMPLATE["params"]),
+                "params": dict(template["params"]),
                 "_screener": True,
             }
             logger.info(
-                "screener: %s %s  ATR %.1f%%  TV KRW%.0fM",
-                ticker, name, atr_pct * 100, tv / 1_000_000,
+                "screener: %s %s [%s]  ATR %.1f%%  TV KRW%.0fM",
+                ticker, name, template["strategy"], atr_pct * 100, tv / 1_000_000,
             )
             results.append((ticker, cfg))
 

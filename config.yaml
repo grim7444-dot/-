@@ -656,7 +656,7 @@ screener:
   max_price: 40000          # skip stocks above 4만원 (afford 10+ shares with current capital)
   min_atr_pct: 0.015        # 1.5% daily ATR minimum (cost gate still applies)
   min_trading_value_m: 500  # 500억 KRW daily trading value minimum (more picks)
-  refresh_interval_minutes: 30  # 장중 30분마다 순위 재스캔 → 핫 종목으로 자동 교체
+  refresh_interval_minutes: 10  # 장중 10분마다 순위 재스캔 → 핫 종목으로 자동 교체 (pykrx 데이터 늦게 채워질 때 더 빨리 감지)
   require_uptrend: true     # 일봉 종가가 EMA(daily_trend.ema_period) 위인 종목만 후보로 (변동성만 크고 하락 중인 종목 제외)
 
 macro_gauge:

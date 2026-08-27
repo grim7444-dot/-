@@ -819,3 +819,273 @@ def test_observation_gets_its_own_mode_label():
 
     assert ReadOnlyBroker(_RecordingInner()).mode_suffix == "-OBSERVE"
     assert DryRunBroker().mode_suffix == "-SIM"
+
+
+# ---------------------------------------------------------------------------
+# 13. realtime volume-surge/VI candidates stand in when pykrx's snapshot is
+#    empty (2026-08-27: pykrx's "today" trading-value data isn't populated
+#    until well after the open, so the screener legitimately sees 0
+#    candidates for a while every morning)
+# ---------------------------------------------------------------------------
+
+
+class _FakeRealtimeBroker:
+    """A broker double exposing only get_volume_surge/get_vi_triggered."""
+
+    def __init__(self, surges_by_market=None, vis_by_market=None):
+        self._surges = surges_by_market or {}
+        self._vis = vis_by_market or {}
+
+    def get_volume_surge(self, market="000"):
+        return self._surges.get(market, [])
+
+    def get_vi_triggered(self, market="000"):
+        return self._vis.get(market, [])
+
+
+class _FakeRT:
+    def __init__(self, config, broker):
+        self.config = config
+        self.broker = broker
+
+
+def _make_realtime_engine(config, broker):
+    from main import TradingEngine
+
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.rt = _FakeRT(config, broker)
+    return engine
+
+
+def test_realtime_candidates_tags_each_pick_with_its_real_market():
+    """A pick's market must come from which mrkt_tp call found it.
+
+    _realtime_candidates() used to leave "market" unset entirely, which
+    rt.market_of() silently defaults to KOSPI -- wrong tick size and sell-tax
+    rate for a KOSDAQ pick, both of which differ by market in market/rules.py.
+    """
+    from broker import VolumeSurgeCandidate
+    from market.rules import KOSDAQ, KOSPI
+
+    broker = _FakeRealtimeBroker(
+        surges_by_market={
+            "001": [VolumeSurgeCandidate(code="005930", name="삼성전자", price=72_500.0, surge_rate=50.0)],
+            "101": [
+                VolumeSurgeCandidate(code="082800", name="비보존제약", price=3_200.0, surge_rate=80.0),
+                VolumeSurgeCandidate(code="000009", name="너무싸다", price=500.0, surge_rate=99.0),
+                VolumeSurgeCandidate(code="000010", name="너무비싸다", price=999_999.0, surge_rate=98.0),
+            ],
+        }
+    )
+    config = {
+        "screener": {"min_price": 2000, "max_price": 100_000, "n_stocks": 5},
+        "universe": {},
+    }
+    engine = _make_realtime_engine(config, broker)
+    results = dict(engine._realtime_candidates())
+
+    assert "000009" not in results  # below min_price
+    assert "000010" not in results  # above max_price
+    assert results["082800"]["market"] == KOSDAQ
+    assert results["005930"]["market"] == KOSPI
+    # ranked by surge_rate desc, both markets pooled together
+    assert list(results) == ["082800", "005930"]
+
+
+def test_realtime_candidates_excludes_existing_universe_and_caps_n_stocks():
+    from broker import VolumeSurgeCandidate
+
+    surges = [
+        VolumeSurgeCandidate(code=f"00000{i}", name=f"s{i}", price=5_000.0, surge_rate=float(10 - i))
+        for i in range(6)
+    ]
+    broker = _FakeRealtimeBroker(surges_by_market={"001": surges})
+    config = {
+        "screener": {"min_price": 2000, "max_price": 0, "n_stocks": 3},
+        "universe": {"000002": {"name": "already tracked"}},
+    }
+    engine = _make_realtime_engine(config, broker)
+    results = engine._realtime_candidates()
+
+    codes = [c for c, _ in results]
+    assert "000002" not in codes  # already in the universe -- not a new pick
+    assert codes == ["000000", "000001", "000003"]  # next-highest surge_rate, capped at n_stocks
+
+
+def test_realtime_candidates_alternates_orb_and_pullback_with_independent_params():
+    from broker import VolumeSurgeCandidate
+
+    surges = [
+        VolumeSurgeCandidate(code=f"10000{i}", name=f"s{i}", price=5_000.0, surge_rate=float(10 - i))
+        for i in range(4)
+    ]
+    broker = _FakeRealtimeBroker(surges_by_market={"001": surges})
+    config = {"screener": {"min_price": 2000, "max_price": 0, "n_stocks": 4}, "universe": {}}
+    engine = _make_realtime_engine(config, broker)
+    results = engine._realtime_candidates()
+
+    assert [cfg["strategy"] for _, cfg in results] == [
+        "orb", "pullback_bounce", "orb", "pullback_bounce",
+    ]
+    # each candidate must own its params dict -- not share the template's.
+    results[0][1]["params"]["stop_pct"] = 0.999
+    assert results[2][1]["params"]["stop_pct"] != 0.999
+
+
+def test_realtime_candidates_falls_back_to_vi_when_no_volume_surge_picks():
+    from broker import ViTriggeredStock
+
+    vis = [
+        ViTriggeredStock(code="082800", name="비보존제약", trigger_price=3_200.0, trigger_count_today=2),
+        ViTriggeredStock(code="032820", name="우리기술", trigger_price=2_500.0, trigger_count_today=1),
+    ]
+    broker = _FakeRealtimeBroker(vis_by_market={"101": vis})
+    config = {"screener": {"min_price": 2000, "max_price": 0, "n_stocks": 5}, "universe": {}}
+    engine = _make_realtime_engine(config, broker)
+    results = dict(engine._realtime_candidates())
+
+    assert list(results) == ["082800", "032820"]  # ranked by trigger_count_today desc
+
+
+def test_realtime_candidates_prefers_volume_surge_over_vi_when_both_present():
+    """ka10023 was the user's explicit primary pick, ka10054 secondary."""
+    from broker import ViTriggeredStock, VolumeSurgeCandidate
+
+    broker = _FakeRealtimeBroker(
+        surges_by_market={"001": [VolumeSurgeCandidate(code="005930", name="s", price=5000.0, surge_rate=1.0)]},
+        vis_by_market={"101": [ViTriggeredStock(code="082800", name="v", trigger_price=5000.0, trigger_count_today=99)]},
+    )
+    config = {"screener": {"min_price": 2000, "max_price": 0, "n_stocks": 5}, "universe": {}}
+    engine = _make_realtime_engine(config, broker)
+    results = engine._realtime_candidates()
+
+    assert [c for c, _ in results] == ["005930", "082800"]
+
+
+def test_realtime_candidates_tolerates_one_market_failing():
+    """Kiwoom erroring on one of the two market queries must not zero out the other."""
+    from broker import VolumeSurgeCandidate
+
+    class _FlakyBroker:
+        def get_volume_surge(self, market="000"):
+            if market == "001":
+                raise RuntimeError("kiwoom 500")
+            return [VolumeSurgeCandidate(code="082800", name="비보존제약", price=3_200.0, surge_rate=10.0)]
+
+        def get_vi_triggered(self, market="000"):
+            return []
+
+    config = {"screener": {"min_price": 2000, "max_price": 0, "n_stocks": 5}, "universe": {}}
+    engine = _make_realtime_engine(config, _FlakyBroker())
+    results = engine._realtime_candidates()
+
+    assert [c for c, _ in results] == ["082800"]
+
+
+def test_refresh_dynamic_universe_uses_realtime_candidates_when_pykrx_scan_is_empty(monkeypatch):
+    """The exact scenario this feature exists for: pykrx scan returns 0, mid-open."""
+    import screener as screener_module
+    from broker import VolumeSurgeCandidate
+    from market.rules import KOSDAQ
+    from main import TradingEngine
+
+    class _EmptyScanScreener:
+        last_scan_failed = False
+
+        def __init__(self, config):
+            pass
+
+        def scan(self):
+            return []
+
+    monkeypatch.setattr(screener_module, "DailyScreener", _EmptyScanScreener)
+
+    broker = _FakeRealtimeBroker(
+        surges_by_market={
+            "101": [VolumeSurgeCandidate(code="082800", name="비보존제약", price=3_200.0, surge_rate=50.0)],
+        }
+    )
+    config = {
+        "screener": {"enabled": True, "min_price": 2000, "max_price": 0, "n_stocks": 5},
+        "universe": {},
+        "risk": {},
+    }
+
+    class _FakePortfolio:
+        def positions(self):
+            return []
+
+    class _FakeNotifier:
+        def send(self, *a, **k):
+            pass
+
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.rt = _FakeRT(config, broker)
+    engine.rt.portfolio = _FakePortfolio()
+    engine.rt.strategies = {}
+    engine._session_rules = {}
+    engine._tg_notifier = _FakeNotifier()
+
+    engine._refresh_dynamic_universe()
+
+    universe = engine.rt.config["universe"]
+    assert "082800" in universe
+    assert universe["082800"]["_realtime"] is True
+    assert universe["082800"]["market"] == KOSDAQ
+    assert "082800" in engine.rt.strategies
+    assert "082800" in engine._session_rules
+
+
+def test_refresh_dynamic_universe_prefers_a_working_pykrx_scan_over_realtime(monkeypatch):
+    """Realtime candidates are a stand-in for an empty scan, not a replacement for a working one."""
+    import screener as screener_module
+    from main import TradingEngine
+
+    pykrx_pick_cfg = {
+        "enabled": True, "strategy": "orb", "timeframe": "1Min", "market": "KOSPI",
+        "params": {}, "_screener": True,
+    }
+
+    class _WorkingScreener:
+        last_scan_failed = False
+
+        def __init__(self, config):
+            pass
+
+        def scan(self):
+            return [("005930", pykrx_pick_cfg)]
+
+    monkeypatch.setattr(screener_module, "DailyScreener", _WorkingScreener)
+
+    calls: list[str] = []
+
+    class _NoisyBroker(_FakeRealtimeBroker):
+        def get_volume_surge(self, market="000"):
+            calls.append(market)
+            return super().get_volume_surge(market)
+
+    config = {
+        "screener": {"enabled": True, "min_price": 2000, "max_price": 0, "n_stocks": 5},
+        "universe": {},
+        "risk": {},
+    }
+
+    class _FakePortfolio:
+        def positions(self):
+            return []
+
+    class _FakeNotifier:
+        def send(self, *a, **k):
+            pass
+
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.rt = _FakeRT(config, _NoisyBroker())
+    engine.rt.portfolio = _FakePortfolio()
+    engine.rt.strategies = {}
+    engine._session_rules = {}
+    engine._tg_notifier = _FakeNotifier()
+
+    engine._refresh_dynamic_universe()
+
+    assert "005930" in engine.rt.config["universe"]
+    assert not calls  # _realtime_candidates() must not even be consulted

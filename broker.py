@@ -50,6 +50,10 @@ DEFAULT_ENDPOINTS: dict[str, str] = {
     "chart": "/api/dostk/chart",
     "stock_info": "/api/dostk/stkinfo",
     "quote": "/api/dostk/mrkcond",  # 호가(주문 잔량) 조회 -- 체결강도(ka10046/47)도 같은 경로
+    # 순위정보 -- 커뮤니티 OpenAPI 명세 기준(x-real-path), 아직 실사용 응답으로
+    # 미검증. ka10046/47 때도 이 명세가 실제 응답과 정확히 일치했어서 신뢰도는
+    # 높지만, diagnose-orderbook 같은 읽기전용 진단으로 한 번 더 확인 권장.
+    "ranking": "/api/dostk/rkinfo",
 }
 
 DEFAULT_API_IDS: dict[str, str] = {
@@ -71,6 +75,10 @@ DEFAULT_API_IDS: dict[str, str] = {
     # mrkcond)까지는 확인, 실제 응답 형태는 diagnose-orderbook으로 검증 중.
     "strength_hourly": "ka10046",  # 체결강도추이시간별요청 -> cntr_str_tm 리스트
     "strength_daily": "ka10047",   # 체결강도추이일별요청 -> cntr_str_daly 리스트
+    # 실시간 순위 -- pykrx의 "오늘 거래대금" 데이터가 장 초반 비어있는 문제와
+    # 무관하게 키움 자체 실시간 데이터로 지금 뜨는 종목을 잡는다 (2026-08-27).
+    "volume_surge": "ka10023",   # 거래량급증요청 -> trde_qty_sdnin 리스트
+    "vi_triggered": "ka10054",   # 변동성완화장치발동종목요청 -> motn_stk 리스트 (endpoint: stock_info)
 }
 
 #: How many continuation pages a single logical request may pull.
@@ -161,6 +169,50 @@ class ExecutionStrength:
     strength_5min: float = 100.0   # cntr_str_5min
     strength_20min: float = 100.0  # cntr_str_20min
     strength_60min: float = 100.0  # cntr_str_60min
+
+
+@dataclass(frozen=True)
+class VolumeSurgeCandidate:
+    """A ticker Kiwoom itself flags as having an abnormal volume spike right now.
+
+    From ka10023 (거래량급증요청). Field names come from a community-maintained
+    OpenAPI spec, not yet cross-checked against a live response the way
+    ka10004/ka10046 were -- treat this the same as any other unverified field
+    mapping until confirmed live.
+
+    This exists independently of pykrx: the screener's own picks depend on
+    pykrx's "today" trading-value snapshot, which is not populated until well
+    after the open (confirmed 2026-08-27, candidates all read KRW 0 at
+    09:05). Kiwoom's own real-time ranking has no such lag.
+    """
+
+    code: str
+    name: str = ""
+    price: float = 0.0
+    change_pct: float = 0.0     # flu_rt
+    volume: float = 0.0         # now_trde_qty
+    surge_qty: float = 0.0      # sdnin_qty
+    surge_rate: float = 0.0     # sdnin_rt, %
+
+
+@dataclass(frozen=True)
+class ViTriggeredStock:
+    """A ticker currently halted for a volatility interruption (VI).
+
+    From ka10054 (변동성완화장치발동종목요청). Field names unverified the same
+    way as VolumeSurgeCandidate above. Korean day-trading convention treats a
+    VI trigger as a concentration-of-buying (or selling) signal in itself --
+    the 2-minute single-price auction it causes is a structural KRX mechanism,
+    not a matter of opinion, so it is a real signal even before any field is
+    live-confirmed.
+    """
+
+    code: str
+    name: str = ""
+    trigger_price: float = 0.0        # motn_pric
+    open_change_pct: float = 0.0      # open_pric_pre_flu_rt
+    trigger_count_today: int = 0      # vimotn_cnt
+    direction: str = ""               # viaplc_tp, raw as Kiwoom sends it
 
 
 @dataclass(frozen=True)
@@ -291,6 +343,14 @@ class BrokerBase:
     def get_execution_strength(self, code: str) -> "ExecutionStrength | None":
         """Latest 체결강도 snapshot, or None when unavailable (advisory-not-available)."""
         return None
+
+    def get_volume_surge(self, market: str = "000") -> "list[VolumeSurgeCandidate]":
+        """Tickers Kiwoom flags as having a real-time volume spike. Empty on failure."""
+        return []
+
+    def get_vi_triggered(self, market: str = "000") -> "list[ViTriggeredStock]":
+        """Tickers currently halted for a volatility interruption. Empty on failure."""
+        return []
 
     def open_order_codes(self) -> list[str]:
         raise NotImplementedError
@@ -773,6 +833,74 @@ class KiwoomBroker(BrokerBase):
             strength_60min=_pct("cntr_str_60min"),
         )
 
+    def get_volume_surge(self, market: str = "000") -> list[VolumeSurgeCandidate]:
+        body = {
+            "mrkt_tp": market,       # 000 전체, 001 코스피, 101 코스닥
+            "sort_tp": "1",          # 급증량 기준 정렬
+            "tm_tp": "2",            # 전일 대비 (분 단위 tm 파라미터 불필요)
+            "trde_qty_tp": "5",      # 5천주 이상 -- 너무 좁히지 않는 하한선
+            "tm": "",
+            "stk_cnd": "1",          # 관리종목 제외
+            "pric_tp": "0",          # 가격 전체
+            "stex_tp": "3",          # KRX+NXT 통합
+        }
+        try:
+            data = self._call("ranking", "volume_surge", body, f"volume_surge({market})")
+        except BrokerError:
+            return []
+        rows = data.get("trde_qty_sdnin") or []
+        out: list[VolumeSurgeCandidate] = []
+        for r in rows:
+            code = str(r.get("stk_cd") or "").strip()
+            if not code:
+                continue
+            out.append(VolumeSurgeCandidate(
+                code=code,
+                name=str(r.get("stk_nm") or ""),
+                price=abs(_to_float(r.get("cur_prc"))),
+                change_pct=_to_float(r.get("flu_rt")),
+                volume=_to_float(r.get("now_trde_qty")),
+                surge_qty=_to_float(r.get("sdnin_qty")),
+                surge_rate=_to_float(r.get("sdnin_rt")),
+            ))
+        return out
+
+    def get_vi_triggered(self, market: str = "000") -> list[ViTriggeredStock]:
+        body = {
+            "mrkt_tp": market,
+            "bf_mkrt_tp": "1",       # 정규시장
+            "stk_cd": "",            # 공백 = 시장구분 전체 조회
+            "motn_tp": "0",          # 정적+동적 VI 전체
+            "skip_stk": "000000000",  # 전종목 포함
+            "trde_qty_tp": "0",
+            "min_trde_qty": "",
+            "max_trde_qty": "",
+            "trde_prica_tp": "0",
+            "min_trde_prica": "",
+            "max_trde_prica": "",
+            "motn_drc": "1",         # 상승 VI만 -- 롱 온리라 하락 VI는 관심 대상 아님
+            "stex_tp": "3",
+        }
+        try:
+            data = self._call("stock_info", "vi_triggered", body, f"vi_triggered({market})")
+        except BrokerError:
+            return []
+        rows = data.get("motn_stk") or []
+        out: list[ViTriggeredStock] = []
+        for r in rows:
+            code = str(r.get("stk_cd") or "").strip()
+            if not code:
+                continue
+            out.append(ViTriggeredStock(
+                code=code,
+                name=str(r.get("stk_nm") or ""),
+                trigger_price=abs(_to_float(r.get("motn_pric"))),
+                open_change_pct=_to_float(r.get("open_pric_pre_flu_rt")),
+                trigger_count_today=int(_to_float(r.get("vimotn_cnt"))),
+                direction=str(r.get("viaplc_tp") or ""),
+            ))
+        return out
+
     def open_order_codes(self) -> list[str]:
         data = self._call("account", "open_orders", {"stex_tp": "0"}, "open_orders")
         rows = data.get("output") or data.get("oso") or []
@@ -1086,6 +1214,12 @@ class ReadOnlyBroker(BrokerBase):
 
     def get_execution_strength(self, code: str) -> ExecutionStrength | None:
         return self.inner.get_execution_strength(code)
+
+    def get_volume_surge(self, market: str = "000") -> list[VolumeSurgeCandidate]:
+        return self.inner.get_volume_surge(market)
+
+    def get_vi_triggered(self, market: str = "000") -> list[ViTriggeredStock]:
+        return self.inner.get_vi_triggered(market)
 
     def open_order_codes(self) -> list[str]:
         return self.inner.open_order_codes()

@@ -32,7 +32,7 @@ from data import MarketData, months_to_start, timeframe_delta, warmup_start
 from indicators import atr as atr_indicator
 from indicators import last_valid
 from market.calendar import KST, KrxCalendar
-from market.rules import KOSPI, KrxRules
+from market.rules import KOSDAQ, KOSPI, KrxRules
 from market.session_rules import SessionRules
 from portfolio import LONG, SHORT, Portfolio, Position
 from risk.manager import RiskManager, TradeContext
@@ -601,6 +601,80 @@ class TradingEngine:
         if allowed_codes is not None:
             allowed_codes.update(new_cfgs)
 
+    def _realtime_candidates(self) -> list[tuple[str, dict[str, Any]]]:
+        """Kiwoom's own real-time volume-surge/VI rankings, as a pykrx-independent
+        stand-in when the screener's daily-snapshot-based scan comes back empty.
+
+        Unlike the screener, this never depends on pykrx's "today" trading-value
+        snapshot -- confirmed lagging on 2026-08-27 -- so it can still find
+        something worth trading in exactly the window where the screener can't.
+        Field names are from a community OpenAPI spec, not yet cross-checked
+        against a live response (see diagnose-orderbook's [4]/[5] sections), so
+        this stays purely supplementary: any parsing miss just yields fewer or
+        zero candidates, never a bad one, and the existing static fallback is
+        still there as the last resort.
+        """
+        rt = self.rt
+        scr_cfg = rt.config.get("screener") or {}
+        min_price = int(scr_cfg.get("min_price", 2000))
+        max_price = int(scr_cfg.get("max_price", 0))
+        n_stocks = int(scr_cfg.get("n_stocks", 5))
+        existing = {str(k) for k in (rt.config.get("universe") or {})}
+
+        # Queried per-market (KOSPI "001" / KOSDAQ "101") rather than the
+        # combined "000" so each candidate can be tagged with its real
+        # market -- tick size and the sell-side transaction tax both differ
+        # by market (see market/rules.py), and rt.market_of() silently
+        # defaults anything untagged to KOSPI.
+        surges: list[Any] = []
+        vis: list[Any] = []
+        # ka10023/ka10054's own mrkt_tp convention (001 KOSPI / 101 KOSDAQ) --
+        # distinct from KiwoomBroker.MARKET_TYPES, which is a different TR's
+        # (stock_info/market_codes) 0/10 scheme.
+        for mkt_code, mkt_name in (("001", KOSPI), ("101", KOSDAQ)):
+            try:
+                for s in rt.broker.get_volume_surge(market=mkt_code):
+                    surges.append((s, mkt_name))
+            except Exception as exc:
+                logger.debug("realtime_candidates: volume_surge(%s) failed: %s", mkt_code, exc)
+            try:
+                for v in rt.broker.get_vi_triggered(market=mkt_code):
+                    vis.append((v, mkt_name))
+            except Exception as exc:
+                logger.debug("realtime_candidates: vi_triggered(%s) failed: %s", mkt_code, exc)
+
+        picks: list[tuple[str, str, str, float]] = []  # (code, name, market, sort_key)
+        seen: set[str] = set()
+        for s, mkt_name in sorted(surges, key=lambda p: p[0].surge_rate, reverse=True):
+            if s.code in seen or s.code in existing:
+                continue
+            if s.price < min_price or (max_price > 0 and s.price > max_price):
+                continue
+            seen.add(s.code)
+            picks.append((s.code, s.name, mkt_name, s.surge_rate))
+        for v, mkt_name in sorted(vis, key=lambda p: p[0].trigger_count_today, reverse=True):
+            if v.code in seen or v.code in existing:
+                continue
+            if v.trigger_price < min_price or (max_price > 0 and v.trigger_price > max_price):
+                continue
+            seen.add(v.code)
+            picks.append((v.code, v.name, mkt_name, float(v.trigger_count_today)))
+
+        from screener import _PULLBACK_CFG_TEMPLATE, _SCALPING_CFG_TEMPLATE
+        results: list[tuple[str, dict[str, Any]]] = []
+        for i, (code, name, mkt_name, _key) in enumerate(picks[:n_stocks]):
+            template = _SCALPING_CFG_TEMPLATE if i % 2 == 0 else _PULLBACK_CFG_TEMPLATE
+            cfg = {
+                **template,
+                "name": name,
+                "market": mkt_name,
+                "params": dict(template["params"]),
+                "_screener": True,
+                "_realtime": True,
+            }
+            results.append((code, cfg))
+        return results
+
     def _refresh_dynamic_universe(self) -> None:
         """Re-run the screener and hot-swap dynamic stocks in the universe.
 
@@ -638,6 +712,16 @@ class TradingEngine:
             k for k, v in current_universe.items()
             if (v or {}).get("_screener") and k not in open_positions
         }
+
+        if not found:
+            realtime = self._realtime_candidates()
+            if realtime:
+                logger.info(
+                    "universe refresh: pykrx scan empty -- using %d realtime "
+                    "volume-surge/VI candidate(s) instead: %s",
+                    len(realtime), ", ".join(t for t, _ in realtime),
+                )
+                found = realtime
 
         if not found:
             # A zero-candidate scan is not itself proof that nothing today is
@@ -2328,9 +2412,49 @@ def cmd_diagnose_orderbook(args: argparse.Namespace) -> int:
                 print(f"    {key:<24} = {value!r}")
         print()
 
-    print("  위 [2], [3] 목록을 통째로 복사해서 Claude에게 붙여넣어 주세요.")
-    print("  매수호가/매도호가/매수잔량/매도잔량, 체결강도 비슷한 필드를 찾아서")
-    print("  실시간 필터를 마저 연결하겠습니다.")
+    def _diagnose_ranking(endpoint_key: str, api_key: str, body: dict, list_key: str, label: str) -> None:
+        try:
+            data = inner._call(endpoint_key, api_key, body, f"diagnose_{api_key}")
+        except Exception as exc:
+            print(f"  {label} 조회 실패: {exc}")
+            print("  -- 이 에러 메시지를 그대로 Claude에게 붙여넣어 주세요.")
+            return
+        print(f"  {label} 응답 필드:")
+        rows = data.get(list_key)
+        if rows is None:
+            print(f"    (키 '{list_key}'를 못 찾음 -- 전체 최상위 키: {list(data.keys())})")
+        elif isinstance(rows, list):
+            print(f"    {list_key} (리스트, {len(rows)}건) -- 최신 3건만 표시:")
+            for i, row in enumerate(rows[:3]):
+                if isinstance(row, dict):
+                    print(f"      -- row {i} --")
+                    for rk, rv in row.items():
+                        print(f"      {rk:<24} = {rv!r}")
+                else:
+                    print(f"      row {i} = {row!r}")
+        for key, value in data.items():
+            if key != list_key:
+                print(f"    {key:<24} = {value!r}")
+        print()
+
+    _diagnose_ranking(
+        "ranking", "volume_surge",
+        {"mrkt_tp": "000", "sort_tp": "1", "tm_tp": "2", "trde_qty_tp": "5",
+         "tm": "", "stk_cnd": "1", "pric_tp": "0", "stex_tp": "3"},
+        "trde_qty_sdnin", "[4] volume_surge(ka10023, 거래량급증)",
+    )
+    _diagnose_ranking(
+        "stock_info", "vi_triggered",
+        {"mrkt_tp": "000", "bf_mkrt_tp": "1", "stk_cd": "", "motn_tp": "0",
+         "skip_stk": "000000000", "trde_qty_tp": "0", "min_trde_qty": "",
+         "max_trde_qty": "", "trde_prica_tp": "0", "min_trde_prica": "",
+         "max_trde_prica": "", "motn_drc": "1", "stex_tp": "3"},
+        "motn_stk", "[5] vi_triggered(ka10054, VI발동종목)",
+    )
+
+    print("  위 [2]~[5] 목록을 통째로 복사해서 Claude에게 붙여넣어 주세요.")
+    print("  매수호가/매도호가/매수잔량/매도잔량, 체결강도, 거래량급증, VI발동")
+    print("  비슷한 필드를 찾아서 실시간 필터를 마저 연결하겠습니다.")
     return 0
 
 

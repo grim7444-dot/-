@@ -519,6 +519,42 @@ def _dead_market_reason(bars: pd.DataFrame, cfg: Mapping[str, Any]) -> str | Non
     return None
 
 
+def _marketable_limit_price(
+    orderbook: Any,
+    side: str,
+    market: str,
+    rules: KrxRules,
+    buffer_ticks: int,
+) -> float | None:
+    """A limit price aggressive enough to fill immediately, bounding worst-case slippage.
+
+    User-requested (2026-08-27): 수수료 및 슬리피지 방지 주문 최적화. A plain
+    market order has no price protection at all -- in a thin book it can fill
+    meaningfully worse than the price the bot decided on. Quoting
+    buffer_ticks past the best opposing quote (best_ask for a buy, best_bid
+    for a sell) crosses the spread the same way a market order would, so the
+    fill should be just as immediate, but the order itself caps how far a
+    fill can drift from what was actually on the book when it was sent.
+
+    Returns None -- "send a plain market order instead" -- when there is no
+    orderbook to price against. That is a deliberate fail-open: a missing
+    quote is not a reason to refuse a trade that otherwise passed every
+    other check.
+    """
+    if orderbook is None:
+        return None
+    base = orderbook.best_ask if side == LONG else orderbook.best_bid
+    if base <= 0:
+        return None
+    tick = rules.tick_size(base, market)
+    offset = tick * max(buffer_ticks, 0)
+    if side == LONG:
+        # Round UP so the quote is guaranteed to be at or past the ask.
+        return float(rules.round_to_tick(base + offset, market, "up"))
+    # Round DOWN so the quote is guaranteed to be at or past the bid.
+    return float(rules.round_to_tick(base - offset, market, "down"))
+
+
 # --------------------------------------------------------------------------
 # Trading engine
 # --------------------------------------------------------------------------
@@ -594,6 +630,13 @@ class TradingEngine:
         self._strength_enabled: bool = bool(st_cfg.get("enabled", True))
         self._strength_require_confirm: bool = bool(st_cfg.get("require_confirm", False))
         self._strength_min: float = float(st_cfg.get("min_strength", 100.0))
+        # 수수료/슬리피지 방지 주문 최적화 (2026-08-27, 사용자 요청): 시장가 대신
+        # 최우선호가 + buffer_ticks의 지정가(marketable limit)로 주문해 최악의
+        # 체결가에 상한을 둔다. 손절/시간강제청산은 반드시 체결돼야 하므로 이
+        # 대상에서 제외 -- 각 호출부에서 use_limit=False로 지정한다.
+        oe_cfg = rt.config.get("order_execution") or {}
+        self._use_limit_orders: bool = bool(oe_cfg.get("use_limit_orders", True))
+        self._limit_buffer_ticks: int = int(oe_cfg.get("limit_buffer_ticks", 2))
         # Dynamic universe refresh
         scr_cfg = (rt.config.get("screener") or {})
         self._universe_refresh_interval: float = float(
@@ -1267,7 +1310,7 @@ class TradingEngine:
                 )
                 self._submit_exit(
                     code, position, price, "stop hit", open_orders, asset_cfg,
-                    session_ok, session_reason,
+                    session_ok, session_reason, market=market, use_limit=False,
                 )
                 return
 
@@ -1298,7 +1341,7 @@ class TradingEngine:
                     logger.warning("%s: NEAR-LIMIT MORNING EXIT - %s", label, exit_reason)
                     self._submit_exit(
                         code, position, price, exit_reason, open_orders, asset_cfg,
-                        session_ok, session_reason,
+                        session_ok, session_reason, market=market,
                     )
                 # Whether it exited above or is still waiting for the morning
                 # window, nothing else this cycle may sell it -- that is the
@@ -1315,7 +1358,7 @@ class TradingEngine:
                 logger.warning("%s: DIP-RECOVERY TAKE-PROFIT - %s", label, reason)
                 self._submit_exit(
                     code, position, price, reason, open_orders, asset_cfg,
-                    session_ok, session_reason,
+                    session_ok, session_reason, market=market,
                 )
                 return
 
@@ -1329,7 +1372,7 @@ class TradingEngine:
                 logger.warning("%s: TIME EXIT - %s", label, why)
                 self._submit_exit(
                     code, position, price, why, open_orders, asset_cfg,
-                    session_ok, session_reason,
+                    session_ok, session_reason, market=market, use_limit=False,
                 )
                 return
 
@@ -1346,7 +1389,7 @@ class TradingEngine:
                 logger.warning("%s: LATE-SESSION TAKE-PROFIT - %s", label, reason)
                 self._submit_exit(
                     code, position, price, reason, open_orders, asset_cfg,
-                    session_ok, session_reason,
+                    session_ok, session_reason, market=market,
                 )
                 return
 
@@ -1369,9 +1412,15 @@ class TradingEngine:
             return
 
         if signal.action is Action.EXIT:
+            # The strategy's own EXIT covers both its stop_pct stop and its
+            # lock_pct/peak_trail_pct take-profit under one Action -- only the
+            # stop needs a guaranteed fill, so it's the one told apart by its
+            # own reason text (see the f"{stop_pct:.0%} 손절 ..." format both
+            # ORB and PullbackBounce use).
             self._submit_exit(
                 code, position, price, signal.reason, open_orders, asset_cfg,
-                session_ok, session_reason,
+                session_ok, session_reason, market=market,
+                use_limit="손절" not in signal.reason,
             )
             return
 
@@ -1427,7 +1476,12 @@ class TradingEngine:
         asset_cfg: Mapping[str, Any],
         session_ok: bool,
         session_reason: str,
+        market: str = KOSPI,
+        use_limit: bool = True,
     ) -> None:
+        """``use_limit`` picks a marketable limit order over a plain market
+        order (see _marketable_limit_price) -- callers that need a guaranteed
+        fill (the hard stop, a forced time exit) must pass False."""
         if position is None:
             return
         rt = self.rt
@@ -1449,8 +1503,15 @@ class TradingEngine:
         if not checks.passed:
             logger.warning("%s: exit blocked - %s", code, checks.describe())
             return
+        limit_price = None
+        if use_limit and self._use_limit_orders:
+            orderbook = rt.broker.get_orderbook(code)
+            limit_price = _marketable_limit_price(
+                orderbook, ctx.side, market, rt.rules, self._limit_buffer_ticks
+            )
         result = rt.broker.submit_order(
-            code=code, side=ctx.side, qty=position.qty, is_exit=True, note=f"exit: {reason}"
+            code=code, side=ctx.side, qty=position.qty, price=limit_price,
+            is_exit=True, note=f"exit: {reason}",
         )
         if result.submitted:
             rt.portfolio.close_position(code, exit_price=price, exit_reason=reason)
@@ -1498,9 +1559,12 @@ class TradingEngine:
             )
             return
 
-        if side == LONG and self._orderbook_enabled:
+        # Fetched once and reused below for the marketable-limit entry price too,
+        # so enabling both features never doubles the API call.
+        orderbook = None
+        if side == LONG and (self._orderbook_enabled or self._use_limit_orders):
             orderbook = rt.broker.get_orderbook(code)
-            if orderbook is not None:
+            if orderbook is not None and self._orderbook_enabled:
                 logger.info(
                     "%s: 호가 매수/매도 잔량비 %.2f (매수 %.0f / 매도 %.0f, "
                     "1차 매수 %.0f/%.0f 매도 %.0f/%.0f)",
@@ -1619,8 +1683,13 @@ class TradingEngine:
             return
 
         stop = rt.rules.stop_price(price, sizing.stop_distance, market)
+        limit_price = None
+        if self._use_limit_orders:
+            limit_price = _marketable_limit_price(
+                orderbook, side, market, rt.rules, self._limit_buffer_ticks
+            )
         logger.info(
-            "%s: %s qty=%d risk=%s (%.2f%% of equity) stop=%s tick=%d",
+            "%s: %s qty=%d risk=%s (%.2f%% of equity) stop=%s tick=%d order=%s",
             label,
             side,
             int(sizing.qty),
@@ -1628,9 +1697,11 @@ class TradingEngine:
             100 * sizing.realised_risk() / account.equity if account.equity else 0.0,
             f"{stop:,.0f}",
             rt.rules.tick_size(price, market),
+            f"limit {limit_price:,.0f}" if limit_price is not None else "market",
         )
         result = rt.broker.submit_order(
-            code=code, side=side, qty=sizing.qty, stop_price=stop, note=signal.reason
+            code=code, side=side, qty=sizing.qty, price=limit_price, stop_price=stop,
+            note=signal.reason,
         )
         if result.submitted:
             rt.portfolio.open_position(

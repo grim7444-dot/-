@@ -680,6 +680,17 @@ daily_trend:
 # 며칠 지켜보고 잔량비가 실제로 쓸만한 신호로 보이면 true로 올려서
 # min_imbalance 미만일 때 진입을 실제로 차단하게 한다.
 # ---------------------------------------------------------------------------
+order_execution:
+  # 수수료/슬리피지 방지 주문 최적화 (2026-08-27, 사용자 요청): 시장가 대신
+  # 최우선호가(매수는 매도1호가, 매도는 매수1호가)에서 limit_buffer_ticks만큼
+  # 더 부른 지정가(marketable limit)로 주문한다 -- 시장가처럼 즉시 체결될
+  # 만큼 공격적이면서도, 최악의 체결가에 상한을 둔다. 호가 데이터가 없으면
+  # (조회 실패 등) 그냥 시장가로 보낸다 -- fail-open, 주문 자체를 막지 않음.
+  # 손절(하드스탑 + 전략 자체 stop_pct)과 시간강제청산(force_exit_at)은
+  # 반드시 체결돼야 하므로 이 대상에서 제외하고 그대로 시장가를 쓴다.
+  use_limit_orders: true
+  limit_buffer_ticks: 2
+
 orderbook:
   enabled: true
   require_confirm: false

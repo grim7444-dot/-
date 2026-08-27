@@ -401,11 +401,14 @@ class TradingEngine:
         }
         self._dart_monitor = DartMonitor(rt.config, cred_dict)
         self._dart_monitor.set_notifier(self._tg_notifier)
-        # 트럼프 관련 뉴스 모니터: 텔레그램 알림 + 테마 매칭 시 진입 우선 부스트.
-        # 부스트는 실제 매수를 걸지 않는다 -- 진입은 항상 기술적 신호가 조건.
+        self._dart_relax_pct: float = float((rt.config.get("dart") or {}).get("entry_relax_pct", 0.2))
+        # 트럼프 관련 뉴스 모니터: 텔레그램 알림 + 테마 매칭 시 진입 조건 완화.
+        # 사용자 요청으로 실제 진입에도 반영 (_apply_entry_boost 참고) -- 진입을
+        # 강제로 걸지는 않고, 기존 기술적 신호의 문턱만 부스트 지속시간 동안 낮춘다.
         self._news_monitor = NewsMonitor(rt.config)
         self._news_monitor.set_notifier(self._tg_notifier)
         self._news_monitor.set_theme_map(rt.config.get("themes") or {})
+        self._news_relax_pct: float = float((rt.config.get("news") or {}).get("entry_relax_pct", 0.2))
         # 다중 시간프레임 확인: 일봉 EMA 추세가 하락이면 3분봉 신호와 무관하게
         # 진입 차단. 세션 시작 시 한 번 스캔.
         self._daily_trend = DailyTrendScanner(rt.config)
@@ -471,6 +474,27 @@ class TradingEngine:
         self.rt.risk.max_positions = self._base_max_positions + (
             self._macro.extra_positions if bullish else 0
         )
+
+    def _apply_entry_boost(self, strategy: Strategy) -> None:
+        """Further loosen one boosted stock's entry thresholds for this evaluate() call.
+
+        Called at most once per code per tick, right before strategy.evaluate(),
+        only when a news or DART boost is currently active for that code. Applies
+        on top of whatever _apply_macro_aggressiveness() already set this tick
+        (the current macro baseline), so it composes without special-casing --
+        and it never needs to be undone: next tick, _apply_macro_aggressiveness()
+        resets every strategy to the macro baseline before due_codes() runs, so a
+        boost that has since expired simply stops being reapplied instead of
+        lingering.
+        """
+        relax_pct = max(self._news_relax_pct, self._dart_relax_pct)
+        factor = 1.0 - relax_pct
+        if isinstance(strategy, ORB):
+            strategy.volume_mult *= factor
+            strategy.min_bar_strength *= factor
+        elif isinstance(strategy, PullbackBounce):
+            strategy.min_bar_strength *= factor
+            strategy.pullback_min_pct *= factor
 
     # -- Telegram wiring ---------------------------------------------------
 
@@ -962,6 +986,11 @@ class TradingEngine:
                     session_ok, session_reason,
                 )
                 return
+
+        if position is None and (
+            self._news_monitor.is_boosted(code) or self._dart_monitor.is_boosted(code)
+        ):
+            self._apply_entry_boost(strategy)
 
         signal = strategy.evaluate(bars, position)
         logger.info(

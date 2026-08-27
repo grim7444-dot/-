@@ -84,7 +84,7 @@ universe:
     market: KOSPI
     enabled: false  # 고정 종목 비활성 -- 스크리너가 매일 거래량 터진 종목으로 대체
     strategy: pullback_bounce
-    timeframe: 3Min
+    timeframe: 1Min
     min_qty: 1
     entry_window: ["09:00", "11:00"]
     force_exit_at: "15:10"
@@ -121,7 +121,7 @@ universe:
     market: KOSPI
     enabled: false  # 고정 종목 비활성 -- 스크리너가 매일 거래량 터진 종목으로 대체
     strategy: pullback_bounce
-    timeframe: 3Min
+    timeframe: 1Min
     min_qty: 1
     entry_window: ["09:00", "11:00"]
     force_exit_at: "15:10"
@@ -142,7 +142,7 @@ universe:
     market: KOSPI
     enabled: false  # 고정 종목 비활성 -- 스크리너가 매일 거래량 터진 종목으로 대체
     strategy: pullback_bounce
-    timeframe: 3Min
+    timeframe: 1Min
     min_qty: 1
     entry_window: ["09:00", "11:00"]
     force_exit_at: "15:10"
@@ -163,7 +163,7 @@ universe:
     market: KOSPI
     enabled: false  # 고정 종목 비활성 -- 스크리너가 매일 거래량 터진 종목으로 대체
     strategy: pullback_bounce
-    timeframe: 3Min
+    timeframe: 1Min
     min_qty: 1
     entry_window: ["09:00", "11:00"]
     force_exit_at: "15:10"
@@ -603,20 +603,23 @@ dart:
   enabled: false                 # DART_API_KEY 설정 후 true로 변경
   poll_interval_seconds: 60      # 1분마다 신규 공시 체크
   boost_duration_minutes: 30     # 긍정 공시 후 30분간 진입 우선
+  entry_relax_pct: 0.2           # 부스트 활성 중엔 진입 조건(거래량배수/봉강도/눌림폭) 20% 완화
 
 # ---------------------------------------------------------------------------
 # 트럼프 관련 뉴스 모니터 (구글 뉴스 RSS, API키 불필요)
 #
 # '트럼프' + 산업 키워드(관세·반도체·방산 등)가 함께 나오는 헤드라인을 감지해
-# 텔레그램으로 알린다. 참고용 알림일 뿐 자동매매에는 반영되지 않는다 --
-# 발언과 개별 종목의 실제 반응 사이엔 확실한 인과관계가 없어서, 진입을
-# 자동으로 막거나 부스트하면 오히려 위험하다.
+# 텔레그램으로 알린다. 사용자 요청으로 실제 진입 조건에도 반영된다 -- 테마
+# 매칭 종목은 부스트 지속시간 동안 entry_relax_pct만큼 조건이 완화된다.
+# 발언과 개별 종목의 실제 반응 사이엔 확실한 인과관계가 없다는 점은 여전해서,
+# 진입을 아예 막거나 강제로 걸지는 않고 기존 기술적 신호의 문턱만 낮춘다.
 # ---------------------------------------------------------------------------
 news:
   enabled: true
   query: "트럼프"
   poll_interval_seconds: 300     # 5분마다 체크
   boost_duration_minutes: 20     # 테마 매칭 시 진입 우선 부스트 지속시간
+  entry_relax_pct: 0.2           # 부스트 활성 중엔 진입 조건(거래량배수/봉강도/눌림폭) 20% 완화
 
 # ---------------------------------------------------------------------------
 # 다중 시간프레임 확인 (일봉 추세 필터)

@@ -323,6 +323,16 @@ def build_runtime(
         mode_label=mode_label,
     )
     config = _cover_open_positions(config, portfolio)
+    # KiwoomBroker.allowed_codes is a snapshot taken when build_broker() ran,
+    # a few lines above -- before the screener/fallback additions above it and
+    # before _cover_open_positions() just now could have added codes that
+    # were not in the original static universe. Without this, submit_order()
+    # refuses every order for those codes, entries and *exits* alike: a
+    # recovered orphaned position could pass every strategy/risk check and
+    # still never actually be sellable.
+    allowed_codes = getattr(broker, "allowed_codes", None)
+    if allowed_codes is not None:
+        allowed_codes.update(str(c) for c in (config.get("universe") or {}))
     return Runtime(
         config=config,
         decision=decision,
@@ -553,6 +563,20 @@ class TradingEngine:
         logger.info("investor_flow: scanning %d stocks", len(scalpers))
         self._flow_scanner.scan(scalpers)
 
+    def _sync_broker_allowed_codes(self, new_cfgs: dict[str, Any]) -> None:
+        """Let the broker's order-safety whitelist see codes added after startup.
+
+        KiwoomBroker.allowed_codes is a snapshot taken once when the broker was
+        built. Any code added to the universe afterward -- a screener pick
+        mid-session, a fallback activation -- would otherwise have every order
+        refused by that check, entries and exits alike, no matter what the
+        strategy or risk manager decide. Not every broker has this attribute
+        (paper/dry-run brokers don't restrict at all), hence the getattr guard.
+        """
+        allowed_codes = getattr(self.rt.broker, "allowed_codes", None)
+        if allowed_codes is not None:
+            allowed_codes.update(new_cfgs)
+
     def _refresh_dynamic_universe(self) -> None:
         """Re-run the screener and hot-swap dynamic stocks in the universe.
 
@@ -621,6 +645,7 @@ class TradingEngine:
                 # build_runtime()'s startup path for why.
                 universe = {**current_universe, **fallback}
                 rt.config = {**rt.config, "universe": universe}
+                self._sync_broker_allowed_codes(fallback)
                 for code, asset_cfg in fallback.items():
                     rt.strategies[code] = build_strategy(
                         code, asset_cfg, rt.config.get("risk") or {}
@@ -675,6 +700,8 @@ class TradingEngine:
                 )
 
         rt.config = {**rt.config, "universe": updated_universe}
+        if to_add:
+            self._sync_broker_allowed_codes({t: c for t, c in to_add})
 
         removed_names = ", ".join(to_remove) if to_remove else "없음"
         added_names = ", ".join(t for t, _ in to_add) if to_add else "없음"

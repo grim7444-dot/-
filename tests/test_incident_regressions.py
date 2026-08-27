@@ -1194,3 +1194,108 @@ def test_late_exit_thresholds_are_configurable_via_risk_cfg():
     # A narrower window (5 minutes) must suppress it at the 15-minutes-out mark.
     narrow_window_cfg = {"late_exit_minutes": 5}
     assert _late_exit_reason(position, 10_080.0, now, _late_exit_rules(), narrow_window_cfg) is None
+
+
+# ---------------------------------------------------------------------------
+# 15. the daily 복기 report fires once at the close, and the weekly rollup
+#    fires alongside it every Friday (2026-08-27, user request)
+# ---------------------------------------------------------------------------
+
+
+class _FakeCalendarForReport:
+    def __init__(self, business_day: bool = True):
+        self._business_day = business_day
+
+    def is_business_day(self, day):
+        return self._business_day
+
+
+class _FakeDecisionForReport:
+    label = "PAPER"
+
+
+class _CapturingNotifier:
+    def __init__(self):
+        self.sent: list[str] = []
+
+    def send(self, text, *a, **k):
+        self.sent.append(text)
+
+
+def _report_engine(portfolio, config):
+    from main import TradingEngine
+
+    class _FakeRTForReport:
+        pass
+
+    engine = TradingEngine.__new__(TradingEngine)
+    rt = _FakeRTForReport()
+    rt.config = config
+    rt.portfolio = portfolio
+    rt.risk = RiskManager(config, portfolio)
+    rt.decision = _FakeDecisionForReport()
+    rt.calendar = _FakeCalendarForReport()
+    engine.rt = rt
+    engine._daily_report_date = None
+    engine._tg_notifier = _CapturingNotifier()
+    return engine
+
+
+def _freeze_main_clock(monkeypatch, moment: datetime) -> None:
+    import main
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment
+
+    monkeypatch.setattr(main, "datetime", _Frozen)
+
+
+def test_daily_report_fires_once_after_the_close(portfolio, config, monkeypatch):
+    engine = _report_engine(portfolio, config)
+    _freeze_main_clock(monkeypatch, datetime(2026, 8, 26, 15, 31, tzinfo=KST))  # Wed, just after 15:30
+
+    engine._maybe_send_daily_report()
+    assert len(engine._tg_notifier.sent) == 1
+    assert "Evening report" in engine._tg_notifier.sent[0]
+    assert "복기" in engine._tg_notifier.sent[0]
+
+    # A second call the same day (e.g. next loop tick while still closed) must not resend.
+    engine._maybe_send_daily_report()
+    assert len(engine._tg_notifier.sent) == 1
+
+
+def test_daily_report_does_not_fire_before_the_close(portfolio, config, monkeypatch):
+    engine = _report_engine(portfolio, config)
+    _freeze_main_clock(monkeypatch, datetime(2026, 8, 26, 8, 0, tzinfo=KST))  # pre-open "closed" window
+
+    engine._maybe_send_daily_report()
+    assert engine._tg_notifier.sent == []
+
+
+def test_daily_report_skips_a_non_business_day(portfolio, config, monkeypatch):
+    engine = _report_engine(portfolio, config)
+    engine.rt.calendar = _FakeCalendarForReport(business_day=False)
+    _freeze_main_clock(monkeypatch, datetime(2026, 8, 22, 16, 0, tzinfo=KST))  # a Saturday
+
+    engine._maybe_send_daily_report()
+    assert engine._tg_notifier.sent == []
+
+
+def test_friday_also_sends_the_weekly_report(portfolio, config, monkeypatch):
+    engine = _report_engine(portfolio, config)
+    _freeze_main_clock(monkeypatch, datetime(2026, 8, 28, 15, 31, tzinfo=KST))  # a Friday
+
+    engine._maybe_send_daily_report()
+    assert len(engine._tg_notifier.sent) == 2
+    assert "Evening report" in engine._tg_notifier.sent[0]
+    assert "Weekly report" in engine._tg_notifier.sent[1]
+
+
+def test_a_non_friday_does_not_send_the_weekly_report(portfolio, config, monkeypatch):
+    engine = _report_engine(portfolio, config)
+    _freeze_main_clock(monkeypatch, datetime(2026, 8, 26, 15, 31, tzinfo=KST))  # Wednesday
+
+    engine._maybe_send_daily_report()
+    assert len(engine._tg_notifier.sent) == 1

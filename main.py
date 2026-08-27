@@ -31,7 +31,7 @@ from broker import BrokerAuthError, BrokerBase, BrokerError, DryRunBroker, build
 from data import MarketData, months_to_start, timeframe_delta, warmup_start
 from indicators import atr as atr_indicator
 from indicators import last_valid
-from market.calendar import KST, KrxCalendar
+from market.calendar import KST, REGULAR_CLOSE, KrxCalendar
 from market.rules import KOSDAQ, KOSPI, KrxRules
 from market.session_rules import SessionRules
 from portfolio import LONG, SHORT, Portfolio, Position
@@ -431,6 +431,8 @@ class TradingEngine:
         # Investor flow scanner (외국인·기관 순매수)
         self._flow_scanner = InvestorFlowScanner(rt.config)
         self._flow_scan_date: "date | None" = None
+        # 장마감 자동 복기 리포트 + 금요일 주간 리포트 (2026-08-27, 사용자 요청).
+        self._daily_report_date: "date | None" = None
         # S&P 500 선물 방향 모니터
         self._us_monitor = USMarketMonitor(rt.config)
         # DART 공시 모니터
@@ -625,6 +627,45 @@ class TradingEngine:
             return
         logger.info("investor_flow: scanning %d stocks", len(scalpers))
         self._flow_scanner.scan(scalpers)
+
+    def _maybe_send_daily_report(self) -> None:
+        """Send the evening 복기 once per business day, plus a weekly rollup on Fridays.
+
+        User-requested (2026-08-27): 끝나면 복기하고 항상 뭐가 잘못됐는지
+        보여주고 매주 금요일에 일주일치를 보여줘. Fires the first time the
+        loop notices the market is closed for a day it hasn't reported yet,
+        at or after the regular close -- so it does not fire during the
+        pre-open "closed" window, and fires exactly once even though the
+        loop keeps polling this branch every tick until the next open.
+        """
+        today = datetime.now(KST).date()
+        if self._daily_report_date == today:
+            return
+        if not self.rt.calendar.is_business_day(today):
+            return
+        if datetime.now(KST).time() < REGULAR_CLOSE:
+            return
+        self._daily_report_date = today
+
+        from report import build_evening_report, build_weekly_report
+
+        try:
+            text = build_evening_report(
+                self.rt.config, self.rt.portfolio, self.rt.risk, self.rt.decision.label, day=today,
+            )
+            self._tg_notifier.send(text)
+        except Exception:
+            logger.exception("daily 복기 report failed")
+
+        if today.weekday() == 4:  # Friday
+            try:
+                text = build_weekly_report(
+                    self.rt.config, self.rt.portfolio, self.rt.risk, self.rt.decision.label,
+                    week_end=today,
+                )
+                self._tg_notifier.send(text)
+            except Exception:
+                logger.exception("weekly report failed")
 
     def _sync_broker_allowed_codes(self, new_cfgs: dict[str, Any]) -> None:
         """Let the broker's order-safety whitelist see codes added after startup.
@@ -1459,6 +1500,7 @@ class TradingEngine:
                     time.sleep(self.closed_sleep)
                     continue
                 if not self.rt.calendar.in_session():
+                    self._maybe_send_daily_report()
                     # Sleep until the earlier of next KRX open or next NXT start.
                     secs_to_open = self.rt.calendar.seconds_until_open()
                     secs_to_nxt = (

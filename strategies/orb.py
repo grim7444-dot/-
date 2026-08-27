@@ -75,6 +75,11 @@ class ORB(Strategy):
         arm_pct: float = 0.012,
         lock_pct: float = 0.018,
         peak_trail_pct: float = 0.005,
+        #: 고점이 이 이상 오른 "진짜 추세" 구간에서는 트레일을 peak_trail_pct
+        #: 대신 big_win_trail_pct로 넓혀서, 0.3%대 좁은 트레일 때문에 계속
+        #: 오르는 종목을 너무 일찍 털지 않게 한다 (2026-08-27, 사용자 요청).
+        big_win_pct: float = 0.04,
+        big_win_trail_pct: float = 0.01,
         max_cost_share: float = 0.35,
         round_trip_cost_pct: float = 0.0038,
         atr_period: int = 14,
@@ -97,6 +102,8 @@ class ORB(Strategy):
         self.arm_pct = arm_pct
         self.lock_pct = lock_pct
         self.peak_trail_pct = peak_trail_pct
+        self.big_win_pct = big_win_pct
+        self.big_win_trail_pct = big_win_trail_pct
         self.max_cost_share = max_cost_share
         self.round_trip_cost_pct = round_trip_cost_pct
 
@@ -136,9 +143,13 @@ class ORB(Strategy):
                 )
 
             if peak_gain >= self.lock_pct:
+                trail_pct = (
+                    self.big_win_trail_pct if peak_gain >= self.big_win_pct
+                    else self.peak_trail_pct
+                )
                 floor = max(
                     entry * (1 + self.lock_pct),
-                    peak * (1.0 - self.peak_trail_pct),
+                    peak * (1.0 - trail_pct),
                 )
                 if price <= floor:
                     return self._signal(

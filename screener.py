@@ -94,6 +94,10 @@ _SCALPING_CFG_TEMPLATE: dict[str, Any] = {
         "arm_pct": 0.012,
         "lock_pct": 0.02,
         "peak_trail_pct": 0.003,
+        # 고점 +4% 이상인 "진짜 추세"에서는 트레일을 1%로 넓혀서 0.3%짜리
+        # 좁은 트레일에 너무 일찍 털리지 않게 한다 (2026-08-27, 사용자 요청).
+        "big_win_pct": 0.04,
+        "big_win_trail_pct": 0.01,
         "max_cost_share": 0.35,
     },
 }
@@ -125,6 +129,10 @@ _PULLBACK_CFG_TEMPLATE: dict[str, Any] = {
         "arm_pct": 0.012,
         "lock_pct": 0.02,
         "peak_trail_pct": 0.003,
+        # 고점 +4% 이상인 "진짜 추세"에서는 트레일을 1%로 넓혀서 0.3%짜리
+        # 좁은 트레일에 너무 일찍 털리지 않게 한다 (2026-08-27, 사용자 요청).
+        "big_win_pct": 0.04,
+        "big_win_trail_pct": 0.01,
         "max_cost_share": 0.35,
     },
 }

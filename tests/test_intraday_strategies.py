@@ -322,6 +322,62 @@ def test_close_auction_warms_up_in_far_less_than_a_year():
 
 
 # ---------------------------------------------------------------------------
+# OBV: multi-day accumulation confirmation (2026-08-27, user request)
+# ---------------------------------------------------------------------------
+
+
+def _choppy_tail_then_strong_close(down_day_volume: float, up_day_volume: float):
+    """25 warmup days rising, a 10-day choppy stretch, then one strong up day.
+
+    Every condition besides OBV is satisfied regardless of the two volume
+    arguments: the close is near its high, above the 20-day EMA, and on
+    1.5x volume. Only which side of the choppy stretch carries the heavier
+    volume decides whether OBV is net up or net down over that window.
+    """
+    closes = [100.0 + i for i in range(25)]
+    volumes = [1000.0] * 25
+    last = closes[-1]
+    for i in range(10):
+        if i % 2 == 0:
+            last -= 0.5
+            volumes.append(down_day_volume)
+        else:
+            last += 0.7
+            volumes.append(up_day_volume)
+        closes.append(last)
+    final_close = closes[-1] + 5
+    closes.append(final_close)
+    volumes.append(3000.0)
+    highs = [c * 1.02 for c in closes]
+    lows = [c * 0.98 for c in closes]
+    highs[-1] = final_close * 1.001  # finishing on its high
+    return _daily(closes, highs, lows, volumes)
+
+
+def test_close_auction_refuses_a_strong_close_with_obv_net_down():
+    """Heavier volume on the down days: price chopped up, but OBV nets negative."""
+    window = _choppy_tail_then_strong_close(down_day_volume=5000.0, up_day_volume=1000.0)
+    signal = CloseAuction(symbol="TEST").evaluate(window)
+    assert signal.action is Action.HOLD
+    assert "OBV" in signal.reason
+
+
+def test_close_auction_buys_a_strong_close_with_obv_net_up():
+    """Same shape, heavier volume on the up days instead: OBV confirms."""
+    window = _choppy_tail_then_strong_close(down_day_volume=1000.0, up_day_volume=5000.0)
+    signal = CloseAuction(symbol="TEST").evaluate(window)
+    assert signal.action is Action.ENTER_LONG
+    assert "OBV" in signal.reason
+
+
+def test_close_auction_obv_filter_off_ignores_accumulation_entirely():
+    """The exact bars that got refused above must enter once the filter is off."""
+    window = _choppy_tail_then_strong_close(down_day_volume=5000.0, up_day_volume=1000.0)
+    signal = CloseAuction(symbol="TEST", use_obv_filter=False).evaluate(window)
+    assert signal.action is Action.ENTER_LONG
+
+
+# ---------------------------------------------------------------------------
 # The engine honours the clock
 # ---------------------------------------------------------------------------
 

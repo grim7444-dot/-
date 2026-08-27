@@ -7,7 +7,7 @@ planned one the following morning, and both times come from ``SessionRules``
 rather than from anything here -- a daily bar is stamped midnight, so a
 strategy reading daily bars cannot tell what time it is.
 
-Three conditions, all measured on today's own bar as it stands:
+Four conditions. Three are measured on today's own bar as it stands:
 
 * the price sits in the top ``close_strength`` of today's range -- a stock
   closing on its low is the opposite trade;
@@ -15,6 +15,12 @@ Three conditions, all measured on today's own bar as it stands:
   inside an uptrend rather than as a bounce in a decline;
 * today's volume is at least ``volume_mult`` times the recent average, which
   is what separates a strong close from a quiet drift upward.
+
+The fourth looks past today alone: On-Balance Volume (누적 매집, OBV) must be
+higher now than ``obv_lookback`` sessions ago -- net buying pressure has been
+building over the last few days, not just showing up today. A single strong
+close can be one big buyer on one day; a rising multi-day OBV is harder to
+fake (2026-08-27, user request).
 
 **The overnight gap is not covered by any stop.** Kiwoom holds no resting stop
 order, so the hard stop exists only while the bot process is running -- and
@@ -28,7 +34,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from indicators import ema, rolling_mean_volume
+from indicators import ema, on_balance_volume, rolling_mean_volume
 from portfolio import Position
 from strategies.base import Action, Signal, Strategy
 
@@ -46,6 +52,10 @@ class CloseAuction(Strategy):
         #: How near the high of the day the price must be, as a fraction of
         #: the day's range. 0.7 means the top 30%.
         close_strength: float = 0.7,
+        #: OBV must be higher now than this many sessions ago -- multi-day
+        #: accumulation confirmation, on top of today's own strong close.
+        use_obv_filter: bool = True,
+        obv_lookback: int = 10,
         atr_trail_mult: float = 2.0,
         atr_period: int = 14,
         hard_stop_atr_mult: float = 1.0,
@@ -63,12 +73,15 @@ class CloseAuction(Strategy):
         self.volume_period = volume_period
         self.volume_mult = volume_mult
         self.close_strength = close_strength
+        self.use_obv_filter = use_obv_filter
+        self.obv_lookback = obv_lookback
         self.atr_trail_mult = atr_trail_mult
         self.allow_short = allow_short
 
     @property
     def warmup(self) -> int:
-        return max(self.trend_ema, self.volume_period, self.atr_period) + 2
+        obv_bars = self.obv_lookback + 1 if self.use_obv_filter else 0
+        return max(self.trend_ema, self.volume_period, self.atr_period, obv_bars) + 2
 
     def evaluate(self, window: pd.DataFrame, position: Position | None = None) -> Signal:
         if len(window) < self.warmup:
@@ -118,17 +131,32 @@ class CloseAuction(Strategy):
                 window, f"volume {vol_ratio:.2f}x < {self.volume_mult}x"
             )
 
+        obv_now = None
+        if self.use_obv_filter:
+            obv = on_balance_volume(window)
+            if len(obv) > self.obv_lookback:
+                obv_now = float(obv.iloc[-1])
+                obv_then = float(obv.iloc[-1 - self.obv_lookback])
+                if obv_now <= obv_then:
+                    return self._hold(
+                        window,
+                        f"OBV {self.obv_lookback}일 전 대비 정체/하락 -- "
+                        f"다일 매집 신호 없음",
+                    )
+
+        obv_note = f", OBV {self.obv_lookback}일 상승" if obv_now is not None else ""
         return self._signal(
             window,
             Action.ENTER_LONG,
             f"strong close: {strength:.0%} of range, above the "
-            f"{self.trend_ema}-day EMA, {vol_ratio:.2f}x volume",
+            f"{self.trend_ema}-day EMA, {vol_ratio:.2f}x volume{obv_note}",
             atr_value,
             trail_stop=price - self.atr_trail_mult * atr_value,
             meta={
                 "close_strength": strength,
                 "trend_ema": float(trend),
                 "volume_ratio": vol_ratio,
+                "obv": obv_now,
             },
         )
 

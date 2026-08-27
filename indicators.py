@@ -101,6 +101,18 @@ def rolling_mean_volume(df: pd.DataFrame, period: int) -> pd.Series:
     return df["volume"].rolling(window=period, min_periods=period).mean()
 
 
+def on_balance_volume(df: pd.DataFrame) -> pd.Series:
+    """Cumulative volume: added on an up close, subtracted on a down close.
+
+    A rising OBV over several bars reads as net accumulation even on days
+    that individually look quiet -- the multi-bar counterpart to a single
+    day's close-strength/volume check.
+    """
+    validate_ohlcv(df)
+    direction = df["close"].diff().apply(lambda x: 1.0 if x > 0 else (-1.0 if x < 0 else 0.0))
+    return (direction * df["volume"]).cumsum()
+
+
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
     """Relative Strength Index, Wilder smoothing (0-100).
 

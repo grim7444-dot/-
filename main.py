@@ -351,6 +351,45 @@ def build_runtime(
     )
 
 
+def _late_exit_reason(
+    position: Position,
+    price: float,
+    now: datetime,
+    rules: SessionRules,
+    risk_cfg: Mapping[str, Any],
+) -> str | None:
+    """Reason to take profit right now, or None to keep holding.
+
+    In the last ``risk.late_exit_minutes`` before a same-day force exit, a
+    position that has pulled back ``risk.late_exit_stall_pct`` off its peak
+    with no fresh high -- but still shows at least
+    ``risk.late_exit_min_profit_pct`` -- is worth taking now rather than
+    risking the forced exit: it may not clear the normal lock_pct tier before
+    then, and giving up the slot costs another signal a chance to use it.
+    Close-auction (overnight) holds are exempt -- holding past the close is
+    the plan for those, not a stall.
+    """
+    if position is None or rules.hold_overnight or rules.force_exit_at is None:
+        return None
+    force_exit_dt = datetime.combine(now.date(), rules.force_exit_at, tzinfo=KST)
+    minutes_left = (force_exit_dt - now).total_seconds() / 60.0
+    late_minutes = float(risk_cfg.get("late_exit_minutes", 20))
+    if not (0 <= minutes_left <= late_minutes):
+        return None
+    entry = position.entry_price
+    peak = position.highest_price or price
+    gain = (price - entry) / entry if entry else 0.0
+    pullback_from_peak = (peak - price) / peak if peak else 0.0
+    stall_pct = float(risk_cfg.get("late_exit_stall_pct", 0.015))
+    min_profit_pct = float(risk_cfg.get("late_exit_min_profit_pct", 0.005))
+    if pullback_from_peak >= stall_pct and gain >= min_profit_pct:
+        return (
+            f"장마감 {minutes_left:.0f}분 전, 고점 대비 -{pullback_from_peak:.2%} "
+            f"정체 -- 조기 익절 ({gain:+.2%})"
+        )
+    return None
+
+
 # --------------------------------------------------------------------------
 # Trading engine
 # --------------------------------------------------------------------------
@@ -1067,6 +1106,23 @@ class TradingEngine:
                 logger.warning("%s: TIME EXIT - %s", label, why)
                 self._submit_exit(
                     code, position, price, why, open_orders, asset_cfg,
+                    session_ok, session_reason,
+                )
+                return
+
+        # Late-session opportunistic take-profit. Normally a position only
+        # exits once it clears lock_pct (2%) or hits its stop -- anything
+        # stalled in between just rides along to the force exit. That is a
+        # bad trade-off this close to it: a real gain can slip back to
+        # breakeven by the time the forced exit fires, and the slot stays
+        # tied up when another ORB/pullback signal could use it. Close-auction
+        # (overnight) holds are exempt -- holding past the close is the plan.
+        if position is not None:
+            reason = _late_exit_reason(position, price, now, rules, rt.config.get("risk") or {})
+            if reason is not None:
+                logger.warning("%s: LATE-SESSION TAKE-PROFIT - %s", label, reason)
+                self._submit_exit(
+                    code, position, price, reason, open_orders, asset_cfg,
                     session_ok, session_reason,
                 )
                 return

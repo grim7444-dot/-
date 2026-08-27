@@ -17,7 +17,7 @@ defects lined up to make that possible, and each gets a test here:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 import pytest
 
@@ -1089,3 +1089,108 @@ def test_refresh_dynamic_universe_prefers_a_working_pykrx_scan_over_realtime(mon
 
     assert "005930" in engine.rt.config["universe"]
     assert not calls  # _realtime_candidates() must not even be consulted
+
+
+# ---------------------------------------------------------------------------
+# 14. late-session opportunistic take-profit (2026-08-27, user request):
+#    a stalled position in the last 20 minutes before its force exit takes a
+#    smaller profit now rather than riding to the forced exit
+# ---------------------------------------------------------------------------
+
+
+FORCE_EXIT_1510 = time(15, 10)
+
+
+def _late_exit_position(entry_price: float, highest_price: float) -> "Position":
+    from portfolio import LONG, Position
+
+    return Position(
+        symbol="005930", side=LONG, qty=1,
+        entry_price=entry_price, stop_price=entry_price * 0.98, stop_distance=entry_price * 0.02,
+        highest_price=highest_price,
+    )
+
+
+def _late_exit_rules(force_exit_at=FORCE_EXIT_1510, hold_overnight=False):
+    from market.session_rules import SessionRules
+
+    return SessionRules(force_exit_at=force_exit_at, hold_overnight=hold_overnight)
+
+
+def test_late_exit_fires_when_stalled_and_still_profitable_near_the_close():
+    from main import _late_exit_reason
+
+    # Peaked at +2.5% (armed but never reached the 2% lock's usual bar in
+    # this scenario -- entry 10,000, peak 10,250), now pulled back to 10,080
+    # (-1.66% off peak) but still +0.8% over entry.
+    position = _late_exit_position(entry_price=10_000.0, highest_price=10_250.0)
+    now = datetime(2026, 8, 27, 14, 55, tzinfo=KST)  # 15 minutes before 15:10
+    reason = _late_exit_reason(position, 10_080.0, now, _late_exit_rules(), {})
+    assert reason is not None
+    assert "조기 익절" in reason
+
+
+def test_late_exit_does_nothing_outside_the_20_minute_window():
+    from main import _late_exit_reason
+
+    position = _late_exit_position(entry_price=10_000.0, highest_price=10_250.0)
+    now = datetime(2026, 8, 27, 14, 49, tzinfo=KST)  # 21 minutes before 15:10
+    assert _late_exit_reason(position, 10_080.0, now, _late_exit_rules(), {}) is None
+
+
+def test_late_exit_boundary_is_inclusive_at_exactly_20_minutes():
+    from main import _late_exit_reason
+
+    position = _late_exit_position(entry_price=10_000.0, highest_price=10_250.0)
+    now = datetime(2026, 8, 27, 14, 50, tzinfo=KST)  # exactly 20 minutes before 15:10
+    assert _late_exit_reason(position, 10_080.0, now, _late_exit_rules(), {}) is not None
+
+
+def test_late_exit_does_nothing_once_the_stall_pullback_is_too_small():
+    from main import _late_exit_reason
+
+    # Only 1% off peak (10,147.5), short of the 1.5% stall threshold.
+    position = _late_exit_position(entry_price=10_000.0, highest_price=10_250.0)
+    now = datetime(2026, 8, 27, 14, 55, tzinfo=KST)
+    assert _late_exit_reason(position, 10_147.5, now, _late_exit_rules(), {}) is None
+
+
+def test_late_exit_does_nothing_when_profit_is_too_thin():
+    from main import _late_exit_reason
+
+    # Stalled 1.6% off peak, but current gain is only +0.3%, below the 0.5% floor.
+    position = _late_exit_position(entry_price=10_000.0, highest_price=10_250.0)
+    now = datetime(2026, 8, 27, 14, 55, tzinfo=KST)
+    assert _late_exit_reason(position, 10_030.0, now, _late_exit_rules(), {}) is None
+
+
+def test_late_exit_exempts_close_auction_overnight_holds():
+    """These are meant to be held past the close -- a 'stall' here is just the plan."""
+    from main import _late_exit_reason
+
+    position = _late_exit_position(entry_price=10_000.0, highest_price=10_250.0)
+    now = datetime(2026, 8, 27, 14, 55, tzinfo=KST)
+    rules = _late_exit_rules(force_exit_at=time(9, 5), hold_overnight=True)
+    assert _late_exit_reason(position, 10_080.0, now, rules, {}) is None
+
+
+def test_late_exit_does_nothing_without_a_force_exit_configured():
+    from main import _late_exit_reason
+
+    position = _late_exit_position(entry_price=10_000.0, highest_price=10_250.0)
+    now = datetime(2026, 8, 27, 14, 55, tzinfo=KST)
+    assert _late_exit_reason(position, 10_080.0, now, _late_exit_rules(force_exit_at=None), {}) is None
+
+
+def test_late_exit_thresholds_are_configurable_via_risk_cfg():
+    from main import _late_exit_reason
+
+    position = _late_exit_position(entry_price=10_000.0, highest_price=10_250.0)
+    now = datetime(2026, 8, 27, 14, 55, tzinfo=KST)
+    # Default thresholds would fire (see the first test above); a stricter
+    # config (5% stall required) must suppress it.
+    strict_cfg = {"late_exit_stall_pct": 0.05}
+    assert _late_exit_reason(position, 10_080.0, now, _late_exit_rules(), strict_cfg) is None
+    # A narrower window (5 minutes) must suppress it at the 15-minutes-out mark.
+    narrow_window_cfg = {"late_exit_minutes": 5}
+    assert _late_exit_reason(position, 10_080.0, now, _late_exit_rules(), narrow_window_cfg) is None

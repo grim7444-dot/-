@@ -276,18 +276,30 @@ def build_runtime(
                     universe[ticker] = asset_cfg
                 config = {**config, "universe": universe}
                 print(f"  Screener added {len(found)} stock(s): {', '.join(t for t, _ in found)}")
-            elif daily_screener.last_scan_failed:
+            else:
+                # Empty and "unreachable" are treated the same: whether KRX/pykrx
+                # is actually down, or (observed live 2026-08-27) it's just too
+                # early for today's trading-value snapshot to be populated yet,
+                # the bot should not start the session with nothing to trade.
                 fallback = _fallback_static_stocks(config)
                 if fallback:
-                    universe = {**fallback, **(config.get("universe") or {})}
+                    # fallback must win the merge -- it holds the re-enabled,
+                    # widened-window version of each code; the base universe
+                    # dict still has them disabled under the same keys.
+                    universe = {**(config.get("universe") or {}), **fallback}
                     config = {**config, "universe": universe}
+                    reason = (
+                        "KRX/pykrx unreachable" if daily_screener.last_scan_failed
+                        else "0 candidates (today's trading-value data likely not "
+                        "posted yet)"
+                    )
                     logger.error(
-                        "screener: KRX/pykrx unreachable - falling back to %d "
-                        "static stock(s) so the bot has something to trade: %s",
-                        len(fallback), ", ".join(fallback),
+                        "screener: %s - falling back to %d static stock(s) so "
+                        "the bot has something to trade: %s",
+                        reason, len(fallback), ", ".join(fallback),
                     )
                     print(
-                        f"  WARNING: screener failed (KRX/pykrx unreachable). "
+                        f"  WARNING: screener found nothing ({reason}). "
                         f"Falling back to {len(fallback)} static stock(s): "
                         f"{', '.join(fallback)}"
                     )
@@ -570,26 +582,6 @@ class TradingEngine:
             logger.warning("universe refresh: screener failed: %s", exc)
             return
 
-        if not found and daily_screener.last_scan_failed and not rt.strategies:
-            fallback = _fallback_static_stocks(rt.config)
-            if fallback:
-                universe = {**fallback, **(rt.config.get("universe") or {})}
-                rt.config = {**rt.config, "universe": universe}
-                for code, asset_cfg in fallback.items():
-                    rt.strategies[code] = build_strategy(
-                        code, asset_cfg, rt.config.get("risk") or {}
-                    )
-                    self._session_rules[code] = SessionRules.from_config(asset_cfg)
-                logger.error(
-                    "universe refresh: screener still down, falling back to "
-                    "%d static stock(s): %s", len(fallback), ", ".join(fallback),
-                )
-                self._tg_notifier.send(
-                    "스크리너 계속 실패 (KRX/pykrx 접속 불가) -- 대체 종목 투입: "
-                    + ", ".join(f"{c}({rt.name_of(c)})" for c in fallback)
-                )
-            return
-
         current_universe = dict(rt.config.get("universe") or {})
         open_positions = set(rt.portfolio.positions())
 
@@ -599,24 +591,53 @@ class TradingEngine:
             if (v or {}).get("_screener") and k not in open_positions
         }
 
-        # A zero-candidate scan is not itself proof that nothing today is worth
-        # trading -- the very first refresh runs as soon as the loop leaves
-        # NXT pre-market, which lands inside the 08:30-09:00 opening call
-        # auction. No shares have actually traded yet at that point, so
-        # today's trading-value filter (which is what min_trading_value_m
-        # gates on) rejects every ticker and found comes back empty --
-        # legitimately-nothing and too-early-to-tell look identical from here.
-        # Wiping a working dynamic universe on that ambiguity would leave the
-        # bot with nothing to trade for up to a full refresh_interval right as
-        # continuous trading opens, so an empty scan is treated the same as a
-        # failed one: keep what is already there and try again next cycle.
-        if not found and dynamic_current:
-            logger.warning(
-                "universe refresh: screener found 0 candidates -- keeping "
-                "the current %d dynamic stock(s) rather than clearing the "
-                "universe (likely too early for today's trading-value data)",
-                len(dynamic_current),
+        if not found:
+            # A zero-candidate scan is not itself proof that nothing today is
+            # worth trading. It happens two ways that look identical from
+            # here: KRX/pykrx is actually unreachable (last_scan_failed), or
+            # -- observed live on 2026-08-27 -- pykrx's "today" trading-value
+            # snapshot is only finalized after the close, so any scan before
+            # then legitimately sees KRW 0 traded for every ticker and every
+            # one fails min_trading_value_m. Either way the right response is
+            # the same: don't destroy a working universe over it, and if
+            # there is nothing to protect, trade the static fallback stocks
+            # instead of sitting idle until data eventually shows up.
+            if dynamic_current:
+                logger.warning(
+                    "universe refresh: screener found 0 candidates -- keeping "
+                    "the current %d dynamic stock(s) rather than clearing the "
+                    "universe (screener failure or today's trading-value data "
+                    "not available yet)", len(dynamic_current),
+                )
+                return
+            already_fallback = any(
+                (v or {}).get("_fallback") for v in current_universe.values()
             )
+            if already_fallback:
+                return
+            fallback = _fallback_static_stocks(rt.config)
+            if fallback:
+                # fallback must win the merge -- see the matching comment in
+                # build_runtime()'s startup path for why.
+                universe = {**current_universe, **fallback}
+                rt.config = {**rt.config, "universe": universe}
+                for code, asset_cfg in fallback.items():
+                    rt.strategies[code] = build_strategy(
+                        code, asset_cfg, rt.config.get("risk") or {}
+                    )
+                    self._session_rules[code] = SessionRules.from_config(asset_cfg)
+                reason = (
+                    "KRX/pykrx 접속 불가" if daily_screener.last_scan_failed
+                    else "0개 통과 (오늘 거래대금 데이터 아직 미반영 가능)"
+                )
+                logger.error(
+                    "universe refresh: screener 0건 (%s) -- 대체 종목 %d개 투입: %s",
+                    reason, len(fallback), ", ".join(fallback),
+                )
+                self._tg_notifier.send(
+                    f"스크리너 0건 ({reason}) -- 대체 종목 투입: "
+                    + ", ".join(f"{c}({rt.name_of(c)})" for c in fallback)
+                )
             return
 
         new_tickers: set[str] = {t for t, _ in found}

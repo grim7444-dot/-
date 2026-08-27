@@ -101,9 +101,13 @@ _SCALPING_CFG_TEMPLATE: dict[str, Any] = {
         "volume_mult": 1.2,
         "trend_ema": 21,
         "min_bar_strength": 0.35,
-        "stop_pct": 0.017,
+        # stop_pct 1.7%->1.3%, lock_pct 2%->2.5% (2026-08-27, 사용자 요청):
+        # 정석 손익비(1:2)에 더 가깝게 -- 실거래 로그 기준 평균 손익비가 그에
+        # 못 미쳤다는 지적에서 나온 변경. config.yaml의 pullback_bounce
+        # 폴백 블록들도 동일하게 맞췄다.
+        "stop_pct": 0.013,
         "arm_pct": 0.012,
-        "lock_pct": 0.02,
+        "lock_pct": 0.025,
         "peak_trail_pct": 0.003,
         # 고점 +4% 이상인 "진짜 추세"에서는 트레일을 1%로 넓혀서 0.3%짜리
         # 좁은 트레일에 너무 일찍 털리지 않게 한다 (2026-08-27, 사용자 요청).
@@ -136,9 +140,13 @@ _PULLBACK_CFG_TEMPLATE: dict[str, Any] = {
         "pullback_bars": 2,
         "pullback_min_pct": 0.005,
         "min_bar_strength": 0.25,
-        "stop_pct": 0.017,
+        # stop_pct 1.7%->1.3%, lock_pct 2%->2.5% (2026-08-27, 사용자 요청):
+        # 정석 손익비(1:2)에 더 가깝게 -- 실거래 로그 기준 평균 손익비가 그에
+        # 못 미쳤다는 지적에서 나온 변경. config.yaml의 pullback_bounce
+        # 폴백 블록들도 동일하게 맞췄다.
+        "stop_pct": 0.013,
         "arm_pct": 0.012,
-        "lock_pct": 0.02,
+        "lock_pct": 0.025,
         "peak_trail_pct": 0.003,
         # 고점 +4% 이상인 "진짜 추세"에서는 트레일을 1%로 넓혀서 0.3%짜리
         # 좁은 트레일에 너무 일찍 털리지 않게 한다 (2026-08-27, 사용자 요청).

@@ -124,9 +124,14 @@ universe:
       pullback_bars: 2
       pullback_min_pct: 0.005
       min_bar_strength: 0.25
-      stop_pct: 0.017
+      # stop_pct 1.7%->1.3%, lock_pct 2%->2.5% (2026-08-27, 사용자 요청):
+      # 손익비를 정석(1:2)에 더 가깝게 좁힌 손절/넓힌 목표로 조정 -- 실거래
+      # 로그 기준 평균 손익비가 그에 못 미쳤다는 지적에서 나온 변경. 승률은
+      # 더 자주 손절 걸려 낮아질 수 있지만, 구조적으로 더 나은 R:R을 노림
+      # (아래 3개 블록 + screener.py 템플릿도 동일하게 변경).
+      stop_pct: 0.013
       arm_pct: 0.012
-      lock_pct: 0.02
+      lock_pct: 0.025
       peak_trail_pct: 0.003
       # 고점 +4% 이상인 "진짜 추세"에서는 트레일을 1%로 넓혀서 0.3%짜리
       # 좁은 트레일에 너무 일찍 털리지 않게 한다 (2026-08-27, 사용자 요청).
@@ -165,9 +170,9 @@ universe:
       pullback_bars: 2
       pullback_min_pct: 0.005
       min_bar_strength: 0.25
-      stop_pct: 0.017
+      stop_pct: 0.013
       arm_pct: 0.012
-      lock_pct: 0.02
+      lock_pct: 0.025
       peak_trail_pct: 0.003
       # 고점 +4% 이상인 "진짜 추세"에서는 트레일을 1%로 넓혀서 0.3%짜리
       # 좁은 트레일에 너무 일찍 털리지 않게 한다 (2026-08-27, 사용자 요청).
@@ -190,9 +195,9 @@ universe:
       pullback_bars: 2
       pullback_min_pct: 0.005
       min_bar_strength: 0.25
-      stop_pct: 0.017
+      stop_pct: 0.013
       arm_pct: 0.012
-      lock_pct: 0.02
+      lock_pct: 0.025
       peak_trail_pct: 0.003
       # 고점 +4% 이상인 "진짜 추세"에서는 트레일을 1%로 넓혀서 0.3%짜리
       # 좁은 트레일에 너무 일찍 털리지 않게 한다 (2026-08-27, 사용자 요청).
@@ -215,9 +220,9 @@ universe:
       pullback_bars: 2
       pullback_min_pct: 0.005
       min_bar_strength: 0.25
-      stop_pct: 0.017
+      stop_pct: 0.013
       arm_pct: 0.012
-      lock_pct: 0.02
+      lock_pct: 0.025
       peak_trail_pct: 0.003
       # 고점 +4% 이상인 "진짜 추세"에서는 트레일을 1%로 넓혀서 0.3%짜리
       # 좁은 트레일에 너무 일찍 털리지 않게 한다 (2026-08-27, 사용자 요청).

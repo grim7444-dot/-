@@ -30,10 +30,12 @@ from indicators import (
     macd,
     nearest_resistance,
     rolling_max,
+    rolling_min,
     rsi,
 )
 from portfolio import Position
 from strategies.base import Action, Signal, Strategy
+from strategies.scalping import session_vwap
 
 
 class PullbackBounce(Strategy):
@@ -90,6 +92,17 @@ class PullbackBounce(Strategy):
         use_bb_filter: bool = True,
         bb_period: int = 20,
         bb_mult: float = 2.0,
+        #: 당일 VWAP(거래량가중평균가) -- 세력의 당일 평균 매수가로 통하는
+        #: 지지선. 반등가가 이 아래면 진입 보류 (2026-08-27, 사용자 요청).
+        use_vwap_filter: bool = True,
+        #: 피보나치 되돌림 -- 눌림 폭이 직전 스윙(swing_low~swing_high) 대비
+        #: [fib_min, fib_max] 구간 안에 들어야 진입. 너무 얕은 눌림(추세
+        #: 강도 부족 우려)과 너무 깊은 눌림(추세 훼손 우려) 둘 다 거른다
+        #: (2026-08-27, 사용자 요청). pullback_min_pct와 달리 스윙 자체의
+        #: 크기를 기준으로 삼는다는 점이 다르다.
+        use_fib_filter: bool = True,
+        fib_min: float = 0.382,
+        fib_max: float = 0.5,
         atr_period: int = 14,
         hard_stop_atr_mult: float = 1.0,
         **params,
@@ -125,6 +138,10 @@ class PullbackBounce(Strategy):
         self.use_bb_filter = use_bb_filter
         self.bb_period = bb_period
         self.bb_mult = bb_mult
+        self.use_vwap_filter = use_vwap_filter
+        self.use_fib_filter = use_fib_filter
+        self.fib_min = fib_min
+        self.fib_max = fib_max
 
     @property
     def warmup(self) -> int:
@@ -226,6 +243,24 @@ class PullbackBounce(Strategy):
         if pullback_depth < self.pullback_min_pct:
             return self._hold(window, f"눌림목 아직 (조정폭 {pullback_depth:.2%})")
 
+        # 피보나치 되돌림: pullback_depth(스윙 고점 대비 %)와 달리, 눌림 폭을
+        # 직전 스윙 자체의 크기(swing_low~swing_high) 대비 비율로 잰다. 너무
+        # 얕으면(fib_min 미만) 추세가 아직 힘이 남아 진짜 눌림이 아닐 수 있고,
+        # 너무 깊으면(fib_max 초과) 추세 자체가 훼손됐을 가능성이 크다.
+        retracement_pct = None
+        if self.use_fib_filter:
+            swing_low = rolling_min(window["low"], self.swing_lookback).shift(1).iloc[-1]
+            if pd.notna(swing_low):
+                swing_range = swing_high - float(swing_low)
+                if swing_range > 0:
+                    retracement_pct = (swing_high - pullback_low) / swing_range
+                    if not (self.fib_min <= retracement_pct <= self.fib_max):
+                        return self._hold(
+                            window,
+                            f"피보나치 되돌림 {retracement_pct:.1%} 범위 밖 "
+                            f"(기준 {self.fib_min:.0%}~{self.fib_max:.0%})",
+                        )
+
         prev_high = float(window["high"].iloc[-2])
         if price <= prev_high:
             return self._hold(window, f"반등 미확인 (종가={price:,.0f} <= 전봉고가 {prev_high:,.0f})")
@@ -237,6 +272,19 @@ class PullbackBounce(Strategy):
                     window,
                     f"반등봉 약함: 범위의 {strength:.0%} (필요 {self.min_bar_strength:.0%})",
                 )
+
+        # VWAP: 당일 거래량가중평균가 -- 세력의 당일 평균 매수가로 통하는
+        # 지지선. 반등가가 이 아래면 "평균 매수자보다도 낮은 가격"이라 아직
+        # 진짜 지지를 못 받은 것으로 본다.
+        vwap_now = None
+        if self.use_vwap_filter:
+            vwap_series = session_vwap(window)
+            if pd.notna(vwap_series.iloc[-1]):
+                vwap_now = float(vwap_series.iloc[-1])
+                if price < vwap_now:
+                    return self._hold(
+                        window, f"VWAP {vwap_now:,.0f} 아래 -- 세력 평균단가 미회복",
+                    )
 
         # RSI: don't chase a bounce that already spent most of its room.
         rsi_now = None
@@ -294,6 +342,10 @@ class PullbackBounce(Strategy):
         atr_value = self._atr(window)
         effective_atr = price * self.stop_pct
         extra = []
+        if vwap_now is not None:
+            extra.append(f"VWAP {vwap_now:,.0f}")
+        if retracement_pct is not None:
+            extra.append(f"피보 {retracement_pct:.1%}")
         if rsi_now is not None:
             extra.append(f"RSI {rsi_now:.0f}")
         if macd_hist is not None:
@@ -313,6 +365,8 @@ class PullbackBounce(Strategy):
                 "swing_high": swing_high,
                 "pullback_low": pullback_low,
                 "pullback_depth": pullback_depth,
+                "retracement_pct": retracement_pct,
+                "vwap": vwap_now,
             },
         )
 

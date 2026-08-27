@@ -17,6 +17,7 @@ defects lined up to make that possible, and each gets a test here:
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 
 import pytest
@@ -1496,3 +1497,37 @@ def test_daily_lock_threshold_is_configurable():
 
     # +2% would lock under the default 2% target, but not under a 5% one.
     assert _daily_profit_lock_reason(459_000.0, 450_000.0, 0.05) is None
+
+
+# ---------------------------------------------------------------------------
+# 19. orderbook confirmation flipped to ask-side dominance (2026-08-27, user
+#    request): 매도잔량이 매수잔량보다 훨씬 많아야 상승 신호로 본다
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _FakeQtyOrderBook:
+    total_bid_qty: float = 0.0
+    total_ask_qty: float = 0.0
+
+
+def test_ask_bid_ratio_is_high_when_asks_dominate():
+    from main import _ask_bid_ratio
+
+    book = _FakeQtyOrderBook(total_bid_qty=1_000.0, total_ask_qty=3_000.0)
+    assert _ask_bid_ratio(book) == pytest.approx(3.0)
+
+
+def test_ask_bid_ratio_is_low_when_bids_dominate():
+    """A thick buy wall must NOT read as bullish under the new convention."""
+    from main import _ask_bid_ratio
+
+    book = _FakeQtyOrderBook(total_bid_qty=3_000.0, total_ask_qty=1_000.0)
+    assert _ask_bid_ratio(book) == pytest.approx(1 / 3)
+
+
+def test_ask_bid_ratio_handles_zero_bid_quantity():
+    from main import _ask_bid_ratio
+
+    assert _ask_bid_ratio(_FakeQtyOrderBook(total_bid_qty=0.0, total_ask_qty=500.0)) == float("inf")
+    assert _ask_bid_ratio(_FakeQtyOrderBook(total_bid_qty=0.0, total_ask_qty=0.0)) == 1.0

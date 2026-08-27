@@ -684,7 +684,7 @@ daily_trend:
 # ka10004(주식호가요청)로 진입 직전 매수/매도 10차 잔량 합계를 비교한다.
 # require_confirm: false 이면 로그만 남기고 진입은 막지 않는다(참고용).
 # 며칠 지켜보고 잔량비가 실제로 쓸만한 신호로 보이면 true로 올려서
-# min_imbalance 미만일 때 진입을 실제로 차단하게 한다.
+# min_ask_bid_ratio 미만일 때 진입을 실제로 차단하게 한다.
 # ---------------------------------------------------------------------------
 order_execution:
   # 수수료/슬리피지 방지 주문 최적화 (2026-08-27, 사용자 요청): 시장가 대신
@@ -700,7 +700,11 @@ order_execution:
 orderbook:
   enabled: true
   require_confirm: false
-  min_imbalance: 1.0   # 매수잔량 >= 매도잔량일 때만 통과 (require_confirm: true 시)
+  # 매수잔량 우위 -> 매도잔량 우위 판단으로 전환 (2026-08-27, 사용자 요청):
+  # 매수벽이 두꺼운 게 아니라, 매도잔량이 매수잔량보다 이 배수 이상 많아야
+  # (매수세가 매도벽을 실제로 먹어치우는 중이라는 뜻) 통과시킨다 -- 두꺼운
+  # 매수벽은 허매수 받치기 후 물량 털기일 수 있다는 우려 반영.
+  min_ask_bid_ratio: 2.0   # require_confirm: true 시 매도잔량/매수잔량 >= 2.0
 
 execution_strength:
   enabled: true

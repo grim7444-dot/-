@@ -555,6 +555,17 @@ def _marketable_limit_price(
     return float(rules.round_to_tick(base - offset, market, "down"))
 
 
+def _ask_bid_ratio(orderbook: Any) -> float:
+    """매도잔량 / 매수잔량. 2026-08-27(사용자 요청)부터 이 값이 높을수록
+    (매도잔량이 매수잔량을 크게 웃돌수록) 상승 신호로 판단한다 -- 두꺼운
+    매수벽은 허매수 받치기 후 물량 털기일 수 있다는 우려에서, 매수세가
+    매도벽을 실제로 먹어치우고 있다는 신호(매도잔량 우위)를 더 신뢰하기로
+    했다. total_bid_qty가 0이면 나눗셈 예외 대신 매도잔량 유무로 판단."""
+    if orderbook.total_bid_qty > 0:
+        return orderbook.total_ask_qty / orderbook.total_bid_qty
+    return float("inf") if orderbook.total_ask_qty > 0 else 1.0
+
+
 def _daily_profit_lock_reason(
     equity: float,
     day_start_equity: float,
@@ -655,7 +666,13 @@ class TradingEngine:
         ob_cfg = rt.config.get("orderbook") or {}
         self._orderbook_enabled: bool = bool(ob_cfg.get("enabled", True))
         self._orderbook_require_confirm: bool = bool(ob_cfg.get("require_confirm", False))
-        self._orderbook_min_imbalance: float = float(ob_cfg.get("min_imbalance", 1.0))
+        # min_imbalance(매수잔량 우위=상승) -> min_ask_bid_ratio(매도잔량
+        # 우위=상승)로 판단 기준 전환 (2026-08-27, 사용자 요청). 매수벽이
+        # 두꺼울수록 상승 탄력이 붙는다는 표준 주문흐름불균형 이론 대신,
+        # 매수벽이 "허매수 받치기 후 물량 털기"일 수 있다는 국내 소형주
+        # 특유의 우려를 반영 -- 매도잔량이 매수잔량보다 이 배수 이상 많아야
+        # (매수세가 매도벽을 실제로 먹어치우고 있다는 뜻) 통과시킨다.
+        self._orderbook_min_ask_bid_ratio: float = float(ob_cfg.get("min_ask_bid_ratio", 2.0))
         # 체결강도 (매수/매도 체결량 비율, 100이 중립) -- 기본은 참고용 로그만.
         # require_confirm을 켜면 기준 미만일 때 진입을 실제로 막는다.
         st_cfg = rt.config.get("execution_strength") or {}
@@ -1597,21 +1614,22 @@ class TradingEngine:
         if side == LONG and (self._orderbook_enabled or self._use_limit_orders):
             orderbook = rt.broker.get_orderbook(code)
             if orderbook is not None and self._orderbook_enabled:
+                ask_bid_ratio = _ask_bid_ratio(orderbook)
                 logger.info(
-                    "%s: 호가 매수/매도 잔량비 %.2f (매수 %.0f / 매도 %.0f, "
+                    "%s: 호가 매도/매수 잔량비 %.2f (매수 %.0f / 매도 %.0f, "
                     "1차 매수 %.0f/%.0f 매도 %.0f/%.0f)",
-                    label, orderbook.imbalance,
+                    label, ask_bid_ratio,
                     orderbook.total_bid_qty, orderbook.total_ask_qty,
                     orderbook.best_bid, orderbook.best_bid_qty,
                     orderbook.best_ask, orderbook.best_ask_qty,
                 )
                 if (
                     self._orderbook_require_confirm
-                    and orderbook.imbalance < self._orderbook_min_imbalance
+                    and ask_bid_ratio < self._orderbook_min_ask_bid_ratio
                 ):
                     logger.warning(
-                        "%s: entry blocked - 호가 매도 우위 (잔량비 %.2f < 기준 %.2f)",
-                        label, orderbook.imbalance, self._orderbook_min_imbalance,
+                        "%s: entry blocked - 매도잔량 우위 부족 (잔량비 %.2f < 기준 %.2f)",
+                        label, ask_bid_ratio, self._orderbook_min_ask_bid_ratio,
                     )
                     return
 

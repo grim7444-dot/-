@@ -27,10 +27,13 @@ from pathlib import Path
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
+import pandas as pd
+
 from broker import BrokerAuthError, BrokerBase, BrokerError, DryRunBroker, build_broker
 from data import MarketData, months_to_start, timeframe_delta, warmup_start
 from indicators import atr as atr_indicator
 from indicators import last_valid
+from indicators import rolling_mean_volume
 from market.calendar import KST, REGULAR_CLOSE, KrxCalendar
 from market.rules import KOSDAQ, KOSPI, KrxRules
 from market.session_rules import SessionRules, parse_clock
@@ -464,6 +467,55 @@ def _dip_recovery_reason(
     recovery_pct = float(risk_cfg.get("dip_recovery_profit_pct", 0.015))
     if gain >= recovery_pct:
         return f"-{dip_pct:.2%} 눌림 후 반등 -- {recovery_pct:.1%} 조기 익절 ({gain:+.2%})"
+    return None
+
+
+def _dead_market_reason(bars: pd.DataFrame, cfg: Mapping[str, Any]) -> str | None:
+    """Reason to suppress a fresh entry this cycle, or None to let it through.
+
+    User-requested (2026-08-27): 거래량과 변동성이 죽은 횡보장에서는 진입
+    신호가 나와도 봇이 매매하지 않도록 제한 -- a strategy's own entry
+    conditions (breakout, pullback bounce) can still line up technically in a
+    stretch where the stock simply is not moving, and trading that costs fees
+    for a coin-flip. Checked only against ENTER signals (see _process_code) --
+    it never touches an exit. Blocks on either of two independent conditions,
+    since either alone can make a signal not worth paying costs for:
+
+    * volatility: the current ATR is below cfg.min_atr_pct of price;
+    * volume: the average of the last cfg.recent_bars bars is below
+      cfg.min_volume_ratio of the cfg.volume_lookback-bar baseline -- a
+      sudden die-off even if the stock was active earlier in the session.
+
+    Fails open (returns None) whenever there isn't enough history to judge
+    yet -- blocking every entry because a strategy just went through its own
+    warm-up would be worse than not having this filter at all.
+    """
+    if not cfg.get("enabled", True):
+        return None
+    atr_period = int(cfg.get("atr_period", 14))
+    volume_lookback = int(cfg.get("volume_lookback", 20))
+    if len(bars) < max(atr_period, volume_lookback) + 1:
+        return None
+    price = float(bars["close"].iloc[-1])
+    if price <= 0:
+        return None
+
+    atr_value = last_valid(atr_indicator(bars, atr_period))
+    if atr_value is not None:
+        atr_pct = atr_value / price
+        min_atr_pct = float(cfg.get("min_atr_pct", 0.004))
+        if atr_pct < min_atr_pct:
+            return f"변동성 죽음 (ATR {atr_pct:.2%} < 기준 {min_atr_pct:.2%})"
+
+    baseline = last_valid(rolling_mean_volume(bars, volume_lookback))
+    if baseline is not None and baseline > 0:
+        recent_bars = int(cfg.get("recent_bars", 5))
+        recent = float(bars["volume"].iloc[-recent_bars:].mean())
+        ratio = recent / baseline
+        min_ratio = float(cfg.get("min_volume_ratio", 0.4))
+        if ratio < min_ratio:
+            return f"거래량 죽음 (최근 {recent_bars}봉 평균이 기준 대비 {ratio:.0%})"
+
     return None
 
 
@@ -1326,6 +1378,15 @@ class TradingEngine:
         allowed, why = rules.entry_allowed(now)
         if not allowed:
             logger.info("%s: entry outside its window - %s", label, why)
+            return
+
+        # 거래량/변동성 죽은 횡보장 필터 (2026-08-27, 사용자 요청): 전략
+        # 조건이 기술적으로는 맞아도 지금 이 순간 시장 자체가 안 움직이면
+        # 수수료만 나가는 매매다. 청산에는 전혀 영향 없음 -- 신규 진입만
+        # 막는다.
+        dead_reason = _dead_market_reason(bars, rt.config.get("volatility_filter") or {})
+        if dead_reason is not None:
+            logger.info("%s: entry suppressed - %s", label, dead_reason)
             return
 
         self._submit_entry(

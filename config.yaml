@@ -690,6 +690,20 @@ execution_strength:
   require_confirm: false
   min_strength: 100.0   # 체결강도 100 = 매수/매도 체결량 균형 (require_confirm: true 시 기준)
 
+volatility_filter:
+  # 거래량과 변동성이 죽은 횡보장에서는 진입 신호가 나와도 매매하지 않는다
+  # (2026-08-27, 사용자 요청) -- 전략 조건이 기술적으로 맞아도 수수료만 나가는
+  # 헛매매 방지. 청산에는 전혀 영향 없음, 신규 진입만 막는다. 위 orderbook/
+  # execution_strength와 달리 처음부터 실제로 막는다(require_confirm 없음) --
+  # 사용자가 명시적으로 "매매하지 않도록 제한"이라고 요청했다. 부담스러우면
+  # enabled: false로 끄면 된다.
+  enabled: true
+  atr_period: 14
+  min_atr_pct: 0.004        # 14봉 ATR이 현재가의 0.4% 미만이면 "변동성 죽음"
+  volume_lookback: 20       # 기준 평균 거래량 계산 구간(봉)
+  recent_bars: 5            # 최근 이 구간의 평균을 기준과 비교
+  min_volume_ratio: 0.4     # 최근 평균이 기준 대비 40% 미만이면 "거래량 죽음"
+
 screener:
   enabled: true
   n_stocks: 12              # max dynamic stocks to add per session -- now the

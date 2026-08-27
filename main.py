@@ -599,6 +599,26 @@ class TradingEngine:
             if (v or {}).get("_screener") and k not in open_positions
         }
 
+        # A zero-candidate scan is not itself proof that nothing today is worth
+        # trading -- the very first refresh runs as soon as the loop leaves
+        # NXT pre-market, which lands inside the 08:30-09:00 opening call
+        # auction. No shares have actually traded yet at that point, so
+        # today's trading-value filter (which is what min_trading_value_m
+        # gates on) rejects every ticker and found comes back empty --
+        # legitimately-nothing and too-early-to-tell look identical from here.
+        # Wiping a working dynamic universe on that ambiguity would leave the
+        # bot with nothing to trade for up to a full refresh_interval right as
+        # continuous trading opens, so an empty scan is treated the same as a
+        # failed one: keep what is already there and try again next cycle.
+        if not found and dynamic_current:
+            logger.warning(
+                "universe refresh: screener found 0 candidates -- keeping "
+                "the current %d dynamic stock(s) rather than clearing the "
+                "universe (likely too early for today's trading-value data)",
+                len(dynamic_current),
+            )
+            return
+
         new_tickers: set[str] = {t for t, _ in found}
 
         # Stocks to drop: were dynamic, not in the new scan, no open position.

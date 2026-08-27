@@ -432,6 +432,41 @@ def _near_limit_decision(
     return should_flag, reason
 
 
+def _dip_recovery_reason(
+    position: Position,
+    price: float,
+    risk_cfg: Mapping[str, Any],
+) -> str | None:
+    """Reason to take a smaller profit now, or None to keep holding.
+
+    User-requested (2026-08-27): -1.8%정도까지 떨어진후에 올라가면 1.5%정도만
+    와도 매도 했음해, 2%상승까지 못가고 다시 하한가를 치니까 -- a position
+    that dipped risk.dip_recovery_dip_pct (default 1.8%) or more below entry
+    at some point (tracked via Position.lowest_price) before bouncing is
+    judged less likely to hold all the way to the normal lock_pct (2%)
+    target than one that never dipped, so once it recovers to just
+    risk.dip_recovery_profit_pct (default 1.5%) it is taken there instead of
+    waiting. A position that never dipped that hard is untouched -- this
+    only changes behavior for the specific "sharp dip, partial bounce"
+    pattern, not every winner.
+    """
+    entry = position.entry_price
+    if not entry:
+        return None
+    lowest = position.lowest_price
+    if lowest is None:
+        return None
+    dip_pct = (entry - lowest) / entry
+    dip_threshold = float(risk_cfg.get("dip_recovery_dip_pct", 0.018))
+    if dip_pct < dip_threshold:
+        return None
+    gain = (price - entry) / entry
+    recovery_pct = float(risk_cfg.get("dip_recovery_profit_pct", 0.015))
+    if gain >= recovery_pct:
+        return f"-{dip_pct:.2%} 눌림 후 반등 -- {recovery_pct:.1%} 조기 익절 ({gain:+.2%})"
+    return None
+
+
 # --------------------------------------------------------------------------
 # Trading engine
 # --------------------------------------------------------------------------
@@ -1157,6 +1192,12 @@ class TradingEngine:
             if price > (position.highest_price or 0.0):
                 position.highest_price = price
                 rt.portfolio.update_position(position)
+            # Track the lowest price too -- _dip_recovery_reason needs it to
+            # tell a position that dipped hard and bounced from one that just
+            # rose smoothly.
+            if price < (position.lowest_price or float("inf")):
+                position.lowest_price = price
+                rt.portfolio.update_position(position)
 
             new_trail = strategy.update_trailing_stop(bars, position)
             if new_trail is not None and new_trail != position.trail_stop:
@@ -1210,6 +1251,20 @@ class TradingEngine:
                 # Whether it exited above or is still waiting for the morning
                 # window, nothing else this cycle may sell it -- that is the
                 # entire point of the hold.
+                return
+
+        # 눌림 후 반등 조기 익절 (2026-08-27, 사용자 요청): 진입 후 -1.8%
+        # 이상 눌렸다가 반등한 포지션은, 정상 확정선(2%)까지 못 가고 다시
+        # 밀리는 경우가 많다고 판단해 1.5%에서 먼저 정리한다. 한 번도 그만큼
+        # 눌린 적 없는 포지션은 그대로 정상 로직(strategy.evaluate())을 탄다.
+        if position is not None:
+            reason = _dip_recovery_reason(position, price, rt.config.get("risk") or {})
+            if reason is not None:
+                logger.warning("%s: DIP-RECOVERY TAKE-PROFIT - %s", label, reason)
+                self._submit_exit(
+                    code, position, price, reason, open_orders, asset_cfg,
+                    session_ok, session_reason,
+                )
                 return
 
         # Time-based rules outrank the strategy in both directions: a day

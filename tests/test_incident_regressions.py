@@ -1387,3 +1387,65 @@ def test_near_limit_threshold_and_exit_time_are_configurable():
     later = datetime(2026, 8, 28, 9, 6, tzinfo=KST)
     _, reason = _near_limit_decision(flagged, 13_000.0, later, {"near_limit_exit_time": "09:30"})
     assert reason is None  # 09:06 is still before the configured 09:30
+
+
+# ---------------------------------------------------------------------------
+# 17. a position that dipped hard and bounced takes a smaller profit than a
+#    smooth winner would (2026-08-27, user request)
+# ---------------------------------------------------------------------------
+
+
+def _dip_position(entry_price: float, lowest_price: float | None) -> "Position":
+    from portfolio import LONG, Position
+
+    return Position(
+        symbol="005930", side=LONG, qty=1,
+        entry_price=entry_price, stop_price=entry_price * 0.98, stop_distance=entry_price * 0.02,
+        lowest_price=lowest_price,
+    )
+
+
+def test_dip_recovery_fires_after_an_18pct_dip_bounces_to_15pct():
+    from main import _dip_recovery_reason
+
+    position = _dip_position(10_000.0, lowest_price=9_810.0)  # -1.9% at its lowest
+    reason = _dip_recovery_reason(position, 10_150.0, {})  # now +1.5%
+    assert reason is not None
+    assert "조기 익절" in reason
+
+
+def test_dip_recovery_does_nothing_for_a_position_that_never_dipped():
+    """A smooth winner must be untouched -- this rule is only for the dip pattern."""
+    from main import _dip_recovery_reason
+
+    position = _dip_position(10_000.0, lowest_price=9_950.0)  # only -0.5% at its lowest
+    reason = _dip_recovery_reason(position, 10_150.0, {})  # +1.5%, same gain as above
+    assert reason is None
+
+
+def test_dip_recovery_waits_for_the_recovery_target_even_after_a_deep_dip():
+    from main import _dip_recovery_reason
+
+    position = _dip_position(10_000.0, lowest_price=9_800.0)  # -2.0% dip
+    reason = _dip_recovery_reason(position, 10_100.0, {})  # only +1.0%, short of 1.5%
+    assert reason is None
+
+
+def test_dip_recovery_does_nothing_with_no_recorded_lowest_price():
+    from main import _dip_recovery_reason
+
+    position = _dip_position(10_000.0, lowest_price=None)
+    assert _dip_recovery_reason(position, 10_150.0, {}) is None
+
+
+def test_dip_recovery_thresholds_are_configurable():
+    from main import _dip_recovery_reason
+
+    position = _dip_position(10_000.0, lowest_price=9_810.0)  # -1.9% dip
+    # A stricter dip requirement (3%) must suppress it even though the
+    # default 1.8% would have fired (see the first test above).
+    strict_cfg = {"dip_recovery_dip_pct": 0.03}
+    assert _dip_recovery_reason(position, 10_150.0, strict_cfg) is None
+    # A higher recovery bar (2.5%) must also suppress a mere +1.5%.
+    higher_bar_cfg = {"dip_recovery_profit_pct": 0.025}
+    assert _dip_recovery_reason(position, 10_150.0, higher_bar_cfg) is None

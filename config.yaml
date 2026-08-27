@@ -45,6 +45,13 @@ risk:
   # 기반)은 안전장치로 계속 살아있다 -- 급반전 시 보호는 유지.
   near_limit_hold_pct: 0.26
   near_limit_exit_time: "09:05"
+  # 눌림 후 반등 조기 익절 (2026-08-27, 사용자 요청): 진입 후 고점이 아니라
+  # "최저점"이 진입가 대비 1.8% 이상 눌렸던 포지션은, 그 뒤 반등해도 정상
+  # 확정선(2%)까지 못 가고 다시 밀리는 경우가 많다고 보고 1.5%에서 먼저
+  # 정리한다. 한 번도 이만큼 안 눌린 포지션(순조롭게 오른 경우)은 그대로
+  # 정상 lock_pct(2%) 로직을 탄다 -- 이 규칙은 "눌렸다 반등" 패턴에만 적용.
+  dip_recovery_dip_pct: 0.018
+  dip_recovery_profit_pct: 0.015
   # Retail short selling of KRX equities is not practically available, and
   # futures (including the futures inside inverse ETFs) are out of scope.
   # A short signal therefore closes a position but never opens one.

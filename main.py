@@ -555,6 +555,30 @@ def _marketable_limit_price(
     return float(rules.round_to_tick(base - offset, market, "down"))
 
 
+def _daily_profit_lock_reason(
+    equity: float,
+    day_start_equity: float,
+    lock_pct: float,
+) -> str | None:
+    """Reason to refuse a fresh entry today, or None to allow one.
+
+    User-requested (2026-08-27): 하루 최소 2%이상은 남겨야 되. Once today's
+    equity gain over day_start_equity (set at the first mark_equity() call
+    of the KST trading day -- see portfolio.py) reaches lock_pct, no new
+    position is opened for the rest of the day: today's gain is not put
+    back at risk to chase more. Existing positions are unaffected -- every
+    other exit path (hard stop, force exit, late-session/dip-recovery/
+    near-limit take-profits) keeps managing them exactly as before, so a
+    locked day can still improve, it just cannot add new risk to do it.
+    """
+    if lock_pct <= 0 or day_start_equity <= 0:
+        return None
+    gain_pct = (equity - day_start_equity) / day_start_equity
+    if gain_pct >= lock_pct:
+        return f"오늘 수익 +{gain_pct:.2%} 확보 -- 신규 진입 잠금 (기준 +{lock_pct:.0%})"
+    return None
+
+
 # --------------------------------------------------------------------------
 # Trading engine
 # --------------------------------------------------------------------------
@@ -598,6 +622,14 @@ class TradingEngine:
         self._flow_scan_date: "date | None" = None
         # 장마감 자동 복기 리포트 + 금요일 주간 리포트 (2026-08-27, 사용자 요청).
         self._daily_report_date: "date | None" = None
+        # 일일 수익 락 (2026-08-27, 사용자 요청): 오늘 수익이 이 비율 이상
+        # 확보되면 신규 진입을 잠근다 -- 이미 번 걸 새 리스크로 다시 거는 것
+        # 방지. 기존 포지션 관리(손절/청산)는 그대로 계속 작동한다. 0이면
+        # 비활성.
+        self._daily_profit_lock_pct: float = float(
+            (rt.config.get("risk") or {}).get("daily_profit_lock_pct", 0.02)
+        )
+        self._daily_lock_notified_date: "date | None" = None
         # S&P 500 선물 방향 모니터
         self._us_monitor = USMarketMonitor(rt.config)
         # DART 공시 모니터
@@ -1603,6 +1635,17 @@ class TradingEngine:
 
         if self._entries_paused:
             logger.info("%s: entry skipped - paused via Telegram /stop", label)
+            return
+
+        lock_reason = _daily_profit_lock_reason(
+            account.equity, rt.portfolio.state.day_start_equity, self._daily_profit_lock_pct,
+        )
+        if lock_reason is not None:
+            logger.info("%s: entry skipped - %s", label, lock_reason)
+            today = datetime.now(KST).date()
+            if self._daily_lock_notified_date != today:
+                self._daily_lock_notified_date = today
+                self._tg_notifier.send(f"\U0001f512 {lock_reason} -- 오늘 남은 시간 신규 진입 없음")
             return
 
         last_exit = self._last_exit_time.get(code)

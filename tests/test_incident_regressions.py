@@ -1449,3 +1449,50 @@ def test_dip_recovery_thresholds_are_configurable():
     # A higher recovery bar (2.5%) must also suppress a mere +1.5%.
     higher_bar_cfg = {"dip_recovery_profit_pct": 0.025}
     assert _dip_recovery_reason(position, 10_150.0, higher_bar_cfg) is None
+
+
+# ---------------------------------------------------------------------------
+# 18. daily profit lock: once today's gain clears the target, no new entry
+#    (2026-08-27, user request: 하루 최소 2%이상은 남겨야 되)
+# ---------------------------------------------------------------------------
+
+
+def test_daily_lock_blocks_a_new_entry_once_the_target_is_reached():
+    from main import _daily_profit_lock_reason
+
+    reason = _daily_profit_lock_reason(equity=459_000.0, day_start_equity=450_000.0, lock_pct=0.02)
+    assert reason is not None
+    assert "잠금" in reason
+
+
+def test_daily_lock_allows_entries_below_the_target():
+    from main import _daily_profit_lock_reason
+
+    # +1% -- short of the 2% target.
+    assert _daily_profit_lock_reason(450_000.0 * 1.01, 450_000.0, 0.02) is None
+
+
+def test_daily_lock_allows_entries_on_a_losing_day():
+    from main import _daily_profit_lock_reason
+
+    assert _daily_profit_lock_reason(440_000.0, 450_000.0, 0.02) is None
+
+
+def test_daily_lock_disabled_at_zero_never_blocks():
+    from main import _daily_profit_lock_reason
+
+    assert _daily_profit_lock_reason(999_000.0, 450_000.0, 0.0) is None
+
+
+def test_daily_lock_does_nothing_without_a_known_day_start_equity():
+    """day_start_equity == 0 means mark_equity() hasn't run yet for today -- nothing to compare against."""
+    from main import _daily_profit_lock_reason
+
+    assert _daily_profit_lock_reason(459_000.0, 0.0, 0.02) is None
+
+
+def test_daily_lock_threshold_is_configurable():
+    from main import _daily_profit_lock_reason
+
+    # +2% would lock under the default 2% target, but not under a 5% one.
+    assert _daily_profit_lock_reason(459_000.0, 450_000.0, 0.05) is None

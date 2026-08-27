@@ -52,6 +52,12 @@ risk:
   # 정상 lock_pct(2%) 로직을 탄다 -- 이 규칙은 "눌렸다 반등" 패턴에만 적용.
   dip_recovery_dip_pct: 0.018
   dip_recovery_profit_pct: 0.015
+  # 일일 수익 락 (2026-08-27, 사용자 요청: 하루 최소 2%는 남겨야 된다): 오늘
+  # 자산이 장 시작 대비 이 비율 이상 늘면 신규 진입을 잠근다. 이미 번 걸
+  # 새 리스크로 다시 거는 걸 막는다는 취지 -- 기존 포지션의 손절/청산
+  # 로직은 그대로 계속 작동하니 오늘 수익은 계속 늘 수 있다. 0으로 두면
+  # 비활성.
+  daily_profit_lock_pct: 0.02
   # Retail short selling of KRX equities is not practically available, and
   # futures (including the futures inside inverse ETFs) are out of scope.
   # A short signal therefore closes a position but never opens one.

@@ -98,6 +98,11 @@ class Position:
     take_profit: float | None = None
     highest_price: float | None = None
     lowest_price: float | None = None
+    #: Set once this position's gain crosses risk.near_limit_hold_pct (a
+    #: 상한가 candidate) -- from then on it skips the same-day force exit and
+    #: profit-lock trail and is sold the next morning instead. See
+    #: _late_exit_reason's neighbor in main.py for the matching cycle logic.
+    near_limit_hold: bool = False
 
     @property
     def is_long(self) -> bool:

@@ -33,7 +33,7 @@ from indicators import atr as atr_indicator
 from indicators import last_valid
 from market.calendar import KST, REGULAR_CLOSE, KrxCalendar
 from market.rules import KOSDAQ, KOSPI, KrxRules
-from market.session_rules import SessionRules
+from market.session_rules import SessionRules, parse_clock
 from portfolio import LONG, SHORT, Portfolio, Position
 from risk.manager import RiskManager, TradeContext
 from settings import (
@@ -388,6 +388,48 @@ def _late_exit_reason(
             f"정체 -- 조기 익절 ({gain:+.2%})"
         )
     return None
+
+
+def _near_limit_decision(
+    position: Position,
+    price: float,
+    now: datetime,
+    risk_cfg: Mapping[str, Any],
+) -> tuple[bool, str | None]:
+    """(should_flag_now, exit_reason) for a 상한가 (upper-limit) candidate.
+
+    User-requested (2026-08-27): a position up risk.near_limit_hold_pct
+    (default 26%) or more -- close to KRX's +-30% daily price limit -- skips
+    the same-day force exit and profit-lock trail entirely and is sold the
+    next morning at or after risk.near_limit_exit_time instead, on the
+    theory that a real 상한가 run is worth riding past the close rather than
+    selling into it. ``should_flag_now`` is True only the one cycle a
+    position first crosses the threshold, so the caller persists it once.
+    Once flagged, ``exit_reason`` stays None (keep holding) until the
+    morning after entry reaches the exit time, at which point it names the
+    reason to sell. The hard ATR stop is a separate, earlier check in
+    _process_code and is deliberately not touched here -- it keeps
+    protecting the position through the whole hold.
+    """
+    entry = position.entry_price
+    gain = (price - entry) / entry if entry else 0.0
+    near_limit = position.near_limit_hold
+    should_flag = False
+    if not near_limit:
+        near_limit_pct = float(risk_cfg.get("near_limit_hold_pct", 0.26))
+        if gain >= near_limit_pct:
+            should_flag = True
+            near_limit = True
+    if not near_limit:
+        return False, None
+    entry_day = position.entry_date()
+    exit_time = parse_clock(
+        risk_cfg.get("near_limit_exit_time", "09:05"), "risk.near_limit_exit_time"
+    )
+    reason = None
+    if entry_day is not None and now.date() > entry_day and now.time() >= exit_time:
+        reason = f"상한가 후보 -- 익일 오전 매도 ({gain:+.2%})"
+    return should_flag, reason
 
 
 # --------------------------------------------------------------------------
@@ -1136,11 +1178,44 @@ class TradingEngine:
                 )
                 return
 
+        now = datetime.now(KST)
+
+        # 상한가 후보 홀드 (2026-08-27, 사용자 요청): 진입가 대비 26% 이상
+        # 오르면 당일에는 팔지 않고 다음날 아침에 매도한다. See
+        # _near_limit_decision's docstring for the full reasoning.
+        if position is not None:
+            should_flag, exit_reason = _near_limit_decision(
+                position, price, now, rt.config.get("risk") or {}
+            )
+            if should_flag:
+                position.near_limit_hold = True
+                rt.portfolio.update_position(position)
+                entry = position.entry_price
+                gain = (price - entry) / entry if entry else 0.0
+                logger.warning(
+                    "%s: 상한가 후보 감지 (+%.2f%%) - 당일 매도 보류, 익일 오전 매도 예정",
+                    label, gain * 100,
+                )
+                self._tg_notifier.send(
+                    f"\U0001f680 {rt.name_of(code)}({code}) +{gain:.1%} -- 상한가 후보로 판단, "
+                    f"오늘은 매도 보류하고 내일 오전에 매도합니다."
+                )
+            if position.near_limit_hold:
+                if exit_reason is not None:
+                    logger.warning("%s: NEAR-LIMIT MORNING EXIT - %s", label, exit_reason)
+                    self._submit_exit(
+                        code, position, price, exit_reason, open_orders, asset_cfg,
+                        session_ok, session_reason,
+                    )
+                # Whether it exited above or is still waiting for the morning
+                # window, nothing else this cycle may sell it -- that is the
+                # entire point of the hold.
+                return
+
         # Time-based rules outrank the strategy in both directions: a day
         # trade is closed before the auction whatever the chart says, and an
         # overnight position is closed the next morning as planned.
         rules = self.session_rules(code)
-        now = datetime.now(KST)
         if position is not None:
             due, why = rules.exit_due(now, position.entry_date())
             if due:

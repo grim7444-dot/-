@@ -1299,3 +1299,91 @@ def test_a_non_friday_does_not_send_the_weekly_report(portfolio, config, monkeyp
 
     engine._maybe_send_daily_report()
     assert len(engine._tg_notifier.sent) == 1
+
+
+# ---------------------------------------------------------------------------
+# 16. 상한가 (upper-limit) candidates hold overnight instead of selling into
+#    the close (2026-08-27, user request)
+# ---------------------------------------------------------------------------
+
+
+def _near_limit_position(entry_price: float, entry_moment: datetime, near_limit_hold: bool = False) -> "Position":
+    from portfolio import LONG, Position
+
+    return Position(
+        symbol="005930", side=LONG, qty=1,
+        entry_price=entry_price, stop_price=entry_price * 0.98, stop_distance=entry_price * 0.02,
+        entry_time=entry_moment.isoformat(),
+        near_limit_hold=near_limit_hold,
+    )
+
+
+def test_near_limit_flags_a_position_the_first_time_it_crosses_the_threshold():
+    from main import _near_limit_decision
+
+    entered = datetime(2026, 8, 27, 9, 30, tzinfo=KST)
+    position = _near_limit_position(10_000.0, entered)
+    now = datetime(2026, 8, 27, 13, 0, tzinfo=KST)  # same day, well before any exit
+    should_flag, reason = _near_limit_decision(position, 12_700.0, now, {})  # +27%
+    assert should_flag is True
+    assert reason is None  # not exited yet -- same-day, holds through the close
+
+
+def test_near_limit_does_not_flag_below_the_threshold():
+    from main import _near_limit_decision
+
+    entered = datetime(2026, 8, 27, 9, 30, tzinfo=KST)
+    position = _near_limit_position(10_000.0, entered)
+    now = datetime(2026, 8, 27, 13, 0, tzinfo=KST)
+    should_flag, reason = _near_limit_decision(position, 12_400.0, now, {})  # +24%, short of 26%
+    assert should_flag is False
+    assert reason is None
+
+
+def test_near_limit_does_not_exit_same_day_even_once_flagged():
+    from main import _near_limit_decision
+
+    entered = datetime(2026, 8, 27, 9, 30, tzinfo=KST)
+    position = _near_limit_position(10_000.0, entered, near_limit_hold=True)
+    now = datetime(2026, 8, 27, 15, 25, tzinfo=KST)  # late the same day
+    should_flag, reason = _near_limit_decision(position, 13_000.0, now, {})
+    assert should_flag is False  # already flagged -- nothing new to persist
+    assert reason is None  # still same day -- must not sell yet
+
+
+def test_near_limit_exits_the_next_morning_at_the_configured_time():
+    from main import _near_limit_decision
+
+    entered = datetime(2026, 8, 27, 9, 30, tzinfo=KST)
+    position = _near_limit_position(10_000.0, entered, near_limit_hold=True)
+    now = datetime(2026, 8, 28, 9, 5, tzinfo=KST)  # next morning, exactly 09:05
+    should_flag, reason = _near_limit_decision(position, 13_000.0, now, {})
+    assert should_flag is False
+    assert reason is not None
+    assert "익일 오전" in reason
+
+
+def test_near_limit_waits_for_the_configured_exit_time_the_next_morning():
+    from main import _near_limit_decision
+
+    entered = datetime(2026, 8, 27, 9, 30, tzinfo=KST)
+    position = _near_limit_position(10_000.0, entered, near_limit_hold=True)
+    now = datetime(2026, 8, 28, 9, 2, tzinfo=KST)  # next morning, before 09:05
+    should_flag, reason = _near_limit_decision(position, 13_000.0, now, {})
+    assert reason is None  # continuous trading barely open -- wait a few more minutes
+
+
+def test_near_limit_threshold_and_exit_time_are_configurable():
+    from main import _near_limit_decision
+
+    entered = datetime(2026, 8, 27, 9, 30, tzinfo=KST)
+    position = _near_limit_position(10_000.0, entered)
+    now = datetime(2026, 8, 27, 13, 0, tzinfo=KST)
+    # +27% would flag with the default 26% threshold, but not with a 30% one.
+    should_flag, _ = _near_limit_decision(position, 12_700.0, now, {"near_limit_hold_pct": 0.30})
+    assert should_flag is False
+
+    flagged = _near_limit_position(10_000.0, entered, near_limit_hold=True)
+    later = datetime(2026, 8, 28, 9, 6, tzinfo=KST)
+    _, reason = _near_limit_decision(flagged, 13_000.0, later, {"near_limit_exit_time": "09:30"})
+    assert reason is None  # 09:06 is still before the configured 09:30

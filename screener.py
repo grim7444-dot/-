@@ -79,10 +79,16 @@ _SCALPING_CFG_TEMPLATE: dict[str, Any] = {
     # 수 있었다. 1분봉으로 낮추면 그 지연이 최대 1분으로 줄고, 09:00-09:15
     # 오프닝 레인지 자체도 15개 봉으로 더 촘촘하게 잡힌다. 봉 마감 후에만
     # 판단하는 무-룩어헤드 원칙은 그대로 -- 아직 안 끝난 봉을 보지는 않는다.
+    #
+    # entry_window 14:30 -> 14:50 (2026-08-27, 사용자 요청): 마감 40분 전까지
+    # 진입 기회를 넓힌다. force_exit_at(15:10)까지 20분밖에 안 남아 새 포지션이
+    # 정상 확정선(2%)까지 못 갈 수 있지만, 그건 오늘 만든 late_exit_reason
+    # (마감 20분 전 눌림 정체 시 0.5%에서 조기 익절)이 정확히 이 상황을 위한
+    # 안전장치다.
     "strategy": "orb",
     "timeframe": "1Min",
     "min_qty": 1,
-    "entry_window": ["09:15", "14:30"],  # 레인지(09:00-09:15) 완성 직후부터
+    "entry_window": ["09:15", "14:50"],  # 레인지(09:00-09:15) 완성 직후부터
     "force_exit_at": "15:10",
     "params": {
         "range_minutes": 15,
@@ -117,7 +123,7 @@ _PULLBACK_CFG_TEMPLATE: dict[str, Any] = {
     "strategy": "pullback_bounce",
     "timeframe": "1Min",
     "min_qty": 1,
-    "entry_window": ["09:15", "14:30"],
+    "entry_window": ["09:15", "14:50"],
     "force_exit_at": "15:10",
     "params": {
         "trend_ema": 20,

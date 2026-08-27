@@ -15,7 +15,7 @@ risk:
   # 바로 다시 쫓아 사는 것을 막는다.
   entry_cooldown_minutes: 15
   # Rule 4: every trade risks exactly this fraction of *current* equity.
-  per_trade_pct: 0.02
+  per_trade_pct: 0.01
   # Portfolio-wide caps. 1% x 8 stocks would put 8% at risk at once; these
   # hold total exposure to 6% across at most 6 open positions.
   max_total_risk_pct: 0.06

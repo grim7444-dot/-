@@ -2160,10 +2160,87 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     return 0
 
 
+class _SingleInstanceLock:
+    """OS-level lock so a second trading loop can't run against the same
+    state.json at the same time.
+
+    2026-08-28 (diagnosed from a live log): the user restarted the bot by
+    pulling a fix and running `python main.py live --live` again without
+    first closing the previous window. Nothing stopped that -- `resume`/
+    `stop` only flip a flag inside state.json, they never touch the actual
+    running process -- so the old process kept trading with its stale,
+    pre-fix code (e.g. an ETN the new _is_fund_like() would have excluded)
+    at the same time the new one ran, both hitting Kiwoom independently
+    against the same real account.
+
+    Uses the OS's own file lock (msvcrt on Windows, flock on POSIX) rather
+    than a PID file: a PID file can be left behind by a crash and then
+    wrongly block a real restart, but an OS lock is released by the kernel
+    the instant the process exits, by any means, so it can never go stale.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._fh = None
+
+    def acquire(self) -> bool:
+        fh = open(self.path, "a+")
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            fh.close()
+            return False
+        fh.seek(0)
+        fh.truncate()
+        fh.write(str(os.getpid()))
+        fh.flush()
+        self._fh = fh
+        return True
+
+    def release(self) -> None:
+        fh, self._fh = self._fh, None
+        if fh is None:
+            return
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        finally:
+            fh.close()
+
+
 def cmd_trade(args: argparse.Namespace, cli_live: bool) -> int:
     force_dry_run = bool(getattr(args, "dry_run", False))
     rt = build_runtime(args, cli_live=cli_live, force_dry_run=force_dry_run, run_screener=True)
 
+    lock_path = Path(rt.portfolio.store.path).resolve().parent / ".bot.lock"
+    lock = _SingleInstanceLock(lock_path)
+    if not lock.acquire():
+        print(
+            f"\n!! 이미 다른 봇 프로세스가 실행 중입니다 ({lock_path}).\n"
+            "   같은 계좌로 두 프로세스가 동시에 매매하면 중복 주문이 나갈 수 있습니다.\n"
+            "   먼저 실행 중인 창을 닫거나 Ctrl+C로 종료한 뒤 다시 실행하세요.\n"
+        )
+        return 1
+
+    try:
+        return _cmd_trade_locked(args, rt)
+    finally:
+        lock.release()
+
+
+def _cmd_trade_locked(args: argparse.Namespace, rt: "Runtime") -> int:
     if rt.decision.live:
         try:
             account = rt.broker.get_account()

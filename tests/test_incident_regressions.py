@@ -1633,3 +1633,71 @@ def test_realtime_candidates_excludes_fund_like_names():
 
     assert "005930" in results
     assert "411420" not in results
+
+
+# ---------------------------------------------------------------------------
+# 21b. The exact ETN/ETF names from the 2026-08-28 09:15 universe refresh
+#    that a user reported as "still slipping through" -- proves _is_fund_like
+#    itself was never the bug (see section 22: it was two bot processes
+#    running at once, the second still on stale pre-fix code).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", [
+    "미래에셋 1.5X S&P500 VIX S/T선물 ETN",
+    "미래에셋 S&P500 VIX S/T 선물 ETN(H)",
+    "미래에셋 레버리지 SK하이닉스 단일종목ETN",
+    "KODEX 33-06 국고채액티브",
+])
+def test_is_fund_like_flags_the_2026_08_28_0915_refresh_names(name):
+    from main import _is_fund_like
+
+    assert _is_fund_like(name) is True
+
+
+# ---------------------------------------------------------------------------
+# 22. Single-instance lock -- a second `python main.py live --live` must not
+#    be able to start while one is already running against the same
+#    state.json (2026-08-28: exactly this let a stale pre-fix process keep
+#    trading alongside a freshly restarted one).
+# ---------------------------------------------------------------------------
+
+
+def test_single_instance_lock_blocks_a_second_acquire(tmp_path):
+    from main import _SingleInstanceLock
+
+    lock_path = tmp_path / ".bot.lock"
+    first = _SingleInstanceLock(lock_path)
+    second = _SingleInstanceLock(lock_path)
+
+    assert first.acquire() is True
+    assert second.acquire() is False
+
+    first.release()
+
+
+def test_single_instance_lock_allows_reacquire_after_release(tmp_path):
+    from main import _SingleInstanceLock
+
+    lock_path = tmp_path / ".bot.lock"
+    first = _SingleInstanceLock(lock_path)
+    assert first.acquire() is True
+    first.release()
+
+    second = _SingleInstanceLock(lock_path)
+    assert second.acquire() is True
+    second.release()
+
+
+def test_single_instance_lock_writes_the_holder_pid(tmp_path):
+    import os
+
+    from main import _SingleInstanceLock
+
+    lock_path = tmp_path / ".bot.lock"
+    lock = _SingleInstanceLock(lock_path)
+    assert lock.acquire() is True
+    try:
+        assert lock_path.read_text().strip() == str(os.getpid())
+    finally:
+        lock.release()

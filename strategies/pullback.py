@@ -33,6 +33,7 @@ from indicators import (
     rolling_min,
     rsi,
 )
+from market.session_rules import parse_clock
 from portfolio import Position
 from strategies.base import Action, Signal, Strategy
 from strategies.scalping import session_vwap
@@ -57,6 +58,12 @@ class PullbackBounce(Strategy):
         min_bar_strength: float = 0.3,
         #: 고정 손절 폭.
         stop_pct: float = 0.02,
+        #: 오전 초반(09:00~early_stop_until)은 낙폭이 커서 정상 stop_pct로는
+        #: 노이즈에도 자주 걸린다는 사용자 피드백 (2026-08-28) -- 이 구간만
+        #: 더 넓은 early_stop_pct를 쓰고, 그 이후엔 정상 stop_pct로 돌아간다.
+        #: 봉 자체의 타임스탬프로 판정하므로 무-룩어헤드 원칙엔 영향 없다.
+        early_stop_pct: float = 0.02,
+        early_stop_until: str = "09:30",
         #: 이 수익률에 도달하면 "무장" -- 아직 확정 바닥은 아니고 그냥 대기.
         arm_pct: float = 0.02,
         #: 이 수익률부터 진입가 대비 최소 이만큼은 확정 (바닥을 여기 고정).
@@ -118,6 +125,8 @@ class PullbackBounce(Strategy):
         self.pullback_min_pct = pullback_min_pct
         self.min_bar_strength = min_bar_strength
         self.stop_pct = stop_pct
+        self.early_stop_pct = early_stop_pct
+        self.early_stop_until = parse_clock(early_stop_until, "early_stop_until")
         self.arm_pct = arm_pct
         self.lock_pct = lock_pct
         self.peak_trail_pct = peak_trail_pct
@@ -167,6 +176,13 @@ class PullbackBounce(Strategy):
             return self._hold(window, "trend EMA not established")
         trend = float(trend)
 
+        # 오전 초반엔 낙폭이 커서 정상 stop_pct보다 넓은 early_stop_pct를 쓴다.
+        # window의 마지막 봉 자체 타임스탬프로 판정 -- 무-룩어헤드 원칙에 영향 없음.
+        bar_time = pd.Timestamp(window.index[-1]).time()
+        effective_stop_pct = (
+            self.early_stop_pct if bar_time < self.early_stop_until else self.stop_pct
+        )
+
         # --- manage an open position ---------------------------------------
         if position is not None:
             atr_value = self._atr(window)
@@ -175,11 +191,11 @@ class PullbackBounce(Strategy):
             peak = position.highest_price or price
             peak_gain = (peak - entry) / entry if entry else 0.0
 
-            stop_price = entry * (1 - self.stop_pct)
+            stop_price = entry * (1 - effective_stop_pct)
             if price <= stop_price:
                 return self._signal(
                     window, Action.EXIT,
-                    f"{self.stop_pct:.0%} 손절 ({gain:+.2%})", atr_value,
+                    f"{effective_stop_pct:.1%} 손절 ({gain:+.2%})", atr_value,
                 )
 
             if peak_gain >= self.lock_pct:
@@ -218,8 +234,8 @@ class PullbackBounce(Strategy):
             )
 
         # --- entries ----------------------------------------------------
-        if self.stop_pct > 0:
-            cost_share = self.round_trip_cost_pct / self.stop_pct
+        if effective_stop_pct > 0:
+            cost_share = self.round_trip_cost_pct / effective_stop_pct
             if cost_share > self.max_cost_share:
                 return self._hold(
                     window,
@@ -340,7 +356,7 @@ class PullbackBounce(Strategy):
                     )
 
         atr_value = self._atr(window)
-        effective_atr = price * self.stop_pct
+        effective_atr = price * effective_stop_pct
         extra = []
         if vwap_now is not None:
             extra.append(f"VWAP {vwap_now:,.0f}")
@@ -358,7 +374,7 @@ class PullbackBounce(Strategy):
         return self._signal(
             window, Action.ENTER_LONG,
             f"눌림목 반등: 고점 {swing_high:,.0f} 대비 {pullback_depth:.2%} 조정 후 "
-            f"{prev_high:,.0f} 재돌파 [손절 {self.stop_pct:.0%}, 무장 {self.arm_pct:.0%}, "
+            f"{prev_high:,.0f} 재돌파 [손절 {effective_stop_pct:.1%}, 무장 {self.arm_pct:.0%}, "
             f"확정 {self.lock_pct:.0%}, 트레일 {self.peak_trail_pct:.1%}]{extra_note}",
             effective_atr if effective_atr > 0 else atr_value,
             meta={

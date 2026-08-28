@@ -40,6 +40,20 @@ def _position(entry_price: float, highest_price: float) -> Position:
     )
 
 
+def _window_at(n_bars: int, last_close: float):
+    """A warm-enough window whose LAST bar sits at 09:00 + (n_bars-1) minutes.
+
+    make_bars() (tests/conftest.py) starts every series at 09:00 KST on
+    1-minute bars, so this is how test_early_stop_pct controls which side
+    of early_stop_until the bar being evaluated falls on.
+    """
+    window = make_bars(n=n_bars, start_price=10_000.0, seed=3, freq="1min", volatility=0.003).copy()
+    window.iloc[-1, window.columns.get_loc("close")] = last_close
+    window.iloc[-1, window.columns.get_loc("high")] = max(window.iloc[-1]["high"], last_close)
+    window.iloc[-1, window.columns.get_loc("low")] = min(window.iloc[-1]["low"], last_close)
+    return window
+
+
 STRATEGIES = [
     pytest.param(lambda: ORB(symbol="TEST", timeframe="1Min"), id="orb"),
     pytest.param(lambda: PullbackBounce(symbol="TEST", timeframe="1Min"), id="pullback_bounce"),
@@ -90,3 +104,66 @@ def test_a_moderate_win_below_big_win_pct_keeps_the_narrow_trail(make_strategy):
     assert signal.action is Action.EXIT
     signal = strategy.evaluate(_window(floor + 1.0), _position(entry, peak))
     assert signal.action is Action.HOLD
+
+
+# ---------------------------------------------------------------------------
+# early_stop_pct: a wider hard stop before early_stop_until (2026-08-28, user
+# request: 오전 9시장은 낙폭이 커서 정상 stop_pct로는 노이즈에도 자주 걸림)
+# ---------------------------------------------------------------------------
+
+
+#: Minimal warm-up so a window can land inside the 09:00-09:30 early window
+#: on 1-minute bars (PullbackBounce's default RSI/MACD/BB filters alone need
+#: 35+ bars, which would already be past 09:30 -- irrelevant here anyway
+#: since these tests only exercise position management, not entry filters).
+EARLY_STOP_STRATEGIES = [
+    pytest.param(
+        lambda: ORB(
+            symbol="TEST", timeframe="1Min", trend_ema=5, volume_lookback=5,
+            stop_pct=0.013, early_stop_pct=0.02, early_stop_until="09:30",
+        ),
+        id="orb",
+    ),
+    pytest.param(
+        lambda: PullbackBounce(
+            symbol="TEST", timeframe="1Min", trend_ema=5, swing_lookback=5,
+            use_rsi_filter=False, use_macd_filter=False,
+            use_resistance_filter=False, use_bb_filter=False,
+            stop_pct=0.013, early_stop_pct=0.02, early_stop_until="09:30",
+        ),
+        id="pullback_bounce",
+    ),
+]
+
+ENTRY = 10_000.0
+TIGHT_STOP_PRICE = ENTRY * (1 - 0.013)  # 9,870
+WIDE_STOP_PRICE = ENTRY * (1 - 0.02)    # 9,800
+BETWEEN = (TIGHT_STOP_PRICE + WIDE_STOP_PRICE) / 2  # 9,835
+
+
+@pytest.mark.parametrize("make_strategy", EARLY_STOP_STRATEGIES)
+def test_early_window_uses_the_wider_stop_and_holds_past_the_normal_one(make_strategy):
+    """A drop that would stop out the normal 1.3% must NOT exit before 09:30."""
+    strategy = make_strategy()
+    window = _window_at(25, BETWEEN)  # last bar at 09:24 -- before early_stop_until
+    signal = strategy.evaluate(window, _position(ENTRY, ENTRY))
+    assert signal.action is Action.HOLD, signal.reason
+
+
+@pytest.mark.parametrize("make_strategy", EARLY_STOP_STRATEGIES)
+def test_early_window_still_exits_once_it_clears_the_wider_stop(make_strategy):
+    strategy = make_strategy()
+    window = _window_at(25, WIDE_STOP_PRICE - 1.0)
+    signal = strategy.evaluate(window, _position(ENTRY, ENTRY))
+    assert signal.action is Action.EXIT
+    assert "2.0%" in signal.reason
+
+
+@pytest.mark.parametrize("make_strategy", EARLY_STOP_STRATEGIES)
+def test_after_early_stop_until_the_normal_tighter_stop_applies(make_strategy):
+    """The same drop that held above must exit once the clock passes 09:30."""
+    strategy = make_strategy()
+    window = _window_at(35, BETWEEN)  # last bar at 09:34 -- past early_stop_until
+    signal = strategy.evaluate(window, _position(ENTRY, ENTRY))
+    assert signal.action is Action.EXIT
+    assert "1.3%" in signal.reason

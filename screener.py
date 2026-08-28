@@ -106,6 +106,10 @@ _SCALPING_CFG_TEMPLATE: dict[str, Any] = {
         # 못 미쳤다는 지적에서 나온 변경. config.yaml의 pullback_bounce
         # 폴백 블록들도 동일하게 맞췄다.
         "stop_pct": 0.013,
+        # 오전 09:00~09:30은 낙폭이 커서 정상 1.3%로는 노이즈에도 자주
+        # 걸린다는 사용자 피드백 (2026-08-28) -- 이 구간만 2%로 넓힌다.
+        "early_stop_pct": 0.02,
+        "early_stop_until": "09:30",
         "arm_pct": 0.012,
         "lock_pct": 0.025,
         "peak_trail_pct": 0.003,
@@ -145,6 +149,10 @@ _PULLBACK_CFG_TEMPLATE: dict[str, Any] = {
         # 못 미쳤다는 지적에서 나온 변경. config.yaml의 pullback_bounce
         # 폴백 블록들도 동일하게 맞췄다.
         "stop_pct": 0.013,
+        # 오전 09:00~09:30은 낙폭이 커서 정상 1.3%로는 노이즈에도 자주
+        # 걸린다는 사용자 피드백 (2026-08-28) -- 이 구간만 2%로 넓힌다.
+        "early_stop_pct": 0.02,
+        "early_stop_until": "09:30",
         "arm_pct": 0.012,
         "lock_pct": 0.025,
         "peak_trail_pct": 0.003,

@@ -22,6 +22,7 @@ from __future__ import annotations
 import pandas as pd
 
 from indicators import bar_strength, ema, rolling_mean_volume
+from market.session_rules import parse_clock
 from portfolio import Position
 from strategies.base import Action, Signal, Strategy
 from strategies.scalping import session_vwap
@@ -71,6 +72,13 @@ class ORB(Strategy):
         min_bar_strength: float = 0.5,
         #: 고정 손절 폭.
         stop_pct: float = 0.017,
+        #: 오전 초반(09:00~early_stop_until)은 낙폭이 커서 정상 stop_pct로는
+        #: 노이즈에도 자주 걸린다는 사용자 피드백 (2026-08-28) -- 이 구간만
+        #: 더 넓은 early_stop_pct를 쓰고, 그 이후엔 정상 stop_pct로 돌아간다.
+        #: 봉 자체의 타임스탬프로 판정하므로(오프닝 레인지와 동일한 방식)
+        #: 무-룩어헤드 원칙은 그대로 유지된다.
+        early_stop_pct: float = 0.02,
+        early_stop_until: str = "09:30",
         #: PullbackBounce와 동일한 3단계 익절 (무장/확정/고점트레일).
         arm_pct: float = 0.012,
         lock_pct: float = 0.018,
@@ -99,6 +107,8 @@ class ORB(Strategy):
         self.trend_ema = trend_ema
         self.min_bar_strength = min_bar_strength
         self.stop_pct = stop_pct
+        self.early_stop_pct = early_stop_pct
+        self.early_stop_until = parse_clock(early_stop_until, "early_stop_until")
         self.arm_pct = arm_pct
         self.lock_pct = lock_pct
         self.peak_trail_pct = peak_trail_pct
@@ -127,6 +137,13 @@ class ORB(Strategy):
 
         price = float(window["close"].iloc[-1])
         atr_value = self._atr(window)
+        # 오전 초반엔 낙폭이 커서 정상 stop_pct보다 넓은 early_stop_pct를 쓴다.
+        # window의 마지막 봉 자체 타임스탬프로 판정 -- 오프닝 레인지 판정과
+        # 같은 방식이라 무-룩어헤드 원칙에 영향 없음.
+        bar_time = pd.Timestamp(window.index[-1]).time()
+        effective_stop_pct = (
+            self.early_stop_pct if bar_time < self.early_stop_until else self.stop_pct
+        )
 
         # --- manage an open position -- identical tiering to PullbackBounce ---
         if position is not None:
@@ -135,11 +152,11 @@ class ORB(Strategy):
             peak = position.highest_price or price
             peak_gain = (peak - entry) / entry if entry else 0.0
 
-            stop_price = entry * (1 - self.stop_pct)
+            stop_price = entry * (1 - effective_stop_pct)
             if price <= stop_price:
                 return self._signal(
                     window, Action.EXIT,
-                    f"{self.stop_pct:.0%} 손절 ({gain:+.2%})", atr_value,
+                    f"{effective_stop_pct:.1%} 손절 ({gain:+.2%})", atr_value,
                 )
 
             if peak_gain >= self.lock_pct:
@@ -172,8 +189,8 @@ class ORB(Strategy):
             )
 
         # --- entries ----------------------------------------------------
-        if self.stop_pct > 0:
-            cost_share = self.round_trip_cost_pct / self.stop_pct
+        if effective_stop_pct > 0:
+            cost_share = self.round_trip_cost_pct / effective_stop_pct
             if cost_share > self.max_cost_share:
                 return self._hold(
                     window,
@@ -230,12 +247,12 @@ class ORB(Strategy):
                     f"돌파봉 약함: 범위의 {strength:.0%} (필요 {self.min_bar_strength:.0%})",
                 )
 
-        effective_atr = price * self.stop_pct
+        effective_atr = price * effective_stop_pct
         return self._signal(
             window, Action.ENTER_LONG,
             f"ORB: 오프닝 레인지({self.range_minutes}분) 고점 {range_high:,.0f} 돌파 "
             f"{vol_ratio:.2f}x 거래량, VWAP {vwap_now:,.0f} 위, EMA{self.trend_ema} 위 "
-            f"[손절 {self.stop_pct:.0%}, 무장 {self.arm_pct:.0%}, 확정 {self.lock_pct:.0%}]",
+            f"[손절 {effective_stop_pct:.1%}, 무장 {self.arm_pct:.0%}, 확정 {self.lock_pct:.0%}]",
             effective_atr if effective_atr > 0 else atr_value,
             meta={"range_high": range_high, "range_low": range_low, "volume_ratio": vol_ratio},
         )

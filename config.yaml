@@ -130,6 +130,10 @@ universe:
       # 더 자주 손절 걸려 낮아질 수 있지만, 구조적으로 더 나은 R:R을 노림
       # (아래 3개 블록 + screener.py 템플릿도 동일하게 변경).
       stop_pct: 0.013
+      # 오전 09:00~09:30은 낙폭이 커서 정상 1.3%로는 노이즈에도 자주 걸린다는
+      # 사용자 피드백 (2026-08-28) -- 이 구간만 2%로 넓힌다.
+      early_stop_pct: 0.02
+      early_stop_until: "09:30"
       arm_pct: 0.012
       lock_pct: 0.025
       peak_trail_pct: 0.003
@@ -171,6 +175,10 @@ universe:
       pullback_min_pct: 0.005
       min_bar_strength: 0.25
       stop_pct: 0.013
+      # 오전 09:00~09:30은 낙폭이 커서 정상 1.3%로는 노이즈에도 자주 걸린다는
+      # 사용자 피드백 (2026-08-28) -- 이 구간만 2%로 넓힌다.
+      early_stop_pct: 0.02
+      early_stop_until: "09:30"
       arm_pct: 0.012
       lock_pct: 0.025
       peak_trail_pct: 0.003
@@ -196,6 +204,10 @@ universe:
       pullback_min_pct: 0.005
       min_bar_strength: 0.25
       stop_pct: 0.013
+      # 오전 09:00~09:30은 낙폭이 커서 정상 1.3%로는 노이즈에도 자주 걸린다는
+      # 사용자 피드백 (2026-08-28) -- 이 구간만 2%로 넓힌다.
+      early_stop_pct: 0.02
+      early_stop_until: "09:30"
       arm_pct: 0.012
       lock_pct: 0.025
       peak_trail_pct: 0.003
@@ -221,6 +233,10 @@ universe:
       pullback_min_pct: 0.005
       min_bar_strength: 0.25
       stop_pct: 0.013
+      # 오전 09:00~09:30은 낙폭이 커서 정상 1.3%로는 노이즈에도 자주 걸린다는
+      # 사용자 피드백 (2026-08-28) -- 이 구간만 2%로 넓힌다.
+      early_stop_pct: 0.02
+      early_stop_until: "09:30"
       arm_pct: 0.012
       lock_pct: 0.025
       peak_trail_pct: 0.003

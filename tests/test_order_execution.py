@@ -141,6 +141,7 @@ def _exec_engine(portfolio, config, broker, use_limit_orders=True, limit_buffer_
     rt.broker = broker
     engine.rt = rt
     engine._last_exit_time = {}
+    engine._last_exit_was_profit = {}
     engine._tg_notifier = _FakeExecNotifier()
     engine._use_limit_orders = use_limit_orders
     engine._limit_buffer_ticks = limit_buffer_ticks
@@ -215,3 +216,36 @@ def test_submit_exit_respects_the_global_use_limit_orders_toggle(portfolio, conf
     )
 
     assert broker.orders[0]["price"] is None
+
+
+# ---------------------------------------------------------------------------
+# _submit_exit records whether the exit was a profit-lock exit -- feeds the
+# re-entry cooldown bypass (2026-08-28, see _reentry_cooldown_reason in
+# test_incident_regressions.py section 18b).
+# ---------------------------------------------------------------------------
+
+
+def test_submit_exit_marks_a_profit_lock_exit_as_a_profit_exit(portfolio, config):
+    broker = _FakeExecBroker(orderbook=None)
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 10_250.0, "고점 +3.00%에서 반락 -- +2.50% 확정 익절", [], {}, True, "",
+        market=KOSPI, use_limit=True,
+    )
+
+    assert engine._last_exit_was_profit["005930"] is True
+
+
+def test_submit_exit_marks_a_stop_loss_exit_as_not_a_profit_exit(portfolio, config):
+    broker = _FakeExecBroker(orderbook=None)
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 9_870.0, "1.3% 손절 (-1.30%)", [], {}, True, "",
+        market=KOSPI, use_limit=False,
+    )
+
+    assert engine._last_exit_was_profit["005930"] is False

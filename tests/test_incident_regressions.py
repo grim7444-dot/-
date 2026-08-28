@@ -1500,6 +1500,50 @@ def test_daily_lock_threshold_is_configurable():
 
 
 # ---------------------------------------------------------------------------
+# 18b. re-entry cooldown skips itself after a profit-lock exit (2026-08-28,
+#    user request: 판 이후에 또 고점을 찍고 있거든 -- a profit exit followed
+#    by a fresh signal on the same stock should not be treated as "chasing
+#    the same resistance" the way a stop-out re-entry should)
+# ---------------------------------------------------------------------------
+
+
+def test_cooldown_blocks_a_quick_reentry_after_a_stop_out():
+    from main import _reentry_cooldown_reason
+
+    reason = _reentry_cooldown_reason(
+        now=500.0, last_exit_time=100.0, last_exit_was_profit=False, cooldown_seconds=900.0,
+    )
+    assert reason is not None
+    assert "쿨다운" in reason
+
+
+def test_cooldown_allows_immediate_reentry_after_a_profit_exit():
+    from main import _reentry_cooldown_reason
+
+    reason = _reentry_cooldown_reason(
+        now=1_000.0, last_exit_time=999.0, last_exit_was_profit=True, cooldown_seconds=900.0,
+    )
+    assert reason is None
+
+
+def test_cooldown_allows_reentry_once_the_window_passes_even_without_profit():
+    from main import _reentry_cooldown_reason
+
+    reason = _reentry_cooldown_reason(
+        now=2_000.0, last_exit_time=100.0, last_exit_was_profit=False, cooldown_seconds=900.0,
+    )
+    assert reason is None
+
+
+def test_cooldown_does_nothing_with_no_recorded_exit():
+    from main import _reentry_cooldown_reason
+
+    assert _reentry_cooldown_reason(
+        now=1_000.0, last_exit_time=None, last_exit_was_profit=False, cooldown_seconds=900.0,
+    ) is None
+
+
+# ---------------------------------------------------------------------------
 # 19. orderbook confirmation flipped to ask-side dominance (2026-08-27, user
 #    request): 매도잔량이 매수잔량보다 훨씬 많아야 상승 신호로 본다
 # ---------------------------------------------------------------------------

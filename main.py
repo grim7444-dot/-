@@ -618,6 +618,33 @@ def _daily_profit_lock_reason(
     return None
 
 
+def _reentry_cooldown_reason(
+    now: float,
+    last_exit_time: float | None,
+    last_exit_was_profit: bool,
+    cooldown_seconds: float,
+) -> str | None:
+    """Reason to refuse a fresh entry into a stock just exited, or None to allow one.
+
+    User-reported (2026-08-28): the bot locks in a small gain via the profit
+    trail, then watches the stock make a fresh high a few minutes later --
+    unable to re-enter because of this same cooldown. A profit-lock exit
+    means the strategy's own entry filters (volume, trend, bar strength)
+    already vetted this level once today; if they fire again, that is a
+    genuine continuation, not "chasing the same resistance", so a profit
+    exit skips the cooldown entirely. A stop-out or a forced/defensive exit
+    still waits out the full cooldown -- re-entering right after being
+    proven wrong is exactly the case this was built to prevent.
+    """
+    if last_exit_time is None or last_exit_was_profit:
+        return None
+    elapsed = now - last_exit_time
+    if elapsed >= cooldown_seconds:
+        return None
+    remaining = (cooldown_seconds - elapsed) / 60
+    return f"재진입 쿨다운 {remaining:.1f}분 남음 (같은 자리 추격매수 방지)"
+
+
 # --------------------------------------------------------------------------
 # Trading engine
 # --------------------------------------------------------------------------
@@ -635,9 +662,22 @@ class TradingEngine:
         self._last_ran: dict[str, float] = {}
         # Re-entry cooldown: code -> monotonic time of last exit. Prevents
         # immediately chasing back into the same level a position was just
-        # closed near (e.g. profit-locked at a local high, then re-entering
+        # closed near (e.g. stopped out at a local high, then re-entering
         # the same resistance minutes later on ordinary bar noise).
         self._last_exit_time: dict[str, float] = {}
+        # code -> whether that exit was a profit-lock exit ("익절" in the
+        # strategy's own reason text), separate from a stop-out or a forced
+        # end-of-day/defensive flatten. 2026-08-28 (user-reported): the bot
+        # was locking in a small gain via the tight trail and then watching
+        # the stock make a fresh high minutes later, unable to re-enter
+        # because of this same cooldown. A profit exit means the strategy's
+        # own entry filters (volume, trend, bar strength) already vetted
+        # this level once today -- if they fire again, that is a genuine
+        # continuation signal, not "chasing the same resistance", so the
+        # cooldown is skipped only in that case. A stop-out still waits out
+        # the full cooldown -- re-entering right after being proven wrong is
+        # exactly the case this was built to prevent.
+        self._last_exit_was_profit: dict[str, bool] = {}
         self._entry_cooldown_seconds: float = float(
             (rt.config.get("risk") or {}).get("entry_cooldown_minutes", 15)
         ) * 60
@@ -1597,6 +1637,7 @@ class TradingEngine:
         if result.submitted:
             rt.portfolio.close_position(code, exit_price=price, exit_reason=reason)
             self._last_exit_time[code] = time.monotonic()
+            self._last_exit_was_profit[code] = "익절" in reason
             self._tg_notifier.alert_exit(
                 code=code,
                 name=rt.name_of(code),
@@ -1698,16 +1739,15 @@ class TradingEngine:
                 self._tg_notifier.send(f"\U0001f512 {lock_reason} -- 오늘 남은 시간 신규 진입 없음")
             return
 
-        last_exit = self._last_exit_time.get(code)
-        if last_exit is not None:
-            elapsed = time.monotonic() - last_exit
-            if elapsed < self._entry_cooldown_seconds:
-                remaining = (self._entry_cooldown_seconds - elapsed) / 60
-                logger.info(
-                    "%s: entry skipped - 재진입 쿨다운 %.1f분 남음 (같은 자리 추격매수 방지)",
-                    label, remaining,
-                )
-                return
+        cooldown_reason = _reentry_cooldown_reason(
+            time.monotonic(),
+            self._last_exit_time.get(code),
+            self._last_exit_was_profit.get(code, False),
+            self._entry_cooldown_seconds,
+        )
+        if cooldown_reason is not None:
+            logger.info("%s: entry skipped - %s", label, cooldown_reason)
+            return
 
         # S&P 500 선물 방향 필터
         if not self._us_monitor.check():

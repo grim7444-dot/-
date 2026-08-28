@@ -220,3 +220,106 @@ def test_trend_broken_past_early_stop_until_still_exits_on_the_tighter_stop(make
     signal = strategy.evaluate(window, _position(ENTRY, ENTRY))
     assert signal.action is Action.EXIT
     assert "1.3%" in signal.reason
+
+
+# ---------------------------------------------------------------------------
+# midday (11:00-15:00) symmetric 1.5%/1.5% override, decided once at entry
+# and held for the position's whole life (2026-08-28, user request: 너무
+# 거래가 없네. 익절1.5% 손절1.5%로 가자 11시부터3시까지-- faster turnover
+# in the middle of the day).
+# ---------------------------------------------------------------------------
+
+MIDDAY_STRATEGIES = [
+    pytest.param(
+        lambda: ORB(
+            symbol="TEST", timeframe="1Min", trend_ema=5, volume_lookback=5,
+            stop_pct=0.013, arm_pct=0.012, lock_pct=0.025,
+            midday_stop_pct=0.015, midday_lock_pct=0.015,
+            midday_window_start="11:00", midday_window_end="15:00",
+        ),
+        id="orb",
+    ),
+    pytest.param(
+        lambda: PullbackBounce(
+            symbol="TEST", timeframe="1Min", trend_ema=5, swing_lookback=5,
+            use_rsi_filter=False, use_macd_filter=False,
+            use_resistance_filter=False, use_bb_filter=False,
+            stop_pct=0.013, arm_pct=0.012, lock_pct=0.025,
+            midday_stop_pct=0.015, midday_lock_pct=0.015,
+            midday_window_start="11:00", midday_window_end="15:00",
+        ),
+        id="pullback_bounce",
+    ),
+]
+
+MIDDAY_ENTRY = "2026-08-28T03:00:00+00:00"   # 12:00 KST -- inside the window
+MORNING_ENTRY = "2026-08-28T00:40:00+00:00"  # 09:40 KST -- before the window
+
+
+def _position_entered_at(entry_price: float, highest_price: float, entry_time: str) -> Position:
+    return Position(
+        symbol="TEST", side=LONG, qty=1,
+        entry_price=entry_price, stop_price=entry_price * 0.98, stop_distance=entry_price * 0.02,
+        highest_price=highest_price, entry_time=entry_time,
+    )
+
+
+@pytest.mark.parametrize("make_strategy", MIDDAY_STRATEGIES)
+def test_midday_entry_holds_past_the_normal_1_3pct_stop(make_strategy):
+    """-1.4% is past the normal 1.3% stop but inside midday's wider 1.5%."""
+    strategy = make_strategy()
+    position = _position_entered_at(ENTRY, ENTRY, MIDDAY_ENTRY)
+    signal = strategy.evaluate(_window(ENTRY * (1 - 0.014)), position)
+    assert signal.action is Action.HOLD, signal.reason
+
+
+@pytest.mark.parametrize("make_strategy", MIDDAY_STRATEGIES)
+def test_midday_entry_exits_once_it_clears_the_1_5pct_stop(make_strategy):
+    strategy = make_strategy()
+    position = _position_entered_at(ENTRY, ENTRY, MIDDAY_ENTRY)
+    signal = strategy.evaluate(_window(ENTRY * (1 - 0.016)), position)
+    assert signal.action is Action.EXIT
+    assert "1.5%" in signal.reason
+
+
+@pytest.mark.parametrize("make_strategy", MIDDAY_STRATEGIES)
+def test_a_morning_entry_still_uses_the_normal_1_3pct_stop(make_strategy):
+    """Same -1.4% drop, but this position was opened before 11:00 -- the
+    wall clock moving into the midday window later must not retroactively
+    widen a stop that was never meant to apply to it. Uses a window with a
+    settled flat trend EMA (10,000) above the current price, so trend_intact
+    is False here and the plain 1.3% stop is the only thing in play."""
+    strategy = make_strategy()
+    position = _position_entered_at(ENTRY, ENTRY, MORNING_ENTRY)
+    window = _window_trend_intact(35, flat_level=10_000.0, last_close=ENTRY * (1 - 0.014))
+    signal = strategy.evaluate(window, position)
+    assert signal.action is Action.EXIT
+    assert "1.3%" in signal.reason
+
+
+@pytest.mark.parametrize("make_strategy", MIDDAY_STRATEGIES)
+def test_midday_entry_locks_in_at_1_5pct_instead_of_the_normal_2_5pct(make_strategy):
+    """A 1.6% peak is past midday's 1.5% lock (floor set, trailing begins)
+    but still short of the normal 2.5% lock (would just be "armed")."""
+    strategy = make_strategy()
+    peak = ENTRY * 1.016
+    position = _position_entered_at(ENTRY, peak, MIDDAY_ENTRY)
+    floor = ENTRY * 1.015  # midday lock floor dominates the loose 0.5% trail here
+
+    below_floor = strategy.evaluate(_window(floor - 1.0), position)
+    assert below_floor.action is Action.EXIT
+    assert "확정 익절" in below_floor.reason
+
+    above_floor = strategy.evaluate(_window(floor + 1.0), position)
+    assert above_floor.action is Action.HOLD
+    assert "익절 대기" in above_floor.reason
+
+
+@pytest.mark.parametrize("make_strategy", MIDDAY_STRATEGIES)
+def test_a_morning_entry_is_only_armed_not_locked_at_the_same_1_6pct_peak(make_strategy):
+    strategy = make_strategy()
+    peak = ENTRY * 1.016
+    position = _position_entered_at(ENTRY, peak, MORNING_ENTRY)
+    signal = strategy.evaluate(_window(peak), position)
+    assert signal.action is Action.HOLD
+    assert "무장" in signal.reason

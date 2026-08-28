@@ -66,6 +66,18 @@ class PullbackBounce(Strategy):
         #: 봉 자체의 타임스탬프/종가로 판정하므로 무-룩어헤드 원칙엔 영향 없다.
         early_stop_pct: float = 0.02,
         early_stop_until: str = "09:30",
+        #: 오후장(midday_window_start~midday_window_end) 시간대에 새로
+        #: 진입하는 포지션은 손절/확정 폭을 대칭 1.5%/1.5%로 고정 (2026-08-28,
+        #: 사용자 요청: "너무 거래가 없네 -- 익절1.5% 손절1.5%로 가자
+        #: 11시부터3시까지"). 회전을 빠르게 해서 체결 빈도를 늘리려는
+        #: 목적이라 early_stop_pct/트레일 확대보다 우선한다. 진입 시점(그
+        #: 봉의 타임스탬프)에 한 번 정해지면 포지션이 살아있는 동안
+        #: entry_time 기준으로 계속 유지된다 -- 15시를 넘겨 보유 중이어도
+        #: 시계가 바뀌었다고 도중에 다른 티어로 전환되지 않는다.
+        midday_stop_pct: float = 0.015,
+        midday_lock_pct: float = 0.015,
+        midday_window_start: str = "11:00",
+        midday_window_end: str = "15:00",
         #: 이 수익률에 도달하면 "무장" -- 아직 확정 바닥은 아니고 그냥 대기.
         arm_pct: float = 0.02,
         #: 이 수익률부터 진입가 대비 최소 이만큼은 확정 (바닥을 여기 고정).
@@ -129,6 +141,10 @@ class PullbackBounce(Strategy):
         self.stop_pct = stop_pct
         self.early_stop_pct = early_stop_pct
         self.early_stop_until = parse_clock(early_stop_until, "early_stop_until")
+        self.midday_stop_pct = midday_stop_pct
+        self.midday_lock_pct = midday_lock_pct
+        self.midday_window_start = parse_clock(midday_window_start, "midday_window_start")
+        self.midday_window_end = parse_clock(midday_window_end, "midday_window_end")
         self.arm_pct = arm_pct
         self.lock_pct = lock_pct
         self.peak_trail_pct = peak_trail_pct
@@ -187,11 +203,18 @@ class PullbackBounce(Strategy):
         # 무-룩어헤드 원칙에 영향 없음.
         bar_time = pd.Timestamp(window.index[-1]).time()
         trend_intact = price > trend
+        # 오후장 진입은 entry_time(포지션이 없으면 이번 봉 자체)이 기준 --
+        # 한 번 정해지면 그 포지션이 살아있는 동안 바뀌지 않는다.
+        reference_time = (
+            (position.entry_time_of_day() or bar_time) if position is not None else bar_time
+        )
+        is_midday = self.midday_window_start <= reference_time < self.midday_window_end
         effective_stop_pct = (
-            self.early_stop_pct
-            if (bar_time < self.early_stop_until or trend_intact)
+            self.midday_stop_pct if is_midday
+            else self.early_stop_pct if (bar_time < self.early_stop_until or trend_intact)
             else self.stop_pct
         )
+        effective_lock_pct = self.midday_lock_pct if is_midday else self.lock_pct
 
         # --- manage an open position ---------------------------------------
         if position is not None:
@@ -208,17 +231,18 @@ class PullbackBounce(Strategy):
                     f"{effective_stop_pct:.1%} 손절 ({gain:+.2%})", atr_value,
                 )
 
-            if peak_gain >= self.lock_pct:
-                # 최소 lock_pct는 확정 -- 바닥이 진입가 아래로 절대 안 내려간다.
-                # 그 위로는 고점 대비 트레일 폭만큼만 밀리면 바로 청산 -- 고점이
-                # big_win_pct를 넘는 "진짜 추세"에서는 그 폭을 big_win_trail_pct로
-                # 넓혀서 좁은 트레일에 너무 일찍 털리지 않게 한다.
+            if peak_gain >= effective_lock_pct:
+                # 최소 effective_lock_pct는 확정 -- 바닥이 진입가 아래로 절대
+                # 안 내려간다. 그 위로는 고점 대비 트레일 폭만큼만 밀리면 바로
+                # 청산 -- 고점이 big_win_pct를 넘는 "진짜 추세"에서는 그 폭을
+                # big_win_trail_pct로 넓혀서 좁은 트레일에 너무 일찍 털리지
+                # 않게 한다.
                 trail_pct = (
                     self.big_win_trail_pct if peak_gain >= self.big_win_pct
                     else self.peak_trail_pct
                 )
                 floor = max(
-                    entry * (1 + self.lock_pct),
+                    entry * (1 + effective_lock_pct),
                     peak * (1.0 - trail_pct),
                 )
                 if price <= floor:
@@ -232,11 +256,11 @@ class PullbackBounce(Strategy):
                 )
 
             if peak_gain >= self.arm_pct:
-                # 무장은 됐지만 아직 lock_pct 미달 -- 확정 바닥 없이 그냥 대기
-                # (반락해도 위의 stop_pct 손절 이상은 잃지 않는다).
+                # 무장은 됐지만 아직 effective_lock_pct 미달 -- 확정 바닥 없이
+                # 그냥 대기 (반락해도 위의 stop_pct 손절 이상은 잃지 않는다).
                 return self._hold(
                     window,
-                    f"무장(+{self.arm_pct:.0%}), {self.lock_pct:.0%} 도달 대기 "
+                    f"무장(+{self.arm_pct:.0%}), {effective_lock_pct:.0%} 도달 대기 "
                     f"(현재 {gain:+.2%})",
                 )
             return self._hold(

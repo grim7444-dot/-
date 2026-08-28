@@ -1764,3 +1764,44 @@ def test_cmd_trade_dry_run_once_completes_without_error(workdir):
 
     args = argparse.Namespace(config=None, once=True, dry_run=True, live=False, watch=False)
     assert main.cmd_trade(args, cli_live=False) == 0
+
+
+# ---------------------------------------------------------------------------
+# 24. Position.entry_time_of_day() -- feeds the midday 1.5%/1.5% tier lock
+#    (see MIDDAY_STRATEGIES in test_exit_tiers.py). Defensive parsing mirrors
+#    the pre-existing entry_date() right above it in portfolio.py.
+# ---------------------------------------------------------------------------
+
+
+def test_entry_time_of_day_converts_utc_to_kst():
+    from datetime import time as _time
+
+    from portfolio import LONG, Position
+
+    position = Position(
+        symbol="TEST", side=LONG, qty=1, entry_price=10_000.0,
+        stop_price=9_800.0, stop_distance=200.0,
+        entry_time="2026-08-28T03:00:00+00:00",  # 12:00 KST
+    )
+    assert position.entry_time_of_day() == _time(12, 0, 0)
+
+
+def test_entry_time_of_day_is_none_when_unset():
+    from portfolio import LONG, Position
+
+    position = Position(
+        symbol="TEST", side=LONG, qty=1, entry_price=10_000.0,
+        stop_price=9_800.0, stop_distance=200.0,
+    )
+    assert position.entry_time_of_day() is None
+
+
+def test_entry_time_of_day_is_none_for_unparsable_text():
+    from portfolio import LONG, Position
+
+    position = Position(
+        symbol="TEST", side=LONG, qty=1, entry_price=10_000.0,
+        stop_price=9_800.0, stop_distance=200.0,
+        entry_time="not a real timestamp",
+    )
+    assert position.entry_time_of_day() is None

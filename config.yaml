@@ -134,6 +134,14 @@ universe:
       # 사용자 피드백 (2026-08-28) -- 이 구간만 2%로 넓힌다.
       early_stop_pct: 0.02
       early_stop_until: "09:30"
+      # 11시~15시 사이 신규 진입은 손절/확정 폭을 대칭 1.5%/1.5%로 고정
+      # (2026-08-28, 사용자 요청: "너무 거래가 없네 -- 익절1.5% 손절1.5%로
+      # 가자 11시부터3시까지"). 진입 시점 기준으로 한 번 정해지면 그
+      # 포지션이 살아있는 동안 계속 유지된다.
+      midday_stop_pct: 0.015
+      midday_lock_pct: 0.015
+      midday_window_start: "11:00"
+      midday_window_end: "15:00"
       arm_pct: 0.012
       lock_pct: 0.025
       # peak_trail_pct 0.3%->0.5%, big_win_pct 4%->3% (2026-08-28, 사용자
@@ -182,6 +190,14 @@ universe:
       # 사용자 피드백 (2026-08-28) -- 이 구간만 2%로 넓힌다.
       early_stop_pct: 0.02
       early_stop_until: "09:30"
+      # 11시~15시 사이 신규 진입은 손절/확정 폭을 대칭 1.5%/1.5%로 고정
+      # (2026-08-28, 사용자 요청: "너무 거래가 없네 -- 익절1.5% 손절1.5%로
+      # 가자 11시부터3시까지"). 진입 시점 기준으로 한 번 정해지면 그
+      # 포지션이 살아있는 동안 계속 유지된다.
+      midday_stop_pct: 0.015
+      midday_lock_pct: 0.015
+      midday_window_start: "11:00"
+      midday_window_end: "15:00"
       arm_pct: 0.012
       lock_pct: 0.025
       # peak_trail_pct 0.3%->0.5%, big_win_pct 4%->3% (2026-08-28, 사용자
@@ -214,6 +230,14 @@ universe:
       # 사용자 피드백 (2026-08-28) -- 이 구간만 2%로 넓힌다.
       early_stop_pct: 0.02
       early_stop_until: "09:30"
+      # 11시~15시 사이 신규 진입은 손절/확정 폭을 대칭 1.5%/1.5%로 고정
+      # (2026-08-28, 사용자 요청: "너무 거래가 없네 -- 익절1.5% 손절1.5%로
+      # 가자 11시부터3시까지"). 진입 시점 기준으로 한 번 정해지면 그
+      # 포지션이 살아있는 동안 계속 유지된다.
+      midday_stop_pct: 0.015
+      midday_lock_pct: 0.015
+      midday_window_start: "11:00"
+      midday_window_end: "15:00"
       arm_pct: 0.012
       lock_pct: 0.025
       # peak_trail_pct 0.3%->0.5%, big_win_pct 4%->3% (2026-08-28, 사용자
@@ -246,6 +270,14 @@ universe:
       # 사용자 피드백 (2026-08-28) -- 이 구간만 2%로 넓힌다.
       early_stop_pct: 0.02
       early_stop_until: "09:30"
+      # 11시~15시 사이 신규 진입은 손절/확정 폭을 대칭 1.5%/1.5%로 고정
+      # (2026-08-28, 사용자 요청: "너무 거래가 없네 -- 익절1.5% 손절1.5%로
+      # 가자 11시부터3시까지"). 진입 시점 기준으로 한 번 정해지면 그
+      # 포지션이 살아있는 동안 계속 유지된다.
+      midday_stop_pct: 0.015
+      midday_lock_pct: 0.015
+      midday_window_start: "11:00"
+      midday_window_end: "15:00"
       arm_pct: 0.012
       lock_pct: 0.025
       # peak_trail_pct 0.3%->0.5%, big_win_pct 4%->3% (2026-08-28, 사용자

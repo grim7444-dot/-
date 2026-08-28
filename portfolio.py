@@ -20,7 +20,7 @@ import logging
 import os
 import tempfile
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -141,6 +141,27 @@ class Position:
         if moment.tzinfo is not None:
             moment = moment.astimezone(KST)
         return moment.date()
+
+    def entry_time_of_day(self) -> "time | None":
+        """The KST wall-clock time this position was opened, if known.
+
+        Same defensive parsing as entry_date() (entry_time is free-form
+        text, written by several code paths). Used to lock a position to
+        whichever exit tier was in force at entry -- e.g. a 11:00-15:00
+        window with different stop/lock percentages (2026-08-28, user
+        request) -- so a still-open position never switches tiers mid-trade
+        just because the wall clock moved on.
+        """
+        raw = (self.entry_time or "").strip()
+        if not raw:
+            return None
+        try:
+            moment = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if moment.tzinfo is not None:
+            moment = moment.astimezone(KST)
+        return moment.time()
 
     def effective_stop(self) -> float:
         """The stop actually in force: the tighter of hard stop and trail."""

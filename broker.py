@@ -851,7 +851,7 @@ class KiwoomBroker(BrokerBase):
         rows = data.get("trde_qty_sdnin") or []
         out: list[VolumeSurgeCandidate] = []
         for r in rows:
-            code = str(r.get("stk_cd") or "").strip()
+            code = _clean_stock_code(r.get("stk_cd"))
             if not code:
                 continue
             out.append(VolumeSurgeCandidate(
@@ -888,7 +888,7 @@ class KiwoomBroker(BrokerBase):
         rows = data.get("motn_stk") or []
         out: list[ViTriggeredStock] = []
         for r in rows:
-            code = str(r.get("stk_cd") or "").strip()
+            code = _clean_stock_code(r.get("stk_cd"))
             if not code:
                 continue
             out.append(ViTriggeredStock(
@@ -1110,6 +1110,21 @@ class KiwoomBroker(BrokerBase):
                 ", ".join(sorted(skipped)),
             )
         return closed
+
+
+def _clean_stock_code(raw: Any) -> str:
+    """Extract the plain 6-digit KRX code Kiwoom's stk_cd fields carry.
+
+    Confirmed live 2026-08-28: the combined-market ranking TRs (ka10023/
+    ka10054, called with stex_tp="3" for KRX+NXT together) return codes
+    with a trailing venue suffix -- e.g. "108860_AL" -- that broke every
+    chart/orderbook/order lookup downstream, since those all expect a bare
+    6-digit code. get_market_codes already strips a leading "A" prefix
+    Kiwoom uses elsewhere; this generalizes to any prefix or suffix around
+    the 6 digits rather than assuming one specific shape.
+    """
+    match = re.search(r"\d{6}", str(raw or ""))
+    return match.group(0) if match else ""
 
 
 def _to_float(value: Any) -> float:

@@ -1531,3 +1531,61 @@ def test_ask_bid_ratio_handles_zero_bid_quantity():
 
     assert _ask_bid_ratio(_FakeQtyOrderBook(total_bid_qty=0.0, total_ask_qty=500.0)) == float("inf")
     assert _ask_bid_ratio(_FakeQtyOrderBook(total_bid_qty=0.0, total_ask_qty=0.0)) == 1.0
+
+
+# ---------------------------------------------------------------------------
+# 20. volume-surge/VI codes strip Kiwoom's combined-market venue suffix
+#    (2026-08-28: a live run added 12 codes like "108860_AL" to the
+#    universe -- every chart/order lookup for them failed from then on,
+#    since every other broker call expects a bare 6-digit code)
+# ---------------------------------------------------------------------------
+
+
+def test_clean_stock_code_strips_a_trailing_venue_suffix():
+    from broker import _clean_stock_code
+
+    assert _clean_stock_code("108860_AL") == "108860"
+
+
+def test_clean_stock_code_strips_a_leading_market_prefix():
+    from broker import _clean_stock_code
+
+    assert _clean_stock_code("A005930") == "005930"
+
+
+def test_clean_stock_code_passes_through_a_bare_code():
+    from broker import _clean_stock_code
+
+    assert _clean_stock_code("005930") == "005930"
+
+
+def test_clean_stock_code_returns_empty_for_junk():
+    from broker import _clean_stock_code
+
+    assert _clean_stock_code("") == ""
+    assert _clean_stock_code(None) == ""
+    assert _clean_stock_code("AL") == ""
+
+
+def test_volume_surge_parses_a_suffixed_code_clean():
+    broker = _broker_returning({
+        "trde_qty_sdnin": [
+            {"stk_cd": "108860_AL", "stk_nm": "셀바스AI", "cur_prc": "5000",
+             "flu_rt": "3.5", "now_trde_qty": "10000", "sdnin_qty": "5000", "sdnin_rt": "80"},
+        ],
+    })
+    out = broker.get_volume_surge()
+    assert len(out) == 1
+    assert out[0].code == "108860"
+
+
+def test_vi_triggered_parses_a_suffixed_code_clean():
+    broker = _broker_returning({
+        "motn_stk": [
+            {"stk_cd": "376900_AL", "stk_nm": "로킷헬스케어", "motn_pric": "10000",
+             "open_pric_pre_flu_rt": "5.0", "vimotn_cnt": "1", "viaplc_tp": "1"},
+        ],
+    })
+    out = broker.get_vi_triggered()
+    assert len(out) == 1
+    assert out[0].code == "376900"

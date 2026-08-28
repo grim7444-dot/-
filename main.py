@@ -749,11 +749,20 @@ class TradingEngine:
         self._strength_min: float = float(st_cfg.get("min_strength", 100.0))
         # 수수료/슬리피지 방지 주문 최적화 (2026-08-27, 사용자 요청): 시장가 대신
         # 최우선호가 + buffer_ticks의 지정가(marketable limit)로 주문해 최악의
-        # 체결가에 상한을 둔다. 손절/시간강제청산은 반드시 체결돼야 하므로 이
-        # 대상에서 제외 -- 각 호출부에서 use_limit=False로 지정한다.
+        # 체결가에 상한을 둔다.
+        #
+        # 손절/시간강제청산도 시장가 대신 지정가로 (2026-08-28, 사용자 요청:
+        # "익절 손절을 시장가로 하지 말고 다른방법은 없을까 슬리피지도 더
+        # 타이트하게"): 이 둘은 반드시 체결돼야 하므로 그냥 시장가를 썼었는데,
+        # 시장가는 최악 체결가에 상한이 아예 없다. 대신 stop_limit_buffer_ticks
+        # (기본 5틱, 익절용 2틱보다 훨씬 공격적)로 최우선호가를 크게 넘겨
+        # 부르면 거의 항상 즉시 체결되면서도 슬리피지 상한은 걸린다. 호가창
+        # 자체가 없을 때만(드묾) _marketable_limit_price가 None을 돌려주고
+        # 기존처럼 시장가로 자동 폴백된다 -- "반드시 체결" 원칙은 그대로 유지.
         oe_cfg = rt.config.get("order_execution") or {}
         self._use_limit_orders: bool = bool(oe_cfg.get("use_limit_orders", True))
         self._limit_buffer_ticks: int = int(oe_cfg.get("limit_buffer_ticks", 2))
+        self._stop_limit_buffer_ticks: int = int(oe_cfg.get("stop_limit_buffer_ticks", 5))
         # Dynamic universe refresh
         scr_cfg = (rt.config.get("screener") or {})
         self._universe_refresh_interval: float = float(
@@ -1431,7 +1440,7 @@ class TradingEngine:
                 )
                 self._submit_exit(
                     code, position, price, "stop hit", open_orders, asset_cfg,
-                    session_ok, session_reason, market=market, use_limit=False,
+                    session_ok, session_reason, market=market, urgent=True,
                 )
                 return
 
@@ -1493,7 +1502,7 @@ class TradingEngine:
                 logger.warning("%s: TIME EXIT - %s", label, why)
                 self._submit_exit(
                     code, position, price, why, open_orders, asset_cfg,
-                    session_ok, session_reason, market=market, use_limit=False,
+                    session_ok, session_reason, market=market, urgent=True,
                 )
                 return
 
@@ -1535,13 +1544,13 @@ class TradingEngine:
         if signal.action is Action.EXIT:
             # The strategy's own EXIT covers both its stop_pct stop and its
             # lock_pct/peak_trail_pct take-profit under one Action -- only the
-            # stop needs a guaranteed fill, so it's the one told apart by its
-            # own reason text (see the f"{stop_pct:.0%} 손절 ..." format both
-            # ORB and PullbackBounce use).
+            # stop needs the urgent (wider) buffer, so it's the one told apart
+            # by its own reason text (see the f"{stop_pct:.0%} 손절 ..."
+            # format both ORB and PullbackBounce use).
             self._submit_exit(
                 code, position, price, signal.reason, open_orders, asset_cfg,
                 session_ok, session_reason, market=market,
-                use_limit="손절" not in signal.reason,
+                urgent="손절" in signal.reason,
             )
             return
 
@@ -1598,11 +1607,17 @@ class TradingEngine:
         session_ok: bool,
         session_reason: str,
         market: str = KOSPI,
-        use_limit: bool = True,
+        urgent: bool = False,
     ) -> None:
-        """``use_limit`` picks a marketable limit order over a plain market
-        order (see _marketable_limit_price) -- callers that need a guaranteed
-        fill (the hard stop, a forced time exit) must pass False."""
+        """Both exit paths use a marketable limit order (see
+        _marketable_limit_price), never a plain market order, as long as
+        orderbook data is available (it silently falls back to market
+        otherwise -- the one case nothing can bound). ``urgent`` (the hard
+        stop, a forced time exit -- anything that must not sit unfilled)
+        crosses the book by stop_limit_buffer_ticks instead of the normal
+        limit_buffer_ticks, wide enough to fill immediately in virtually all
+        cases while still capping the worst-case price, unlike a market
+        order which has no cap at all."""
         if position is None:
             return
         rt = self.rt
@@ -1625,10 +1640,11 @@ class TradingEngine:
             logger.warning("%s: exit blocked - %s", code, checks.describe())
             return
         limit_price = None
-        if use_limit and self._use_limit_orders:
+        if self._use_limit_orders:
+            buffer_ticks = self._stop_limit_buffer_ticks if urgent else self._limit_buffer_ticks
             orderbook = rt.broker.get_orderbook(code)
             limit_price = _marketable_limit_price(
-                orderbook, ctx.side, market, rt.rules, self._limit_buffer_ticks
+                orderbook, ctx.side, market, rt.rules, buffer_ticks
             )
         try:
             result = rt.broker.submit_order(

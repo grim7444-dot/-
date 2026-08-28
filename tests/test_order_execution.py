@@ -140,7 +140,10 @@ class _FakeExecNotifier:
         pass
 
 
-def _exec_engine(portfolio, config, broker, use_limit_orders=True, limit_buffer_ticks=2):
+def _exec_engine(
+    portfolio, config, broker, use_limit_orders=True, limit_buffer_ticks=2,
+    stop_limit_buffer_ticks=5,
+):
     from main import TradingEngine
     from risk.manager import RiskManager
 
@@ -161,6 +164,7 @@ def _exec_engine(portfolio, config, broker, use_limit_orders=True, limit_buffer_
     engine._tg_notifier = _FakeExecNotifier()
     engine._use_limit_orders = use_limit_orders
     engine._limit_buffer_ticks = limit_buffer_ticks
+    engine._stop_limit_buffer_ticks = stop_limit_buffer_ticks
     return engine
 
 
@@ -184,15 +188,18 @@ def test_submit_exit_uses_a_limit_price_for_a_chosen_take_profit(portfolio, conf
 
     engine._submit_exit(
         "005930", position, 10_050.0, "확정 익절", [], {}, True, "",
-        market=KOSPI, use_limit=True,
+        market=KOSPI, urgent=False,
     )
 
     assert len(broker.orders) == 1
     assert broker.orders[0]["price"] == 9_980.0  # sell: best_bid - 2 ticks
 
 
-def test_submit_exit_uses_a_market_order_when_use_limit_is_false(portfolio, config):
-    """This is the hard-stop / forced-time-exit path -- it must always ignore the orderbook."""
+def test_submit_exit_uses_a_wider_limit_price_for_an_urgent_exit(portfolio, config):
+    """The hard-stop / forced-time-exit path (2026-08-28, user request: 시장가로
+    하지 말고 -- don't use plain market orders here either). It crosses the
+    book by stop_limit_buffer_ticks (5, wider than the normal 2) instead of
+    going in with no price cap at all."""
     book = _FakeOrderBook(best_bid=10_000.0, best_ask=10_010.0)
     broker = _FakeExecBroker(orderbook=book)
     engine = _exec_engine(portfolio, config, broker)
@@ -200,21 +207,37 @@ def test_submit_exit_uses_a_market_order_when_use_limit_is_false(portfolio, conf
 
     engine._submit_exit(
         "005930", position, 9_800.0, "stop hit", [], {}, True, "",
-        market=KOSPI, use_limit=False,
+        market=KOSPI, urgent=True,
     )
 
     assert len(broker.orders) == 1
+    assert broker.orders[0]["price"] == 9_950.0  # sell: best_bid - 5 ticks
+
+
+def test_submit_exit_falls_back_to_market_with_no_orderbook_even_when_urgent(portfolio, config):
+    """The one case nothing can bound: no quote data at all means a plain
+    market order regardless of urgency -- same fail-open as the take-profit
+    path, never a reason to refuse an otherwise-valid exit."""
+    broker = _FakeExecBroker(orderbook=None)
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 9_800.0, "stop hit", [], {}, True, "",
+        market=KOSPI, urgent=True,
+    )
+
     assert broker.orders[0]["price"] is None
 
 
-def test_submit_exit_falls_back_to_market_with_no_orderbook_even_when_use_limit_is_true(portfolio, config):
+def test_submit_exit_falls_back_to_market_with_no_orderbook_even_when_not_urgent(portfolio, config):
     broker = _FakeExecBroker(orderbook=None)
     engine = _exec_engine(portfolio, config, broker)
     position = _open_exec_position(portfolio)
 
     engine._submit_exit(
         "005930", position, 10_050.0, "확정 익절", [], {}, True, "",
-        market=KOSPI, use_limit=True,
+        market=KOSPI, urgent=False,
     )
 
     assert broker.orders[0]["price"] is None
@@ -228,7 +251,7 @@ def test_submit_exit_respects_the_global_use_limit_orders_toggle(portfolio, conf
 
     engine._submit_exit(
         "005930", position, 10_050.0, "확정 익절", [], {}, True, "",
-        market=KOSPI, use_limit=True,
+        market=KOSPI, urgent=False,
     )
 
     assert broker.orders[0]["price"] is None
@@ -248,7 +271,7 @@ def test_submit_exit_marks_a_profit_lock_exit_as_a_profit_exit(portfolio, config
 
     engine._submit_exit(
         "005930", position, 10_250.0, "고점 +3.00%에서 반락 -- +2.50% 확정 익절", [], {}, True, "",
-        market=KOSPI, use_limit=True,
+        market=KOSPI, urgent=False,
     )
 
     assert engine._last_exit_was_profit["005930"] is True
@@ -261,7 +284,7 @@ def test_submit_exit_marks_a_stop_loss_exit_as_not_a_profit_exit(portfolio, conf
 
     engine._submit_exit(
         "005930", position, 9_870.0, "1.3% 손절 (-1.30%)", [], {}, True, "",
-        market=KOSPI, use_limit=False,
+        market=KOSPI, urgent=True,
     )
 
     assert engine._last_exit_was_profit["005930"] is False
@@ -290,7 +313,7 @@ def test_rejected_exit_clears_a_position_the_broker_confirms_is_gone(portfolio, 
 
     engine._submit_exit(
         "005930", position, 30_350.0, "stop hit", [], {}, True, "",
-        market=KOSPI, use_limit=False,
+        market=KOSPI, urgent=True,
     )
 
     assert portfolio.get("005930") is None  # stale local position cleared
@@ -309,7 +332,7 @@ def test_rejected_exit_leaves_the_position_when_broker_still_holds_it(portfolio,
 
     engine._submit_exit(
         "005930", position, 30_350.0, "stop hit", [], {}, True, "",
-        market=KOSPI, use_limit=False,
+        market=KOSPI, urgent=True,
     )
 
     assert portfolio.get("005930") is not None  # left alone for the next cycle to retry
@@ -327,7 +350,7 @@ def test_rejected_exit_does_nothing_when_the_holdings_check_also_fails(portfolio
 
     engine._submit_exit(
         "005930", position, 30_350.0, "stop hit", [], {}, True, "",
-        market=KOSPI, use_limit=False,
+        market=KOSPI, urgent=True,
     )
 
     assert portfolio.get("005930") is not None  # cannot confirm either way -- left alone

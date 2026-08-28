@@ -47,10 +47,44 @@ def test_mode_change_discards_equity_history(tmp_path):
     assert dry.state.peak_equity == pytest.approx(10_000_000.0)
 
     live = Portfolio(**_paths(tmp_path), mode_label="LIVE")
-    assert live.state.peak_equity == 0.0
-    assert live.state.last_equity == 0.0
-    assert live.state.day_start_equity == 0.0
-    assert live.state.day_start_date == ""
+    live.mark_equity(573_390.0)
+    assert live.state.peak_equity == pytest.approx(573_390.0)
+    assert live.state.last_equity == pytest.approx(573_390.0)
+    assert live.state.day_start_equity == pytest.approx(573_390.0)
+    assert live.state.day_start_date != ""
+
+
+def test_constructing_a_portfolio_does_not_by_itself_discard_equity_history(tmp_path):
+    """2026-08-28 live incident: status/resume/stop/check build a Portfolio
+    with a dry-run-derived mode label to stay safe, but never call
+    mark_equity() -- merely constructing one (e.g. for `python main.py
+    status`) must not wipe the drawdown guard's and the daily profit lock's
+    reference points just because this run's label happens to differ."""
+    live = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    live.mark_equity(573_390.0)
+
+    read_only = Portfolio(**_paths(tmp_path), mode_label="PAPER-SIM")
+    assert read_only.state.peak_equity == pytest.approx(573_390.0)
+    assert read_only.state.last_equity == pytest.approx(573_390.0)
+    assert read_only.state.day_start_equity == pytest.approx(573_390.0)
+
+
+def test_a_readonly_command_does_not_overwrite_the_stored_mode(tmp_path):
+    """resume()/stop() call save() too -- that must not stamp this run's
+    (possibly dry-run-derived) label over the last real trading run's mode,
+    or the *next* real run would see a false mismatch and reset for real."""
+    live = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    live.mark_equity(573_390.0)
+
+    resume_run = Portfolio(**_paths(tmp_path), mode_label="PAPER-SIM")
+    resume_run.resume()  # calls save() internally, like `python main.py resume`
+
+    still_live = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    still_live.mark_equity(580_000.0)
+    # day_start_equity only moves on a mode-mismatch reset or a new calendar
+    # day -- neither applies here, so a wrongly-overwritten mode would show
+    # up as this jumping to 580,000 instead of staying at the morning's 573,390.
+    assert still_live.state.day_start_equity == pytest.approx(573_390.0)
 
 
 def test_same_mode_keeps_equity_history(tmp_path):
@@ -73,12 +107,15 @@ def test_mode_change_does_not_clear_the_stopped_flag(tmp_path):
 
 
 def test_first_live_equity_does_not_read_as_a_drawdown(tmp_path, config):
-    """The incident, end to end: dry run then live, no kill switch."""
+    """The incident, end to end: dry run then live, no kill switch. Mirrors
+    the real call order (main.py always calls mark_equity() immediately
+    before check_drawdown() every cycle)."""
     dry = Portfolio(**_paths(tmp_path), mode_label="DRY-RUN")
     dry.mark_equity(10_000_000.0)
     dry.save()
 
     live = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    live.mark_equity(573_390.0)
     status = RiskManager(config, live).check_drawdown(573_390.0)
     assert status.breached is False
 

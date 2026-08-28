@@ -387,27 +387,17 @@ class Portfolio:
         self.daily = DailyPnlLog(daily_path)
         self.mode_label = mode_label
         self.state = self.store.load()
-
-        # Equity figures are mode-specific. A dry run reports the configured
-        # starting_equity (10,000,000), and carrying that peak into a live
-        # account worth 573,000 reads as a 94% drawdown -- which fired the kill
-        # switch and liquidated the book on the first live run. Reset the
-        # equity history whenever the mode changes; the STOPPED flag and the
-        # positions survive, only the numbers that are not comparable go.
-        previous = self.state.mode
-        if previous and previous != mode_label:
-            logger.warning(
-                "mode changed %s -> %s; discarding equity history "
-                "(peak %.0f) because the two are not comparable",
-                previous,
-                mode_label,
-                self.state.peak_equity,
-            )
-            self.state.peak_equity = 0.0
-            self.state.last_equity = 0.0
-            self.state.day_start_equity = 0.0
-            self.state.day_start_date = ""
-        self.state.mode = mode_label
+        # The mode-mismatch equity reset (see mark_equity()) is deliberately
+        # NOT done here. Constructing a Portfolio happens for every command,
+        # including read-only ones (status/resume/stop/check) that build a
+        # dry-run broker purely to stay safe and never call mark_equity() --
+        # 2026-08-28 (live incident): those were resolving a "PAPER-SIM"
+        # label on every invocation and wiping peak_equity/day_start_equity
+        # (the drawdown kill switch's and the daily profit lock's reference
+        # points) each time, even though nothing comparable was ever being
+        # recorded to replace them. Only a run that is about to record a
+        # real new equity figure needs to -- or is able to correctly --
+        # decide whether the stored history is comparable to it.
 
     # -- positions ---------------------------------------------------------
 
@@ -467,6 +457,30 @@ class Portfolio:
     # -- equity / status ---------------------------------------------------
 
     def mark_equity(self, equity: float) -> None:
+        # Equity figures are mode-specific. A dry run reports the configured
+        # starting_equity (10,000,000), and carrying that peak into a live
+        # account worth 573,000 reads as a 94% drawdown -- which fired the
+        # kill switch and liquidated the book on the first live run. Reset
+        # the equity history whenever the recorded mode changes; the STOPPED
+        # flag and the positions survive, only the numbers that are not
+        # comparable go. This only runs here (not at construction -- see the
+        # __init__ comment) because this is the one place a run is actually
+        # about to make the stored numbers stale or fresh.
+        previous = self.state.mode
+        if previous and previous != self.mode_label:
+            logger.warning(
+                "mode changed %s -> %s; discarding equity history "
+                "(peak %.0f) because the two are not comparable",
+                previous,
+                self.mode_label,
+                self.state.peak_equity,
+            )
+            self.state.peak_equity = 0.0
+            self.state.last_equity = 0.0
+            self.state.day_start_equity = 0.0
+            self.state.day_start_date = ""
+        self.state.mode = self.mode_label
+
         self.state.last_equity = equity
         if equity > self.state.peak_equity:
             self.state.peak_equity = equity
@@ -502,7 +516,9 @@ class Portfolio:
         return self.state.stopped
 
     def save(self) -> None:
-        self.state.mode = self.mode_label
+        # state.mode is set only by mark_equity() -- see its comment. A save()
+        # from any other path (resume/stop/open_position/...) must not stamp
+        # this run's label over whatever the last real trading run recorded.
         self.store.save(self.state)
 
     # -- daily roll-up -----------------------------------------------------

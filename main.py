@@ -555,6 +555,34 @@ def _marketable_limit_price(
     return float(rules.round_to_tick(base - offset, market, "down"))
 
 
+#: Not exhaustive -- a new issuer brand or an unusually named company could
+#: still slip through either direction -- but catches every case seen live
+#: so far (2026-08-28): leveraged/inverse index ETNs and brand-name ETFs
+#: pulled in by the volume-surge/VI realtime scan alongside real stocks.
+_FUND_LIKE_KEYWORDS = (
+    "ETN", "ETF", "레버리지", "인버스", "선물",
+    "KODEX", "TIGER", "KBSTAR", "ARIRANG", "SOL", "HANARO", "KOSEF",
+    "KINDEX", "TIMEFOLIO", "ACE", "PLUS", "WON", "히어로즈", "파워",
+    "마스터", "네비게이터",
+)
+
+
+def _is_fund_like(name: str) -> bool:
+    """True if *name* reads like an ETF/ETN/leveraged-index product rather
+    than an individual company.
+
+    User-reported (2026-08-28): a live scan added "한투 레버리지코스닥150
+    선물 ETN" and "KODEX 미국나스닥AI테크액티브" to the universe alongside
+    real stocks. Kiwoom's ranking TRs (ka10023/ka10054) don't expose an
+    instrument-type field to filter on directly, so this falls back to
+    name matching -- the literal "ETN"/"ETF" markers, index-derivative
+    words no ordinary company name would contain, and the major Korean ETF
+    issuer brand prefixes.
+    """
+    upper = name.upper()
+    return any(keyword in upper for keyword in _FUND_LIKE_KEYWORDS)
+
+
 def _ask_bid_ratio(orderbook: Any) -> float:
     """매도잔량 / 매수잔량. 2026-08-27(사용자 요청)부터 이 값이 높을수록
     (매도잔량이 매수잔량을 크게 웃돌수록) 상승 신호로 판단한다 -- 두꺼운
@@ -949,12 +977,16 @@ class TradingEngine:
         for s, mkt_name in sorted(surges, key=lambda p: p[0].surge_rate, reverse=True):
             if s.code in seen or s.code in existing:
                 continue
+            if _is_fund_like(s.name):
+                continue
             if s.price < min_price or (max_price > 0 and s.price > max_price):
                 continue
             seen.add(s.code)
             picks.append((s.code, s.name, mkt_name, s.surge_rate))
         for v, mkt_name in sorted(vis, key=lambda p: p[0].trigger_count_today, reverse=True):
             if v.code in seen or v.code in existing:
+                continue
+            if _is_fund_like(v.name):
                 continue
             if v.trigger_price < min_price or (max_price > 0 and v.trigger_price > max_price):
                 continue

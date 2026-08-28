@@ -1589,3 +1589,47 @@ def test_vi_triggered_parses_a_suffixed_code_clean():
     out = broker.get_vi_triggered()
     assert len(out) == 1
     assert out[0].code == "376900"
+
+
+# ---------------------------------------------------------------------------
+# 21. ETN/ETF names are filtered out of the realtime volume-surge/VI scan
+#    (2026-08-28: a live run added leveraged ETNs and brand-name ETFs to
+#    the day-trading universe alongside real stocks)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", [
+    "하나 K방산TOP10 ETN",
+    "한투 레버리지코스닥150선물 ETN",
+    "삼성 코스닥 150 TR ETN",
+    "WON 미국빌리어네어",
+    "KODEX 미국나스닥AI테크액티브",
+    "PLUS K리츠",
+])
+def test_is_fund_like_flags_every_instrument_seen_live(name):
+    from main import _is_fund_like
+
+    assert _is_fund_like(name) is True
+
+
+@pytest.mark.parametrize("name", ["삼성전자", "비보존 제약", "씨피시스템", "엔켐"])
+def test_is_fund_like_leaves_ordinary_stock_names_alone(name):
+    from main import _is_fund_like
+
+    assert _is_fund_like(name) is False
+
+
+def test_realtime_candidates_excludes_fund_like_names():
+    from broker import VolumeSurgeCandidate
+
+    surges = [
+        VolumeSurgeCandidate(code="005930", name="삼성전자", price=70_000.0, surge_rate=10.0),
+        VolumeSurgeCandidate(code="411420", name="KODEX 미국나스닥AI테크액티브", price=15_000.0, surge_rate=90.0),
+    ]
+    broker = _FakeRealtimeBroker(surges_by_market={"001": surges})
+    config = {"screener": {"min_price": 2000, "max_price": 0, "n_stocks": 5}, "universe": {}}
+    engine = _make_realtime_engine(config, broker)
+    results = dict(engine._realtime_candidates())
+
+    assert "005930" in results
+    assert "411420" not in results

@@ -95,9 +95,15 @@ def test_kosdaq_uses_its_own_tick_ladder():
 
 
 class _FakeExecBroker:
-    def __init__(self, orderbook=None):
+    def __init__(self, orderbook=None, reject_with=None, holdings=None, holdings_error=None):
         self._orderbook = orderbook
         self.orders: list[dict] = []
+        #: If set, submit_order raises this BrokerError instead of filling.
+        self._reject_with = reject_with
+        #: dict[str, Holding] returned by get_holdings(), or an exception
+        #: instance/class to raise instead.
+        self._holdings = holdings or {}
+        self._holdings_error = holdings_error
 
     def get_stock_info(self, code):
         from broker import StockInfo
@@ -107,18 +113,28 @@ class _FakeExecBroker:
     def get_orderbook(self, code):
         return self._orderbook
 
+    def get_holdings(self):
+        if self._holdings_error is not None:
+            raise self._holdings_error
+        return self._holdings
+
     def submit_order(self, **kwargs):
         from broker import OrderResult
 
         self.orders.append(kwargs)
+        if self._reject_with is not None:
+            raise self._reject_with
         return OrderResult(
             code=kwargs["code"], side=kwargs["side"], qty=kwargs["qty"], submitted=True, order_id="1",
         )
 
 
 class _FakeExecNotifier:
-    def send(self, *a, **k):
-        pass
+    def __init__(self):
+        self.sent: list[str] = []
+
+    def send(self, text, *a, **k):
+        self.sent.append(text)
 
     def alert_exit(self, *a, **k):
         pass
@@ -249,3 +265,69 @@ def test_submit_exit_marks_a_stop_loss_exit_as_not_a_profit_exit(portfolio, conf
     )
 
     assert engine._last_exit_was_profit["005930"] is False
+
+
+# ---------------------------------------------------------------------------
+# A rejected exit reconciles against the broker's actual holdings instead of
+# leaving a stale position to retry forever (2026-08-28 live incident: 122640
+# 예스티 stayed in state.json after Kiwoom's real sellable qty was already 0,
+# and every cycle re-tried the same rejected sell with no way out).
+# ---------------------------------------------------------------------------
+
+
+def test_rejected_exit_clears_a_position_the_broker_confirms_is_gone(portfolio, config):
+    from broker import BrokerError
+
+    broker = _FakeExecBroker(
+        reject_with=BrokerError(
+            "order for 005930 was not accepted [return_code=20] "
+            "[2000](800033:매도가능수량이 부족합니다. 0주 매도가능)"
+        ),
+        holdings={},  # broker reports nothing held for this code
+    )
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 30_350.0, "stop hit", [], {}, True, "",
+        market=KOSPI, use_limit=False,
+    )
+
+    assert portfolio.get("005930") is None  # stale local position cleared
+    assert engine._tg_notifier.sent  # user was told
+
+
+def test_rejected_exit_leaves_the_position_when_broker_still_holds_it(portfolio, config):
+    from broker import BrokerError, Holding
+
+    broker = _FakeExecBroker(
+        reject_with=BrokerError("temporary rejection"),
+        holdings={"005930": Holding(code="005930", qty=10.0)},
+    )
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 30_350.0, "stop hit", [], {}, True, "",
+        market=KOSPI, use_limit=False,
+    )
+
+    assert portfolio.get("005930") is not None  # left alone for the next cycle to retry
+
+
+def test_rejected_exit_does_nothing_when_the_holdings_check_also_fails(portfolio, config):
+    from broker import BrokerError
+
+    broker = _FakeExecBroker(
+        reject_with=BrokerError("temporary rejection"),
+        holdings_error=BrokerError("holdings unavailable too"),
+    )
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 30_350.0, "stop hit", [], {}, True, "",
+        market=KOSPI, use_limit=False,
+    )
+
+    assert portfolio.get("005930") is not None  # cannot confirm either way -- left alone

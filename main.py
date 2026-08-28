@@ -1630,10 +1630,14 @@ class TradingEngine:
             limit_price = _marketable_limit_price(
                 orderbook, ctx.side, market, rt.rules, self._limit_buffer_ticks
             )
-        result = rt.broker.submit_order(
-            code=code, side=ctx.side, qty=position.qty, price=limit_price,
-            is_exit=True, note=f"exit: {reason}",
-        )
+        try:
+            result = rt.broker.submit_order(
+                code=code, side=ctx.side, qty=position.qty, price=limit_price,
+                is_exit=True, note=f"exit: {reason}",
+            )
+        except BrokerError as exc:
+            self._reconcile_rejected_exit(code, reason, exc)
+            return
         if result.submitted:
             rt.portfolio.close_position(code, exit_price=price, exit_reason=reason)
             self._last_exit_time[code] = time.monotonic()
@@ -1648,6 +1652,53 @@ class TradingEngine:
             )
         else:
             logger.info("%s: exit simulated only - position left untouched in state", code)
+
+    def _reconcile_rejected_exit(self, code: str, reason: str, exc: Exception) -> None:
+        """A sell was rejected -- confirm whether the broker actually holds
+        this position before letting the loop retry it forever.
+
+        2026-08-28 (live incident): 122640 예스티 stayed in state.json after
+        the account's real sellable quantity was already 0 -- Kiwoom rejected
+        every retry with "매도가능수량이 부족합니다. 0주 매도가능" and, with
+        nothing to reconcile the local position against, the same rejected
+        sell just repeated every cycle forever, permanently occupying a
+        position slot and its risk budget. broker.KiwoomBroker.submit_order
+        already retries once when Kiwoom reports a smaller-but-positive
+        sellable qty (a known state-vs-broker drift); this handles the
+        remaining case where the real qty is 0 and no retry can help.
+
+        If the broker's own holdings report zero (or nothing) for this code,
+        the account genuinely does not have it any more -- clear the stale
+        local position (no fabricated trade record: we do not know the real
+        exit price or when it happened, only that it is gone) and say so
+        loudly so the user can check the actual account. Otherwise this was
+        some other, possibly transient, broker error -- leave the position
+        alone and let the next cycle retry as before.
+        """
+        rt = self.rt
+        try:
+            holdings = rt.broker.get_holdings()
+        except BrokerError:
+            logger.error("%s: exit failed and holdings check also failed: %s", code, exc)
+            return
+        real_qty = holdings[code].qty if code in holdings else 0.0
+        if real_qty > 0:
+            logger.error(
+                "%s: exit failed, but broker still shows %s held - will retry next cycle: %s",
+                code, real_qty, exc,
+            )
+            return
+        logger.error(
+            "%s: exit rejected and broker confirms 0 held -- local position was stale, "
+            "clearing it: %s", code, exc,
+        )
+        rt.portfolio.state.positions.pop(code, None)
+        rt.portfolio.save()
+        self._tg_notifier.send(
+            f"⚠️ {rt.name_of(code)}({code}) 매도 거부 -- 실제 계좌에는 이미 없는 "
+            f"것으로 확인되어 로컬 포지션 기록을 정리했습니다. 원인: {exc}\n"
+            "실제 체결/잔고는 HTS·MTS에서 직접 확인해주세요."
+        )
 
     def _submit_entry(
         self,

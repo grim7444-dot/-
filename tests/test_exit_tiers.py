@@ -14,6 +14,7 @@ pullback that peak_trail_pct alone would have caught.
 
 from __future__ import annotations
 
+import pandas as pd
 import pytest
 
 from portfolio import LONG, Position
@@ -164,6 +165,58 @@ def test_after_early_stop_until_the_normal_tighter_stop_applies(make_strategy):
     """The same drop that held above must exit once the clock passes 09:30."""
     strategy = make_strategy()
     window = _window_at(35, BETWEEN)  # last bar at 09:34 -- past early_stop_until
+    signal = strategy.evaluate(window, _position(ENTRY, ENTRY))
+    assert signal.action is Action.EXIT
+    assert "1.3%" in signal.reason
+
+
+# ---------------------------------------------------------------------------
+# early_stop_pct also widens whenever price is still above its own trend EMA,
+# independent of time of day (2026-08-28, user request: 상승곡선에서는
+# 1.3이아니라 2%까지도 주는건 어때 -- a still-intact uptrend deserves the same
+# breathing room the early morning gets, and tightens back up the moment the
+# trend actually breaks).
+# ---------------------------------------------------------------------------
+
+
+def _window_trend_intact(n_bars: int, flat_level: float, last_close: float):
+    """Warm-up padding, then 6 flat bars at `flat_level` (settles a 5-period
+    EMA almost exactly there), then a final bar at `last_close`. Lets a test
+    control price-vs-trend-EMA precisely instead of relying on make_bars'
+    own noise -- verified against indicators.ema() before use."""
+    window = make_bars(n=n_bars, start_price=10_000.0, seed=3, freq="1min", volatility=0.003).copy()
+    close_col = window.columns.get_loc("close")
+    high_col = window.columns.get_loc("high")
+    low_col = window.columns.get_loc("low")
+    for i in range(1, 7):
+        window.iloc[-i, close_col] = flat_level
+        window.iloc[-i, high_col] = max(window.iloc[-i]["high"], flat_level)
+        window.iloc[-i, low_col] = min(window.iloc[-i]["low"], flat_level)
+    window.iloc[-1, close_col] = last_close
+    window.iloc[-1, high_col] = max(window.iloc[-1]["high"], last_close)
+    window.iloc[-1, low_col] = min(window.iloc[-1]["low"], last_close)
+    return window
+
+
+@pytest.mark.parametrize("make_strategy", EARLY_STOP_STRATEGIES)
+def test_trend_intact_past_early_stop_until_still_uses_the_wider_stop(make_strategy):
+    """Past 09:30, but price (9,835) is still above its own settled trend
+    EMA (9,700) -- the uptrend never broke, so the wide 2% stop must still
+    apply and this must HOLD rather than exit on the normal 1.3%."""
+    strategy = make_strategy()
+    window = _window_trend_intact(35, flat_level=9_700.0, last_close=BETWEEN)
+    assert pd.Timestamp(window.index[-1]).time() >= strategy.early_stop_until  # sanity: past the window
+    signal = strategy.evaluate(window, _position(ENTRY, ENTRY))
+    assert signal.action is Action.HOLD, signal.reason
+
+
+@pytest.mark.parametrize("make_strategy", EARLY_STOP_STRATEGIES)
+def test_trend_broken_past_early_stop_until_still_exits_on_the_tighter_stop(make_strategy):
+    """Same clock, but price (9,835) has fallen below its own settled trend
+    EMA (10,000) -- the uptrend broke, so this must exit on the normal 1.3%
+    (this is the pre-existing behavior; still true with the new OR clause)."""
+    strategy = make_strategy()
+    window = _window_trend_intact(35, flat_level=10_000.0, last_close=BETWEEN)
     signal = strategy.evaluate(window, _position(ENTRY, ENTRY))
     assert signal.action is Action.EXIT
     assert "1.3%" in signal.reason

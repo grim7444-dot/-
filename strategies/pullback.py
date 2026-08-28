@@ -58,10 +58,12 @@ class PullbackBounce(Strategy):
         min_bar_strength: float = 0.3,
         #: 고정 손절 폭.
         stop_pct: float = 0.02,
-        #: 오전 초반(09:00~early_stop_until)은 낙폭이 커서 정상 stop_pct로는
-        #: 노이즈에도 자주 걸린다는 사용자 피드백 (2026-08-28) -- 이 구간만
-        #: 더 넓은 early_stop_pct를 쓰고, 그 이후엔 정상 stop_pct로 돌아간다.
-        #: 봉 자체의 타임스탬프로 판정하므로 무-룩어헤드 원칙엔 영향 없다.
+        #: 정상 stop_pct보다 넓은 손절폭 -- 두 경우에 쓴다 (2026-08-28, 사용자
+        #: 요청): (1) 오전 초반(09:00~early_stop_until)은 낙폭 자체가 커서
+        #: 정상 stop_pct로는 노이즈에도 자주 걸린다. (2) 추세(EMA) 유지
+        #: 중이면 하루 종일 -- 상승 흐름이 진짜 살아있는 동안은 정상 손절폭
+        #: 대신 여유를 주고, EMA 아래로 꺾이면 바로 정상 stop_pct로 돌아간다.
+        #: 봉 자체의 타임스탬프/종가로 판정하므로 무-룩어헤드 원칙엔 영향 없다.
         early_stop_pct: float = 0.02,
         early_stop_until: str = "09:30",
         #: 이 수익률에 도달하면 "무장" -- 아직 확정 바닥은 아니고 그냥 대기.
@@ -176,11 +178,19 @@ class PullbackBounce(Strategy):
             return self._hold(window, "trend EMA not established")
         trend = float(trend)
 
-        # 오전 초반엔 낙폭이 커서 정상 stop_pct보다 넓은 early_stop_pct를 쓴다.
-        # window의 마지막 봉 자체 타임스탬프로 판정 -- 무-룩어헤드 원칙에 영향 없음.
+        # 추세(EMA) 유지 중이면 하루 종일 early_stop_pct를 쓴다 (2026-08-28,
+        # 사용자 요청): 상승 흐름이 진짜 살아있는 동안은 정상 stop_pct보다
+        # 넓게 버텨주고, EMA 아래로 꺾이는 순간 다시 촘촘한 stop_pct로
+        # 방어한다. 오전 초반(09:00~early_stop_until)은 추세와 무관하게
+        # 낙폭 자체가 커서 항상 넓은 폭을 쓴다 -- 기존 조건은 그대로 두고
+        # OR로만 추가했다. window의 마지막 봉 자체 타임스탬프/종가로 판정하므로
+        # 무-룩어헤드 원칙에 영향 없음.
         bar_time = pd.Timestamp(window.index[-1]).time()
+        trend_intact = price > trend
         effective_stop_pct = (
-            self.early_stop_pct if bar_time < self.early_stop_until else self.stop_pct
+            self.early_stop_pct
+            if (bar_time < self.early_stop_until or trend_intact)
+            else self.stop_pct
         )
 
         # --- manage an open position ---------------------------------------

@@ -72,11 +72,13 @@ class ORB(Strategy):
         min_bar_strength: float = 0.5,
         #: 고정 손절 폭.
         stop_pct: float = 0.017,
-        #: 오전 초반(09:00~early_stop_until)은 낙폭이 커서 정상 stop_pct로는
-        #: 노이즈에도 자주 걸린다는 사용자 피드백 (2026-08-28) -- 이 구간만
-        #: 더 넓은 early_stop_pct를 쓰고, 그 이후엔 정상 stop_pct로 돌아간다.
-        #: 봉 자체의 타임스탬프로 판정하므로(오프닝 레인지와 동일한 방식)
-        #: 무-룩어헤드 원칙은 그대로 유지된다.
+        #: 정상 stop_pct보다 넓은 손절폭 -- 두 경우에 쓴다 (2026-08-28, 사용자
+        #: 요청): (1) 오전 초반(09:00~early_stop_until)은 낙폭 자체가 커서
+        #: 정상 stop_pct로는 노이즈에도 자주 걸린다. (2) 추세(EMA) 유지
+        #: 중이면 하루 종일 -- 상승 흐름이 진짜 살아있는 동안은 정상 손절폭
+        #: 대신 여유를 주고, EMA 아래로 꺾이면 바로 정상 stop_pct로 돌아간다.
+        #: 봉 자체의 타임스탬프/종가로 판정하므로(오프닝 레인지와 동일한
+        #: 방식) 무-룩어헤드 원칙은 그대로 유지된다.
         early_stop_pct: float = 0.02,
         early_stop_until: str = "09:30",
         #: PullbackBounce와 동일한 3단계 익절 (무장/확정/고점트레일).
@@ -137,12 +139,22 @@ class ORB(Strategy):
 
         price = float(window["close"].iloc[-1])
         atr_value = self._atr(window)
-        # 오전 초반엔 낙폭이 커서 정상 stop_pct보다 넓은 early_stop_pct를 쓴다.
-        # window의 마지막 봉 자체 타임스탬프로 판정 -- 오프닝 레인지 판정과
-        # 같은 방식이라 무-룩어헤드 원칙에 영향 없음.
+
+        trend_val = ema(window["close"], self.trend_ema).iloc[-1]
+        trend_now = float(trend_val) if pd.notna(trend_val) else None
+        # 추세(EMA) 유지 중이면 하루 종일 early_stop_pct를 쓴다 (2026-08-28,
+        # 사용자 요청): 상승 흐름이 진짜 살아있는 동안은 정상 stop_pct보다
+        # 넓게 버텨주고, EMA 아래로 꺾이는 순간 다시 촘촘한 stop_pct로
+        # 방어한다. 오전 초반(09:00~early_stop_until)은 추세와 무관하게
+        # 낙폭 자체가 커서 항상 넓은 폭을 쓴다 -- 기존 조건은 그대로 두고
+        # OR로만 추가했다. window의 마지막 봉 자체 타임스탬프/종가로 판정하므로
+        # 무-룩어헤드 원칙에 영향 없음.
         bar_time = pd.Timestamp(window.index[-1]).time()
+        trend_intact = trend_now is not None and price > trend_now
         effective_stop_pct = (
-            self.early_stop_pct if bar_time < self.early_stop_until else self.stop_pct
+            self.early_stop_pct
+            if (bar_time < self.early_stop_until or trend_intact)
+            else self.stop_pct
         )
 
         # --- manage an open position -- identical tiering to PullbackBounce ---
@@ -209,12 +221,10 @@ class ORB(Strategy):
                 window, f"오프닝 레인지 형성 중 (첫 {self.range_minutes}분)",
             )
 
-        trend = ema(window["close"], self.trend_ema).iloc[-1]
-        if pd.isna(trend):
+        if trend_now is None:
             return self._hold(window, "trend EMA not established")
-        trend = float(trend)
-        if price <= trend:
-            return self._hold(window, f"EMA{self.trend_ema} {trend:,.0f} 아래 -- 상승 추세 아님")
+        if price <= trend_now:
+            return self._hold(window, f"EMA{self.trend_ema} {trend_now:,.0f} 아래 -- 상승 추세 아님")
 
         vwap = session_vwap(window)
         vwap_now = vwap.iloc[-1]

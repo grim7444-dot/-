@@ -2280,6 +2280,7 @@ def _cmd_trade_locked(args: argparse.Namespace, rt: "Runtime") -> int:
 
     engine = TradingEngine(rt)
     watch = bool(getattr(args, "watch", False))
+    force_dry_run = bool(getattr(args, "dry_run", False))
     # --dry-run defaults to a single cycle so it stays a quick smoke test.
     # --watch turns it into an all-day observation run: the same loop, the same
     # signals, still sending nothing. That is the honest way to build trust in

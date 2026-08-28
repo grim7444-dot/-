@@ -1701,3 +1701,22 @@ def test_single_instance_lock_writes_the_holder_pid(tmp_path):
         assert lock_path.read_text().strip() == str(os.getpid())
     finally:
         lock.release()
+
+
+# ---------------------------------------------------------------------------
+# 23. cmd_trade end-to-end -- a --once/--dry-run smoke test through the real
+#    CLI entry point, not just through TradingEngine directly. This is the
+#    level a NameError from a bad refactor of cmd_trade (2026-08-28: the
+#    single-instance-lock split above left `force_dry_run` undefined and
+#    crashed the live bot on startup) actually shows up at -- a unit test
+#    against TradingEngine alone cannot catch a bug in cmd_trade's own body.
+# ---------------------------------------------------------------------------
+
+
+def test_cmd_trade_dry_run_once_completes_without_error(workdir):
+    import argparse
+
+    import main
+
+    args = argparse.Namespace(config=None, once=True, dry_run=True, live=False, watch=False)
+    assert main.cmd_trade(args, cli_live=False) == 0

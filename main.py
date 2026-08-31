@@ -2388,7 +2388,17 @@ def cmd_study_bounce(args: argparse.Namespace) -> int:
 def cmd_backtest(args: argparse.Namespace) -> int:
     from backtest import Backtester, format_result
 
-    rt = build_runtime(args, cli_live=False, force_dry_run=True)
+    # force_dry_run=True always -- a backtest simulates its own fills and must
+    # never place a real order. cli_live only controls which credential set
+    # gets resolved: without a PAPER app key configured (as here), leaving
+    # this False falls back to a pure DryRunBroker with synthetic bars
+    # (2026-08-31, user-reported: "SYNTHETIC DATA in use" for every newly
+    # added stock). Passing --live resolves the LIVE-labeled credentials the
+    # user actually has, which force_dry_run wraps in a ReadOnlyBroker for
+    # real historical chart access -- reads only, same "observe mode" used by
+    # `diagnose-orderbook`.
+    cli_live = bool(getattr(args, "live", False))
+    rt = build_runtime(args, cli_live=cli_live, force_dry_run=True)
     end = datetime.now(KST)
     start = months_to_start(args.months, end)
     # flush=True throughout: redirected output is block-buffered, and a long
@@ -3356,6 +3366,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     bt = sub.add_parser("backtest", help="run a historical backtest")
     bt.add_argument("--months", type=int, default=6, help="months of history (default: 6)")
+    bt.add_argument(
+        "--live", action="store_true",
+        help="read historical bars through the live account's real credentials "
+        "(no orders are ever placed -- the backtest broker is always read-only)",
+    )
 
     paper = sub.add_parser("paper", help="trade the mock account")
     paper.add_argument("--dry-run", action="store_true", help="print orders, send nothing")

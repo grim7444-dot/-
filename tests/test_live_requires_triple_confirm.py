@@ -411,6 +411,102 @@ def test_paper_subcommand_with_live_flag_still_needs_the_env(workdir):
 
 
 # --------------------------------------------------------------------------
+# `backtest --live`: read-only access to real historical bars
+#
+# 2026-08-31 (user-reported): a backtest run against newly added stocks came
+# back "SYNTHETIC DATA in use" for every one of them. Root cause: `backtest`
+# always called build_runtime(cli_live=False), which resolves PAPER
+# credentials -- and this user's .env has no PAPER app key configured, only
+# LIVE, so build_broker fell through to a pure DryRunBroker with no real
+# chart access at all. `--live` lets it resolve the LIVE credential set the
+# user actually has; force_dry_run must stay True regardless, since a
+# backtest simulates its own fills and must never be able to place a real
+# order through the resolved broker.
+# --------------------------------------------------------------------------
+
+
+def test_backtest_accepts_a_live_flag(workdir):
+    import main
+
+    args = main.build_parser().parse_args(["backtest", "--months", "1"])
+    assert args.live is False
+
+    args = main.build_parser().parse_args(["backtest", "--months", "1", "--live"])
+    assert args.live is True
+
+
+def test_backtest_with_live_flag_resolves_live_credentials_read_only(workdir, monkeypatch):
+    """`--live` must flip which credential set loads, but never unlock orders."""
+    import main
+
+    monkeypatch.setenv("KIWOOM_PAPER", "false")
+    monkeypatch.setenv("KIWOOM_LIVE_CONFIRM", LIVE_CONFIRM_TOKEN)
+    monkeypatch.setenv("KIWOOM_LIVE_APP_KEY", LIVE_KEY)
+    monkeypatch.setenv("KIWOOM_LIVE_SECRET_KEY", LIVE_SECRET)
+
+    captured: dict[str, object] = {}
+    real_build = main.build_runtime
+
+    class _StopEarly(Exception):
+        pass
+
+    def spy(args, cli_live, force_dry_run=False, run_screener=False):
+        captured["cli_live"] = cli_live
+        captured["force_dry_run"] = force_dry_run
+        rt = real_build(args, cli_live, force_dry_run)
+        captured["decision"] = rt.decision
+        captured["credentials"] = rt.credentials
+        captured["broker"] = rt.broker
+        raise _StopEarly
+
+    monkeypatch.setattr(main, "build_runtime", spy)
+    args = main.build_parser().parse_args(["backtest", "--months", "1", "--live"])
+    with pytest.raises(_StopEarly):
+        main.cmd_backtest(args)
+
+    assert captured["cli_live"] is True
+    assert captured["force_dry_run"] is True
+    assert captured["decision"].live is True
+    assert captured["credentials"].loaded_for == "LIVE"
+    # force_dry_run=True must still refuse every write, live credentials or not.
+    from broker import ReadOnlyBroker
+
+    assert isinstance(captured["broker"], ReadOnlyBroker)
+
+
+def test_backtest_without_live_flag_stays_on_paper_credentials(workdir, monkeypatch):
+    """Unchanged default behavior: no --live, no real chart access."""
+    import main
+
+    monkeypatch.setenv("KIWOOM_PAPER", "false")
+    monkeypatch.setenv("KIWOOM_LIVE_CONFIRM", LIVE_CONFIRM_TOKEN)
+    monkeypatch.setenv("KIWOOM_LIVE_APP_KEY", LIVE_KEY)
+    monkeypatch.setenv("KIWOOM_LIVE_SECRET_KEY", LIVE_SECRET)
+
+    captured: dict[str, object] = {}
+    real_build = main.build_runtime
+
+    class _StopEarly(Exception):
+        pass
+
+    def spy(args, cli_live, force_dry_run=False, run_screener=False):
+        rt = real_build(args, cli_live, force_dry_run)
+        captured["decision"] = rt.decision
+        captured["credentials"] = rt.credentials
+        captured["broker"] = rt.broker
+        raise _StopEarly
+
+    monkeypatch.setattr(main, "build_runtime", spy)
+    args = main.build_parser().parse_args(["backtest", "--months", "1"])
+    with pytest.raises(_StopEarly):
+        main.cmd_backtest(args)
+
+    assert captured["decision"].live is False
+    assert captured["credentials"].loaded_for == "PAPER"
+    assert isinstance(captured["broker"], DryRunBroker)
+
+
+# --------------------------------------------------------------------------
 # `setup` writes credentials without leaking them
 # --------------------------------------------------------------------------
 

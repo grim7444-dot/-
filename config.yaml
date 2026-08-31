@@ -600,6 +600,275 @@ universe:
       close_strength: 0.7
       atr_trail_mult: 2.0
 
+  # -------------------------------------------------------------------------
+  # TEMPORARY -- backtest-only validation entries (2026-08-31, 사용자 요청:
+  # "그럼 니가 생각할때 더 중요한 무언가가 필요한거 없나?" -> 오늘 바꾼
+  # ORB/PullbackBounce 로직(VWAP 끄기, 볼린저 과도확장, 오후장 1.5%/1.5%
+  # 티어, 종목당 연속손절 차단 등)이 스크리너가 실제로 골랐던 종목들에서
+  # 과거 데이터로 어떻게 작동했을지 보려고 추가. 스크리너 자체(키움 실시간
+  # 랭킹 API)는 "지금 이 순간"만 조회되므로 과거 재현이 원천적으로
+  # 불가능 -- 이건 종목 선정 검증이 아니라 전략 로직만 검증한다.
+  #
+  # 오늘 실제로 거래됐던 종목 8개, screener.py의 _SCALPING_CFG_TEMPLATE/
+  # _PULLBACK_CFG_TEMPLATE과 완전히 동일한 파라미터로 ORB/PullbackBounce를
+  # 번갈아 배정 (스크리너가 실제로 하는 것과 같은 방식). market은 검증 안
+  # 됨 -- KOSDAQ으로 가정, 정확한 세율이 궁금하면 profile로 확인.
+  #
+  # 검증 끝나면 이 블록 전체를 지우세요 -- 평소 live 운영에서는 스크리너가
+  # 매일 새로 종목을 고르므로 여기 고정된 8종목은 필요 없습니다.
+  # -------------------------------------------------------------------------
+  "079650":
+    name: 서산
+    market: KOSDAQ
+    enabled: true
+    strategy: orb
+    timeframe: 1Min
+    min_qty: 1
+    entry_window: ["09:05", "14:50"]
+    force_exit_at: "15:10"
+    params:
+      range_minutes: 5
+      volume_lookback: 10
+      volume_mult: 1.2
+      trend_ema: 21
+      min_bar_strength: 0.35
+      use_vwap_filter: false
+      use_bb_filter: true
+      bb_period: 20
+      bb_mult: 2.0
+      max_bb_extension_pct: 0.03
+      stop_pct: 0.013
+      early_stop_pct: 0.02
+      early_stop_until: "09:30"
+      midday_stop_pct: 0.015
+      midday_lock_pct: 0.015
+      midday_window_start: "11:00"
+      midday_window_end: "15:00"
+      arm_pct: 0.012
+      lock_pct: 0.025
+      peak_trail_pct: 0.005
+      big_win_pct: 0.04
+      big_win_trail_pct: 0.02
+      max_cost_share: 0.35
+
+  "004310":
+    name: 현대약품
+    market: KOSDAQ
+    enabled: true
+    strategy: pullback_bounce
+    timeframe: 1Min
+    min_qty: 1
+    entry_window: ["09:15", "14:50"]
+    force_exit_at: "15:10"
+    params:
+      trend_ema: 20
+      swing_lookback: 7
+      pullback_bars: 2
+      pullback_min_pct: 0.005
+      min_bar_strength: 0.25
+      stop_pct: 0.013
+      early_stop_pct: 0.02
+      early_stop_until: "09:30"
+      midday_stop_pct: 0.015
+      midday_lock_pct: 0.015
+      midday_window_start: "11:00"
+      midday_window_end: "15:00"
+      arm_pct: 0.012
+      lock_pct: 0.025
+      peak_trail_pct: 0.005
+      big_win_pct: 0.04
+      big_win_trail_pct: 0.02
+      max_cost_share: 0.35
+
+  "187660":
+    name: 페니트리움바이오
+    market: KOSDAQ
+    enabled: true
+    strategy: orb
+    timeframe: 1Min
+    min_qty: 1
+    entry_window: ["09:05", "14:50"]
+    force_exit_at: "15:10"
+    params:
+      range_minutes: 5
+      volume_lookback: 10
+      volume_mult: 1.2
+      trend_ema: 21
+      min_bar_strength: 0.35
+      use_vwap_filter: false
+      use_bb_filter: true
+      bb_period: 20
+      bb_mult: 2.0
+      max_bb_extension_pct: 0.03
+      stop_pct: 0.013
+      early_stop_pct: 0.02
+      early_stop_until: "09:30"
+      midday_stop_pct: 0.015
+      midday_lock_pct: 0.015
+      midday_window_start: "11:00"
+      midday_window_end: "15:00"
+      arm_pct: 0.012
+      lock_pct: 0.025
+      peak_trail_pct: 0.005
+      big_win_pct: 0.04
+      big_win_trail_pct: 0.02
+      max_cost_share: 0.35
+
+  "001210":
+    name: 금호전기
+    market: KOSDAQ
+    enabled: true
+    strategy: pullback_bounce
+    timeframe: 1Min
+    min_qty: 1
+    entry_window: ["09:15", "14:50"]
+    force_exit_at: "15:10"
+    params:
+      trend_ema: 20
+      swing_lookback: 7
+      pullback_bars: 2
+      pullback_min_pct: 0.005
+      min_bar_strength: 0.25
+      stop_pct: 0.013
+      early_stop_pct: 0.02
+      early_stop_until: "09:30"
+      midday_stop_pct: 0.015
+      midday_lock_pct: 0.015
+      midday_window_start: "11:00"
+      midday_window_end: "15:00"
+      arm_pct: 0.012
+      lock_pct: 0.025
+      peak_trail_pct: 0.005
+      big_win_pct: 0.04
+      big_win_trail_pct: 0.02
+      max_cost_share: 0.35
+
+  "033790":
+    name: 피노
+    market: KOSDAQ
+    enabled: true
+    strategy: orb
+    timeframe: 1Min
+    min_qty: 1
+    entry_window: ["09:05", "14:50"]
+    force_exit_at: "15:10"
+    params:
+      range_minutes: 5
+      volume_lookback: 10
+      volume_mult: 1.2
+      trend_ema: 21
+      min_bar_strength: 0.35
+      use_vwap_filter: false
+      use_bb_filter: true
+      bb_period: 20
+      bb_mult: 2.0
+      max_bb_extension_pct: 0.03
+      stop_pct: 0.013
+      early_stop_pct: 0.02
+      early_stop_until: "09:30"
+      midday_stop_pct: 0.015
+      midday_lock_pct: 0.015
+      midday_window_start: "11:00"
+      midday_window_end: "15:00"
+      arm_pct: 0.012
+      lock_pct: 0.025
+      peak_trail_pct: 0.005
+      big_win_pct: 0.04
+      big_win_trail_pct: 0.02
+      max_cost_share: 0.35
+
+  "387690":
+    name: 레메디
+    market: KOSDAQ
+    enabled: true
+    strategy: pullback_bounce
+    timeframe: 1Min
+    min_qty: 1
+    entry_window: ["09:15", "14:50"]
+    force_exit_at: "15:10"
+    params:
+      trend_ema: 20
+      swing_lookback: 7
+      pullback_bars: 2
+      pullback_min_pct: 0.005
+      min_bar_strength: 0.25
+      stop_pct: 0.013
+      early_stop_pct: 0.02
+      early_stop_until: "09:30"
+      midday_stop_pct: 0.015
+      midday_lock_pct: 0.015
+      midday_window_start: "11:00"
+      midday_window_end: "15:00"
+      arm_pct: 0.012
+      lock_pct: 0.025
+      peak_trail_pct: 0.005
+      big_win_pct: 0.04
+      big_win_trail_pct: 0.02
+      max_cost_share: 0.35
+
+  "014950":
+    name: 삼익제약
+    market: KOSDAQ
+    enabled: true
+    strategy: orb
+    timeframe: 1Min
+    min_qty: 1
+    entry_window: ["09:05", "14:50"]
+    force_exit_at: "15:10"
+    params:
+      range_minutes: 5
+      volume_lookback: 10
+      volume_mult: 1.2
+      trend_ema: 21
+      min_bar_strength: 0.35
+      use_vwap_filter: false
+      use_bb_filter: true
+      bb_period: 20
+      bb_mult: 2.0
+      max_bb_extension_pct: 0.03
+      stop_pct: 0.013
+      early_stop_pct: 0.02
+      early_stop_until: "09:30"
+      midday_stop_pct: 0.015
+      midday_lock_pct: 0.015
+      midday_window_start: "11:00"
+      midday_window_end: "15:00"
+      arm_pct: 0.012
+      lock_pct: 0.025
+      peak_trail_pct: 0.005
+      big_win_pct: 0.04
+      big_win_trail_pct: 0.02
+      max_cost_share: 0.35
+
+  "900300":
+    name: 오가닉티코스메틱
+    market: KOSDAQ
+    enabled: true
+    strategy: pullback_bounce
+    timeframe: 1Min
+    min_qty: 1
+    entry_window: ["09:15", "14:50"]
+    force_exit_at: "15:10"
+    params:
+      trend_ema: 20
+      swing_lookback: 7
+      pullback_bars: 2
+      pullback_min_pct: 0.005
+      min_bar_strength: 0.25
+      stop_pct: 0.013
+      early_stop_pct: 0.02
+      early_stop_until: "09:30"
+      midday_stop_pct: 0.015
+      midday_lock_pct: 0.015
+      midday_window_start: "11:00"
+      midday_window_end: "15:00"
+      arm_pct: 0.012
+      lock_pct: 0.025
+      peak_trail_pct: 0.005
+      big_win_pct: 0.04
+      big_win_trail_pct: 0.02
+      max_cost_share: 0.35
+
 # ---------------------------------------------------------------------------
 # KRX market rules
 # ---------------------------------------------------------------------------

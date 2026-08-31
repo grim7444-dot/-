@@ -19,6 +19,14 @@
 
 익절/손절은 눌림목 반등(PullbackBounce)과 동일한 3단계 트레일을 그대로
 쓴다 -- 이미 검증된 로직을 재사용해 익절 방식의 일관성을 유지한다.
+
+포지션 관리 중인 모든 신호(HOLD 포함)는 그 순간의 손절/바닥 가격을
+``Signal.meta["protective_price"]``(및 ``"protective_kind"``: "stop"|"floor")로
+함께 실어 보낸다. 1분봉 마감 때만 가격을 확인하므로, 한 봉 안에서 크게 급락하면
+바닥을 이미 뚫고도 다음 봉이 마감될 때까지 못 잡는 문제가 있었다 (2026-08-31,
+187660 페니트리움바이오: 고점 +1.74% 확정 대기 중 한 봉 만에 -0.41%로 반락).
+main.py가 이 메타를 받아 매 사이클 실시간 호가와 대조해서, 봉 마감을 기다리지
+않고 그 가격을 실제로 뚫은 순간 바로 청산한다.
 """
 
 from __future__ import annotations
@@ -206,6 +214,7 @@ class ORB(Strategy):
                 return self._signal(
                     window, Action.EXIT,
                     f"{effective_stop_pct:.1%} 손절 ({gain:+.2%})", atr_value,
+                    meta={"protective_price": stop_price, "protective_kind": "stop"},
                 )
 
             if peak_gain >= effective_lock_pct:
@@ -222,9 +231,11 @@ class ORB(Strategy):
                         window, Action.EXIT,
                         f"고점 +{peak_gain:.2%}에서 반락 -- {gain:+.2%} 확정 익절",
                         atr_value,
+                        meta={"protective_price": floor, "protective_kind": "floor"},
                     )
                 return self._hold(
                     window, f"익절 대기, 고점 +{peak_gain:.2%} (현재 {gain:+.2%})",
+                    meta={"protective_price": floor, "protective_kind": "floor"},
                 )
 
             if peak_gain >= self.arm_pct:
@@ -232,9 +243,11 @@ class ORB(Strategy):
                     window,
                     f"무장(+{self.arm_pct:.0%}), {effective_lock_pct:.0%} 도달 대기 "
                     f"(현재 {gain:+.2%})",
+                    meta={"protective_price": stop_price, "protective_kind": "stop"},
                 )
             return self._hold(
                 window, f"미무장, 보유 중 ({gain:+.2%}, {self.arm_pct:.0%} 도달 시 무장)",
+                meta={"protective_price": stop_price, "protective_kind": "stop"},
             )
 
         # --- entries ----------------------------------------------------

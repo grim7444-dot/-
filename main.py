@@ -1446,15 +1446,28 @@ class TradingEngine:
                 logger.info("%s: trailing stop moved to %s", label, f"{new_trail:,.0f}")
 
             stop = position.effective_stop()
-            if (position.is_long and price <= stop) or (position.is_short and price >= stop):
+            # 실시간 호가로 보강 (2026-08-31, 사용자 요청): 봉은 1분마다만
+            # 마감되므로, 한 봉 안에서 손절가를 이미 뚫었어도 그 봉이 닫힐
+            # 때까지는 못 잡는다. 롱 포지션은 매수 최우선호가(호가창의
+            # 실제 체결 가능 가격)가 종가보다 더 나쁘면 그쪽을 쓴다 -- 실제
+            # 손실을 과소평가하는 방향으로는 절대 안 움직인다. 호가 조회
+            # 실패 시 조용히 건너뛰고 봉 종가만으로 기존처럼 판단한다.
+            check_price = price
+            if position.is_long:
+                live_bid = self._live_sell_quote(code)
+                if live_bid is not None and live_bid < check_price:
+                    check_price = live_bid
+            if (position.is_long and check_price <= stop) or (position.is_short and check_price >= stop):
                 logger.warning(
-                    "%s: STOP HIT at %s (stop %s) - closing", label, f"{price:,.0f}", f"{stop:,.0f}"
+                    "%s: STOP HIT at %s (stop %s)%s - closing", label,
+                    f"{check_price:,.0f}", f"{stop:,.0f}",
+                    " [실시간 호가]" if check_price != price else "",
                 )
                 self._tg_notifier.alert_stop_hit(
-                    code, rt.name_of(code), price, stop
+                    code, rt.name_of(code), check_price, stop
                 )
                 self._submit_exit(
-                    code, position, price, "stop hit", open_orders, asset_cfg,
+                    code, position, check_price, "stop hit", open_orders, asset_cfg,
                     session_ok, session_reason, market=market, urgent=True,
                 )
                 return
@@ -1554,6 +1567,15 @@ class TradingEngine:
         )
 
         if not signal.actionable:
+            if position is not None and signal.meta:
+                live_breach = self._live_protective_breach(code, position, signal.meta)
+                if live_breach is not None:
+                    reason, live_price, urgent = live_breach
+                    logger.warning("%s: %s", label, reason)
+                    self._submit_exit(
+                        code, position, live_price, reason, open_orders, asset_cfg,
+                        session_ok, session_reason, market=market, urgent=urgent,
+                    )
             return
 
         if signal.action is Action.EXIT:
@@ -1779,6 +1801,54 @@ class TradingEngine:
                 "outside the bot, clearing the stale local position", code,
             )
             self._clear_stale_position(code, "봇 밖에서 매도된 것으로 보여 자동 정리")
+
+    def _live_sell_quote(self, code: str) -> float | None:
+        """The freshest available sell-side reference price for `code` --
+        the orderbook's best bid -- or None if unavailable (fail-open: the
+        normal bar-close path still catches a breach as before, just up to
+        a bar later)."""
+        try:
+            orderbook = self.rt.broker.get_orderbook(code)
+        except BrokerError:
+            return None
+        if orderbook is None or orderbook.best_bid <= 0:
+            return None
+        return float(orderbook.best_bid)
+
+    def _live_protective_breach(
+        self, code: str, position: Position, meta: Mapping[str, Any],
+    ) -> tuple[str, float, bool] | None:
+        """A HOLD signal's protective_price/protective_kind (see the
+        strategies' own module docstrings), checked against the freshest
+        available quote instead of waiting for the next bar close.
+
+        2026-08-31 (live incident): 187660 페니트리움바이오 fell from a
+        locked +1.74% to -0.41% within a single 1-minute bar. The strategy's
+        own floor is only checked when it evaluates the next closed bar, so
+        a big enough intra-minute move blows straight through before the
+        bot can react. This runs every cycle instead, using the same kind
+        of live quote _submit_exit already fetches for order pricing.
+
+        Returns (reason, live_price, urgent) once the live quote has
+        already crossed the protective price, else None -- nothing to
+        react to yet, the normal bar-close path still handles it.
+        """
+        if not position.is_long:
+            return None
+        protective_price = meta.get("protective_price")
+        protective_kind = meta.get("protective_kind")
+        if protective_price is None:
+            return None
+        live_bid = self._live_sell_quote(code)
+        if live_bid is None or live_bid > protective_price:
+            return None
+        entry = position.entry_price
+        gain = (live_bid - entry) / entry if entry else 0.0
+        if protective_kind == "stop":
+            reason = f"손절 (실시간 호가 {live_bid:,.0f} 이탈, {gain:+.2%})"
+        else:
+            reason = f"확정 바닥 {protective_price:,.0f} 실시간 이탈 -- {gain:+.2%} 확정 익절"
+        return reason, live_bid, protective_kind == "stop"
 
     def _submit_entry(
         self,

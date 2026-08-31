@@ -423,3 +423,103 @@ def test_reconcile_leaves_positions_alone_when_the_holdings_check_fails(portfoli
     engine._reconcile_holdings_with_broker()
 
     assert portfolio.get("005930") is not None
+
+
+# ---------------------------------------------------------------------------
+# _live_protective_breach -- catches a protective price (stop or locked
+# floor) already crossed by a live quote, instead of waiting up to a full
+# minute for the next bar close to notice (2026-08-31, live incident: 187660
+# 페니트리움바이오 fell from a locked +1.74% to -0.41% within a single
+# 1-minute bar; see the "protective_price"/"protective_kind" meta the
+# strategies now attach to every HOLD/EXIT while managing a position).
+# ---------------------------------------------------------------------------
+
+
+def test_live_sell_quote_returns_the_best_bid(portfolio, config):
+    book = _FakeOrderBook(best_bid=9_950.0, best_ask=9_960.0)
+    engine = _exec_engine(portfolio, config, _FakeExecBroker(orderbook=book))
+    assert engine._live_sell_quote("005930") == 9_950.0
+
+
+def test_live_sell_quote_is_none_with_no_orderbook(portfolio, config):
+    engine = _exec_engine(portfolio, config, _FakeExecBroker(orderbook=None))
+    assert engine._live_sell_quote("005930") is None
+
+
+def test_live_sell_quote_is_none_when_the_broker_call_fails(portfolio, config):
+    from broker import BrokerError
+
+    class _FailingOrderbookBroker(_FakeExecBroker):
+        def get_orderbook(self, code):
+            raise BrokerError("orderbook unavailable")
+
+    engine = _exec_engine(portfolio, config, _FailingOrderbookBroker())
+    assert engine._live_sell_quote("005930") is None
+
+
+def test_live_protective_breach_fires_on_a_stop_already_crossed(portfolio, config):
+    book = _FakeOrderBook(best_bid=9_780.0, best_ask=9_790.0)  # below the 9,800 stop
+    engine = _exec_engine(portfolio, config, _FakeExecBroker(orderbook=book))
+    position = _open_exec_position(portfolio, entry_price=10_000.0)
+
+    result = engine._live_protective_breach(
+        "005930", position, {"protective_price": 9_800.0, "protective_kind": "stop"},
+    )
+
+    assert result is not None
+    reason, live_price, urgent = result
+    assert "손절" in reason
+    assert live_price == 9_780.0
+    assert urgent is True
+
+
+def test_live_protective_breach_fires_on_a_locked_floor_already_crossed(portfolio, config):
+    book = _FakeOrderBook(best_bid=10_130.0, best_ask=10_140.0)  # below the 10,150 floor
+    engine = _exec_engine(portfolio, config, _FakeExecBroker(orderbook=book))
+    position = _open_exec_position(portfolio, entry_price=10_000.0)
+
+    result = engine._live_protective_breach(
+        "005930", position, {"protective_price": 10_150.0, "protective_kind": "floor"},
+    )
+
+    assert result is not None
+    reason, live_price, urgent = result
+    assert "익절" in reason
+    assert live_price == 10_130.0
+    assert urgent is False
+
+
+def test_live_protective_breach_does_nothing_when_the_quote_is_still_above(portfolio, config):
+    book = _FakeOrderBook(best_bid=9_950.0, best_ask=9_960.0)  # above the 9,800 stop
+    engine = _exec_engine(portfolio, config, _FakeExecBroker(orderbook=book))
+    position = _open_exec_position(portfolio, entry_price=10_000.0)
+
+    result = engine._live_protective_breach(
+        "005930", position, {"protective_price": 9_800.0, "protective_kind": "stop"},
+    )
+
+    assert result is None
+
+
+def test_live_protective_breach_does_nothing_without_meta(portfolio, config):
+    engine = _exec_engine(portfolio, config, _FakeExecBroker(orderbook=None))
+    position = _open_exec_position(portfolio, entry_price=10_000.0)
+
+    assert engine._live_protective_breach("005930", position, {}) is None
+
+
+def test_live_protective_breach_ignores_short_positions(portfolio, config):
+    from portfolio import SHORT, Position
+
+    book = _FakeOrderBook(best_bid=9_780.0, best_ask=9_790.0)
+    engine = _exec_engine(portfolio, config, _FakeExecBroker(orderbook=book))
+    position = Position(
+        symbol="005930", side=SHORT, qty=10,
+        entry_price=10_000.0, stop_price=10_200.0, stop_distance=200.0,
+    )
+
+    result = engine._live_protective_breach(
+        "005930", position, {"protective_price": 9_800.0, "protective_kind": "stop"},
+    )
+
+    assert result is None

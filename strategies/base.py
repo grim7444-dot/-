@@ -112,7 +112,9 @@ class Strategy:
         value = series.iloc[-1] if len(series) else float("nan")
         return float(value) if pd.notna(value) else 0.0
 
-    def _hold(self, window: pd.DataFrame, reason: str) -> Signal:
+    def _hold(
+        self, window: pd.DataFrame, reason: str, meta: dict[str, Any] | None = None
+    ) -> Signal:
         return Signal(
             symbol=self.symbol,
             action=Action.HOLD,
@@ -120,6 +122,7 @@ class Strategy:
             price_ref=float(window["close"].iloc[-1]) if len(window) else 0.0,
             bar_index=len(window) - 1,
             bar_time=window.index[-1] if len(window) else None,
+            meta=meta,
         )
 
     def _signal(

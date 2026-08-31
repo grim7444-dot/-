@@ -232,6 +232,7 @@ class PullbackBounce(Strategy):
                 return self._signal(
                     window, Action.EXIT,
                     f"{effective_stop_pct:.1%} 손절 ({gain:+.2%})", atr_value,
+                    meta={"protective_price": stop_price, "protective_kind": "stop"},
                 )
 
             if peak_gain >= effective_lock_pct:
@@ -253,9 +254,11 @@ class PullbackBounce(Strategy):
                         window, Action.EXIT,
                         f"고점 +{peak_gain:.2%}에서 반락 -- {gain:+.2%} 확정 익절",
                         atr_value,
+                        meta={"protective_price": floor, "protective_kind": "floor"},
                     )
                 return self._hold(
                     window, f"익절 대기, 고점 +{peak_gain:.2%} (현재 {gain:+.2%})",
+                    meta={"protective_price": floor, "protective_kind": "floor"},
                 )
 
             if peak_gain >= self.arm_pct:
@@ -265,9 +268,11 @@ class PullbackBounce(Strategy):
                     window,
                     f"무장(+{self.arm_pct:.0%}), {effective_lock_pct:.0%} 도달 대기 "
                     f"(현재 {gain:+.2%})",
+                    meta={"protective_price": stop_price, "protective_kind": "stop"},
                 )
             return self._hold(
                 window, f"미무장, 보유 중 ({gain:+.2%}, {self.arm_pct:.0%} 도달 시 무장)",
+                meta={"protective_price": stop_price, "protective_kind": "stop"},
             )
 
         # --- entries ----------------------------------------------------

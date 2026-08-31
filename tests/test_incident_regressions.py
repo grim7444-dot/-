@@ -1842,3 +1842,40 @@ def test_entry_time_of_day_is_none_for_unparsable_text():
         entry_time="not a real timestamp",
     )
     assert position.entry_time_of_day() is None
+
+
+# ---------------------------------------------------------------------------
+# 25. a strategy's own window_bars is respected when fetching bars, not
+#    silently capped at a fixed 260 (2026-08-31 live incident): stocks added
+#    to the dynamic universe mid-afternoon showed "오프닝 레인지 데이터
+#    없음" for the rest of the day, because the old fixed 260-bar lookback
+#    no longer reached back to ORB's session-anchored opening range
+#    (09:00-09:05) once the session had run past ~260 minutes.
+# ---------------------------------------------------------------------------
+
+
+def test_process_code_requests_at_least_the_strategys_own_window_bars(workdir):
+    import pandas as pd
+
+    from data import BarSet
+    from strategies.orb import ORB
+
+    engine = _engine(workdir)
+    code = next(iter(engine.rt.strategies))  # any configured code will do
+    orb = ORB(symbol=code, timeframe="1Min")
+    assert orb.window_bars > 260  # sanity: this is the whole point of the regression
+    engine.rt.strategies[code] = orb
+    engine.rt.universe[code]["timeframe"] = "1Min"
+
+    captured: dict = {}
+
+    def fake_get_bars(**kwargs):
+        captured.update(kwargs)
+        return BarSet(code=code, timeframe="1Min", bars=pd.DataFrame(), source="synthetic")
+
+    engine.rt.market_data.get_bars = fake_get_bars
+
+    account = engine.rt.broker.get_account()
+    engine._process_code(code, account, True, "", [])
+
+    assert captured["lookback_bars"] >= orb.window_bars

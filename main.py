@@ -1373,10 +1373,23 @@ class TradingEngine:
         # on 2026-08-26 while the cache served the same stale bar, giving back
         # most of the gain before the next live fetch finally caught up.
         has_position = rt.portfolio.get(code) is not None
+        # max(..., strategy.window_bars or 0): a fixed 260-bar lookback is
+        # plenty for a strategy reading a rolling window, but ORB's opening
+        # range is anchored to a fixed point in the session (09:00-09:05),
+        # not to "now" -- once the session runs past ~260 minutes (roughly
+        # 13:20 on a 1-minute timeframe), a 260-bar fetch no longer reaches
+        # back far enough to include those bars at all. 2026-08-31
+        # (live incident): stocks added to the dynamic universe mid-afternoon
+        # showed "오프닝 레인지 데이터 없음" for the rest of the day --
+        # permanently unable to trade via ORB no matter how many more cycles
+        # ran, because every re-fetch was still capped at 260 bars. Each
+        # strategy's own window_bars (None for "no special requirement",
+        # otherwise however far back it actually needs to read) is the
+        # correct lower bound, not a number picked without knowing that.
         barset = rt.market_data.get_bars(
             code=code,
             timeframe=timeframe,
-            lookback_bars=max(strategy.warmup + 60, 260),
+            lookback_bars=max(strategy.warmup + 60, 260, strategy.window_bars or 0),
             market=market,
             use_cache=not has_position,
         )

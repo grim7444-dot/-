@@ -1879,3 +1879,74 @@ def test_process_code_requests_at_least_the_strategys_own_window_bars(workdir):
     engine._process_code(code, account, True, "", [])
 
     assert captured["lookback_bars"] >= orb.window_bars
+
+
+# ---------------------------------------------------------------------------
+# 26. per-symbol same-day consecutive-loss circuit breaker (2026-08-31, user
+#    request, from a full day's trade table: several symbols got re-entered
+#    2-4 times, losing more on later re-entries -- "이런식의 매매는 의미없어")
+# ---------------------------------------------------------------------------
+
+
+def test_symbol_loss_streak_reason_blocks_once_the_streak_reaches_the_limit():
+    from main import _symbol_loss_streak_reason
+
+    reason = _symbol_loss_streak_reason(streak=2, max_losses=2)
+    assert reason is not None
+    assert "연속 손절" in reason
+
+
+def test_symbol_loss_streak_reason_allows_entries_below_the_limit():
+    from main import _symbol_loss_streak_reason
+
+    assert _symbol_loss_streak_reason(streak=1, max_losses=2) is None
+
+
+def test_symbol_loss_streak_reason_disabled_at_zero_never_blocks():
+    from main import _symbol_loss_streak_reason
+
+    assert _symbol_loss_streak_reason(streak=99, max_losses=0) is None
+
+
+def test_record_symbol_result_increments_on_a_loss(tmp_path):
+    portfolio = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    assert portfolio.record_symbol_result("005930", is_profit=False) == 1
+    assert portfolio.record_symbol_result("005930", is_profit=False) == 2
+    assert portfolio.state.symbol_loss_streak["005930"] == 2
+
+
+def test_record_symbol_result_resets_on_a_profit(tmp_path):
+    portfolio = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    portfolio.record_symbol_result("005930", is_profit=False)
+    portfolio.record_symbol_result("005930", is_profit=False)
+    assert portfolio.record_symbol_result("005930", is_profit=True) == 0
+    assert "005930" not in portfolio.state.symbol_loss_streak
+
+
+def test_record_symbol_result_is_independent_per_symbol(tmp_path):
+    portfolio = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    portfolio.record_symbol_result("005930", is_profit=False)
+    portfolio.record_symbol_result("005930", is_profit=False)
+    portfolio.record_symbol_result("000660", is_profit=False)
+    assert portfolio.state.symbol_loss_streak == {"005930": 2, "000660": 1}
+
+
+def test_record_symbol_result_persists_across_a_restart(tmp_path):
+    first = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    first.record_symbol_result("005930", is_profit=False)
+    first.record_symbol_result("005930", is_profit=False)
+
+    second = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    assert second.state.symbol_loss_streak.get("005930") == 2
+
+
+def test_symbol_loss_streak_resets_on_a_new_day(tmp_path):
+    """Tied to the same day-rollover mark_equity() already uses for
+    day_start_equity -- a restart mid-streak must not lose it, but a
+    genuine new trading day must."""
+    portfolio = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    portfolio.record_symbol_result("005930", is_profit=False)
+    portfolio.record_symbol_result("005930", is_profit=False)
+    portfolio.state.day_start_date = "2000-01-01"  # force a "new day" on the next mark_equity
+    portfolio.mark_equity(500_000.0)
+    assert portfolio.state.symbol_loss_streak == {}

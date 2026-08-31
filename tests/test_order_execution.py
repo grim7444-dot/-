@@ -523,3 +523,37 @@ def test_live_protective_breach_ignores_short_positions(portfolio, config):
     )
 
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _submit_exit feeds Portfolio.record_symbol_result -- the per-symbol
+# consecutive-loss circuit breaker's data source (2026-08-31, see
+# test_incident_regressions.py section 26).
+# ---------------------------------------------------------------------------
+
+
+def test_submit_exit_records_a_loss_against_the_symbol_streak(portfolio, config):
+    broker = _FakeExecBroker(orderbook=None)
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 9_870.0, "1.3% 손절 (-1.30%)", [], {}, True, "",
+        market=KOSPI, urgent=True,
+    )
+
+    assert portfolio.state.symbol_loss_streak.get("005930") == 1
+
+
+def test_submit_exit_clears_the_symbol_streak_on_a_profit_exit(portfolio, config):
+    broker = _FakeExecBroker(orderbook=None)
+    engine = _exec_engine(portfolio, config, broker)
+    portfolio.record_symbol_result("005930", is_profit=False)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 10_250.0, "고점 +3.00%에서 반락 -- +2.50% 확정 익절", [], {}, True, "",
+        market=KOSPI, urgent=False,
+    )
+
+    assert "005930" not in portfolio.state.symbol_loss_streak

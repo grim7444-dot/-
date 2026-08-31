@@ -645,6 +645,26 @@ def _reentry_cooldown_reason(
     return f"재진입 쿨다운 {remaining:.1f}분 남음 (같은 자리 추격매수 방지)"
 
 
+def _symbol_loss_streak_reason(streak: int, max_losses: int) -> str | None:
+    """Reason to refuse a fresh entry into this symbol today, or None to allow one.
+
+    User-reported (2026-08-31), from a full day's trade table: several
+    symbols (079650, 004310, 014950, 033790, 387690) got re-entered 2-4
+    times in one day, with later re-entries losing more often -- and in
+    larger size -- than the first ("이런식의 매매는 의미없어"). Nothing
+    stopped the bot from repeatedly chasing the same symbol back in after
+    it kept proving it wasn't cooperating today. Once a symbol has lost
+    max_losses times in a row today (see Portfolio.record_symbol_result),
+    no more entries into THAT symbol for the rest of the day -- every other
+    symbol is unaffected, and a single profit exit resets the count to 0.
+    """
+    if max_losses <= 0:
+        return None
+    if streak >= max_losses:
+        return f"이 종목 오늘 {streak}연속 손절 -- 신규 진입 차단 (다른 종목은 무관)"
+    return None
+
+
 # --------------------------------------------------------------------------
 # Trading engine
 # --------------------------------------------------------------------------
@@ -681,6 +701,12 @@ class TradingEngine:
         self._entry_cooldown_seconds: float = float(
             (rt.config.get("risk") or {}).get("entry_cooldown_minutes", 15)
         ) * 60
+        # 같은 종목 당일 연속 손절 회수 제한 (2026-08-31, 사용자 요청) --
+        # Portfolio.record_symbol_result가 state.json에 종목별로 누적하고,
+        # 하루가 바뀌면 mark_equity()에서 함께 초기화된다.
+        self._max_symbol_losses_per_day: int = int(
+            (rt.config.get("risk") or {}).get("max_symbol_losses_per_day", 2)
+        )
         # NXT pre-market bias: code -> % change vs previous close (set at 08:00-08:30)
         self._nxt_bias: dict[str, float] = {}
         self._nxt_scan_date: "date | None" = None
@@ -1694,7 +1720,9 @@ class TradingEngine:
         if result.submitted:
             rt.portfolio.close_position(code, exit_price=price, exit_reason=reason)
             self._last_exit_time[code] = time.monotonic()
-            self._last_exit_was_profit[code] = "익절" in reason
+            is_profit = "익절" in reason
+            self._last_exit_was_profit[code] = is_profit
+            rt.portfolio.record_symbol_result(code, is_profit)
             self._tg_notifier.alert_exit(
                 code=code,
                 name=rt.name_of(code),
@@ -1948,6 +1976,14 @@ class TradingEngine:
         )
         if cooldown_reason is not None:
             logger.info("%s: entry skipped - %s", label, cooldown_reason)
+            return
+
+        streak_reason = _symbol_loss_streak_reason(
+            rt.portfolio.state.symbol_loss_streak.get(code, 0),
+            self._max_symbol_losses_per_day,
+        )
+        if streak_reason is not None:
+            logger.info("%s: entry skipped - %s", label, streak_reason)
             return
 
         # S&P 500 선물 방향 필터

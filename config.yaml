@@ -14,6 +14,13 @@ risk:
   # 청산 직후 같은 종목 재진입 금지 시간(분) -- 방금 매도한 저항선을
   # 바로 다시 쫓아 사는 것을 막는다.
   entry_cooldown_minutes: 15
+  # 같은 종목 당일 연속 손절 몇 번까지 재진입을 허용할지 (2026-08-31,
+  # 사용자 요청: 하루 매매표에서 079650/004310/014950/033790/387690 등이
+  # 2~4번씩 재진입하며 뒤로 갈수록 더 크게 손절 -- "이런식의 매매는
+  # 의미없어"). 이 횟수를 채우면 그 종목만 당일 신규 진입이 막힌다 --
+  # 다른 종목은 무관하고, 한 번이라도 익절하면 그 종목 카운트는 0으로
+  # 리셋된다. 0으로 두면 비활성화.
+  max_symbol_losses_per_day: 2
   # Rule 4: every trade risks exactly this fraction of *current* equity.
   per_trade_pct: 0.01
   # Portfolio-wide caps. 1% x 8 stocks would put 8% at risk at once; these

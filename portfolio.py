@@ -201,6 +201,10 @@ class BotState:
     positions: dict[str, dict[str, Any]] = field(default_factory=dict)
     day_start_equity: float = 0.0
     day_start_date: str = ""
+    #: code -> consecutive losing exits today. A profit exit clears the
+    #: entry; cleared for every code at the same day-rollover as
+    #: day_start_equity/day_start_date (see mark_equity()).
+    symbol_loss_streak: dict[str, int] = field(default_factory=dict)
 
     @property
     def stopped(self) -> bool:
@@ -454,6 +458,27 @@ class Portfolio:
         self.save()
         return trade
 
+    def record_symbol_result(self, code: str, is_profit: bool) -> int:
+        """Update `code`'s same-day consecutive-loss streak; returns the new
+        count. A profit exit clears it to 0; a loss increments it.
+
+        User-reported (2026-08-31): several symbols got re-entered 2-4 times
+        in one day, with later re-entries losing more often and in larger
+        size than the first ("이런식의 매매는 의미없어") -- nothing stopped
+        the bot from repeatedly chasing the same symbol back in after it
+        kept proving it wasn't cooperating today. See
+        main._symbol_loss_streak_reason, which reads this to block further
+        entries into just that symbol once the streak is too long.
+        """
+        if is_profit:
+            self.state.symbol_loss_streak.pop(code, None)
+            streak = 0
+        else:
+            streak = self.state.symbol_loss_streak.get(code, 0) + 1
+            self.state.symbol_loss_streak[code] = streak
+        self.save()
+        return streak
+
     # -- equity / status ---------------------------------------------------
 
     def mark_equity(self, equity: float) -> None:
@@ -488,6 +513,7 @@ class Portfolio:
         if self.state.day_start_date != today:
             self.state.day_start_date = today
             self.state.day_start_equity = equity
+            self.state.symbol_loss_streak = {}
         self.state.last_run_at = _iso(utcnow())
         self.save()
 

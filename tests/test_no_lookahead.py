@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 
+import pandas as pd
 import pytest
 
 from backtest import Backtester
@@ -262,6 +263,50 @@ def test_result_summary_flags_synthetic_data(bt_config, stock_bars):
     )
     assert result.synthetic_data is True
     assert "SYNTHETIC DATA" in format_result(result)
+
+
+# --------------------------------------------------------------------------
+# `format_result`'s trade-by-trade breakdown (2026-08-31, user request:
+# "정말 심각하다.방법을 강구해봐") -- the per-stock P&L rollup can't answer
+# "why did this stock lose ten times in a row", so a small trade list is
+# only useful, never noise, at low counts.
+# --------------------------------------------------------------------------
+
+
+def _make_result(n_trades: int):
+    from backtest import BacktestResult, ClosedTrade
+
+    base = pd.Timestamp("2026-05-07 09:10", tz="Asia/Seoul")
+    trades = [
+        ClosedTrade(
+            code="900300", side="LONG", qty=10,
+            entry_time=base + pd.Timedelta(days=i),
+            exit_time=base + pd.Timedelta(days=i, minutes=30),
+            entry_price=10_000.0, exit_price=9_800.0,
+            gross_pnl=-2_000.0, costs=50.0, pnl=-2_050.0, exit_reason="stop",
+        )
+        for i in range(n_trades)
+    ]
+    return BacktestResult(
+        start=None, end=None, starting_equity=550_000.0, ending_equity=500_000.0,
+        trades=trades,
+    )
+
+
+def test_trade_list_appears_for_a_small_number_of_trades():
+    from backtest import format_result
+
+    text = format_result(_make_result(10))
+    assert "-- Trades --" in text
+    assert text.count("900300") >= 10  # header/per-code line + one per trade
+    assert "[stop]" in text
+
+
+def test_trade_list_is_omitted_past_the_readable_threshold():
+    from backtest import format_result
+
+    text = format_result(_make_result(41))
+    assert "-- Trades --" not in text
 
 
 def test_kosdaq_and_kospi_can_carry_different_tax(bt_config):

@@ -874,6 +874,22 @@ def format_result(
             label = f"{code} {names.get(code, '')}".strip()
             lines.append(f"  {label:<22} {pnl:>16,.0f} KRW   ({count} trades)")
 
+    # A full trade list only stays readable at small counts; past that the
+    # per-stock summary above is the right altitude and this would just be
+    # noise. 40 covers the sparse validation runs this is meant for -- e.g.
+    # diagnosing which trades cost a single stock (2026-08-31, user request:
+    # "정말 심각하다.방법을 강구해봐").
+    if 0 < len(result.trades) <= 40:
+        lines.append("")
+        lines.append("  -- Trades ---------------------------------------------------------------")
+        for t in sorted(result.trades, key=lambda t: t.entry_time):
+            label = f"{t.code} {names.get(t.code, '')}".strip()
+            lines.append(
+                f"  {label:<20} {t.entry_time} -> {t.exit_time}  "
+                f"{t.entry_price:>10,.0f} -> {t.exit_price:>10,.0f}  "
+                f"{t.pnl:>10,.0f} KRW  [{t.exit_reason}]"
+            )
+
     if result.kill_switch_tripped_at is not None:
         lines.append("")
         lines.append("  -- Kill switch ---------------------------------------------------------")

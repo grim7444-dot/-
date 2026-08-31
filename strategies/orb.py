@@ -16,6 +16,10 @@
    VWAP은 아직 못 넘은 구간이 한동안 이어지는 경우가 많아 진입을 필요
    이상으로 늦춘다는 사용자 피드백 (2026-08-31) -- use_vwap_filter로
    다시 켤 수 있다.
+5. 볼린저밴드 과도확장 아님 -- 상단 돌파 자체는 정상 신호라 막지 않되,
+   이 돌파봉 직전까지의 상단선 대비 max_bb_extension_pct 넘게 이미 멀리
+   벗어난, "다 오르고 난 뒤 쫓아 사는" 자리는 거른다 (2026-08-31, 사용자
+   요청: "너무 고점에서 매수를 하는것도 문제 ... 불린져밴드수치 확인").
 
 익절/손절은 눌림목 반등(PullbackBounce)과 동일한 3단계 트레일을 그대로
 쓴다 -- 이미 검증된 로직을 재사용해 익절 방식의 일관성을 유지한다.
@@ -33,7 +37,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from indicators import bar_strength, ema, rolling_mean_volume
+from indicators import bar_strength, bollinger_bands, ema, rolling_mean_volume
 from market.session_rules import parse_clock
 from portfolio import Position
 from strategies.base import Action, Signal, Strategy
@@ -88,6 +92,17 @@ class ORB(Strategy):
         #: 피드백. 대신 개인 매수만으로 반짝 뚫었다 되돌리는 가짜 돌파에 물릴
         #: 위험은 커진다 -- 다시 켜려면 True로.
         use_vwap_filter: bool = False,
+        #: 볼린저밴드 과도확장 필터 (2026-08-31, 사용자 요청: "너무 고점에서
+        #: 매수를 하는것도 문제 ... 불린져밴드수치 확인후 빠르게 진입"). 밴드
+        #: 상단을 뚫고 나가는 것 자체는 돌파매매의 정상 신호라 PullbackBounce
+        #: 처럼 "상단 위면 무조건 차단"하지 않는다 -- 그러면 019170/현대약품
+        #: 같은 오늘 성공한 진짜 돌파도 다 걸러진다. 대신 이 돌파봉 직전까지의
+        #: 상단선 대비 max_bb_extension_pct 넘게 이미 멀리 벗어난, "다 오르고
+        #: 난 뒤 쫓아 사는" 자리만 거른다.
+        use_bb_filter: bool = True,
+        bb_period: int = 20,
+        bb_mult: float = 2.0,
+        max_bb_extension_pct: float = 0.03,
         #: 고정 손절 폭.
         stop_pct: float = 0.017,
         #: 정상 stop_pct보다 넓은 손절폭 -- 두 경우에 쓴다 (2026-08-28, 사용자
@@ -142,6 +157,10 @@ class ORB(Strategy):
         self.trend_ema = trend_ema
         self.min_bar_strength = min_bar_strength
         self.use_vwap_filter = use_vwap_filter
+        self.use_bb_filter = use_bb_filter
+        self.bb_period = bb_period
+        self.bb_mult = bb_mult
+        self.max_bb_extension_pct = max_bb_extension_pct
         self.stop_pct = stop_pct
         self.early_stop_pct = early_stop_pct
         self.early_stop_until = parse_clock(early_stop_until, "early_stop_until")
@@ -164,7 +183,8 @@ class ORB(Strategy):
 
     @property
     def warmup(self) -> int:
-        return max(self.trend_ema, self.volume_lookback) + 2
+        bb_bars = self.bb_period if self.use_bb_filter else 0
+        return max(self.trend_ema, self.volume_lookback, bb_bars) + 2
 
     @property
     def window_bars(self) -> int:
@@ -292,6 +312,28 @@ class ORB(Strategy):
 
         if price <= range_high:
             return self._hold(window, f"레인지 고점 {range_high:,.0f} 미돌파 (레인지 저점 {range_low:,.0f})")
+
+        # 볼린저밴드 과도확장: 상단 돌파 자체는 정상 돌파 신호라 막지 않는다
+        # -- 이 돌파봉 직전까지의(shift(1)) 밴드 대비 이미 너무 멀리 벗어난,
+        # "다 오르고 난 뒤 쫓아 사는" 자리만 거른다. shift(1)이 핵심이다:
+        # 돌파봉 자신을 밴드 계산에 포함시키면 그 봉이 아무리 크게 튀어도
+        # 자기 자신이 밴드를 같이 넓혀버려서 비율이 거의 못 커진다 (직접
+        # 검증: 20봉 중 19봉이 평평하고 1봉만 튄 경우 그 비율은 봉 크기와
+        # 무관하게 약 1.18배로 수렴 -- 걸러야 할 극단적인 돌파봉일수록 오히려
+        # 못 걸렀다). 직전 19봉만으로 계산한 밴드와 비교해야 이 봉 자체가
+        # 그 직전 구간 대비 얼마나 튀었는지가 왜곡 없이 나온다.
+        if self.use_bb_filter:
+            bb_mid, bb_upper, _ = bollinger_bands(window["close"], self.bb_period, self.bb_mult)
+            bb_upper_prior = bb_upper.shift(1).iloc[-1]
+            if pd.notna(bb_upper_prior) and bb_upper_prior > 0:
+                bb_upper_prior = float(bb_upper_prior)
+                extension_pct = (price - bb_upper_prior) / bb_upper_prior
+                if extension_pct > self.max_bb_extension_pct:
+                    return self._hold(
+                        window,
+                        f"직전 볼린저 상단({bb_upper_prior:,.0f}) 대비 {extension_pct:.1%} "
+                        f"과도확장 (기준 {self.max_bb_extension_pct:.0%})",
+                    )
 
         avg_volume = rolling_mean_volume(window, self.volume_lookback).shift(1).iloc[-1]
         volume = float(window["volume"].iloc[-1])

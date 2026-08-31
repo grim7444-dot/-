@@ -23,6 +23,7 @@ def _orb(**overrides) -> ORB:
         range_minutes=5, session_open_hour=9, session_open_minute=0,
         volume_lookback=5, volume_mult=1.2,
         trend_ema=5, min_bar_strength=0.35,
+        use_bb_filter=False,  # isolates the VWAP filter under test in this file
         stop_pct=0.013, early_stop_pct=0.02, early_stop_until="09:30",
         arm_pct=0.012, lock_pct=0.025,
     )
@@ -81,3 +82,65 @@ def test_enabled_vwap_filter_allows_a_breakout_above_vwap():
     signal = strategy.evaluate(window, None)
     assert signal.action is Action.ENTER_LONG, signal.reason
     assert "VWAP" in signal.reason  # mentioned in the entry note when it was checked
+
+
+# ---------------------------------------------------------------------------
+# Bollinger over-extension filter (2026-08-31, user request): "너무 고점에서
+# 매수를 하는것도 문제인듯 ... 불린져밴드수치 확인후 빠르게 진입". A range
+# breakout clearing the upper band is a normal breakout signal (PullbackBounce's
+# blanket "above the upper band -> block" would reject genuine breakouts), so
+# this only rejects a breakout bar that is already far beyond the band it had
+# *before* that bar -- shift(1) is essential: measuring against a band that
+# includes the breakout bar itself is self-referential and caps the ratio at
+# ~1.18x no matter how extreme the bar is (verified by hand before writing
+# this), which would make the filter a silent no-op.
+# ---------------------------------------------------------------------------
+
+
+def _quiet_then_breakout_window(breakout_close: float) -> pd.DataFrame:
+    """09:00-09:05 opening range (high 10,010), 15 quiet bars settling a tight
+    Bollinger band around 10,000, a small 2-bar lead-in, then a breakout bar
+    at `breakout_close`. Verified against indicators/bollinger_bands directly:
+    the prior (shift(1)) upper band here is ~10,005.6, so +0.9% (10,100)
+    stays under the default 3% cutoff and +3.9% (10,400) clears it.
+    """
+    rows = [dict(open=10_000, high=10_010, low=9_990, close=10_000, volume=1_000) for _ in range(5)]
+    px = 10_000
+    for n in (1, -1, 2, -2, 1, -1, 2, -2, 1, -1, 2, -2, 1, -1, 2):
+        px = 10_000 + n
+        rows.append(dict(open=px, high=px + 2, low=px - 2, close=px, volume=1_000))
+    rows.append(dict(open=px, high=px + 5, low=px - 2, close=px + 3, volume=1_000))
+    rows.append(dict(open=px + 3, high=px + 8, low=px, close=px + 6, volume=1_000))
+    last_close = rows[-1]["close"]
+    rows.append(dict(
+        open=last_close, high=breakout_close + 10, low=last_close - 5,
+        close=breakout_close, volume=1_500,
+    ))
+    idx = pd.date_range("2026-08-31 09:00", periods=len(rows), freq="1min", tz="Asia/Seoul")
+    return pd.DataFrame(rows, index=idx)
+
+
+def test_bb_filter_is_on_by_default():
+    assert ORB(symbol="TEST").use_bb_filter is True
+
+
+def test_enabled_bb_filter_allows_a_modest_breakout():
+    strategy = _orb(use_bb_filter=True)
+    window = _quiet_then_breakout_window(10_100.0)  # ~+0.9% past the prior upper band
+    signal = strategy.evaluate(window, None)
+    assert signal.action is Action.ENTER_LONG, signal.reason
+
+
+def test_enabled_bb_filter_blocks_a_breakout_far_past_the_prior_band():
+    strategy = _orb(use_bb_filter=True)
+    window = _quiet_then_breakout_window(10_400.0)  # ~+3.9% past the prior upper band
+    signal = strategy.evaluate(window, None)
+    assert signal.action is Action.HOLD
+    assert "과도확장" in signal.reason
+
+
+def test_disabled_bb_filter_allows_the_same_extended_breakout_through():
+    strategy = _orb(use_bb_filter=False)
+    window = _quiet_then_breakout_window(10_400.0)
+    signal = strategy.evaluate(window, None)
+    assert signal.action is Action.ENTER_LONG, signal.reason

@@ -107,11 +107,16 @@ class ORB(Strategy):
         arm_pct: float = 0.012,
         lock_pct: float = 0.018,
         peak_trail_pct: float = 0.005,
-        #: 고점이 이 이상 오른 "진짜 추세" 구간에서는 트레일을 peak_trail_pct
-        #: 대신 big_win_trail_pct로 넓혀서, 0.3%대 좁은 트레일 때문에 계속
-        #: 오르는 종목을 너무 일찍 털지 않게 한다 (2026-08-27, 사용자 요청).
+        #: 고점이 이 이상 오른 "진짜 추세" 구간에서는 peak_trail_pct(고점
+        #: 대비 트레일)를 버리고 진입가 기준 고정 바닥 big_win_floor_pct로
+        #: 바꾼다 -- 고점을 계속 따라가며 좁게 트레일하면 그 이후 더 올라도
+        #: 살짝만 흔들려도 털린다는 사용자 피드백 (2026-08-31: "3%이상
+        #: 오르면 2%로 아래 떨어질때까지 기다리다 팔기로"). 이후 고점이
+        #: 얼마나 더 오르든 이 바닥은 안 따라 올라간다 -- 진짜 추세라고
+        #: 판단한 이상 크게 되밀릴 때까지 버티고, 그만큼 반전 시 더 크게
+        #: 반납할 수 있다는 트레이드오프를 받아들인 것.
         big_win_pct: float = 0.04,
-        big_win_trail_pct: float = 0.01,
+        big_win_floor_pct: float = 0.02,
         max_cost_share: float = 0.35,
         round_trip_cost_pct: float = 0.0038,
         atr_period: int = 14,
@@ -142,7 +147,7 @@ class ORB(Strategy):
         self.lock_pct = lock_pct
         self.peak_trail_pct = peak_trail_pct
         self.big_win_pct = big_win_pct
-        self.big_win_trail_pct = big_win_trail_pct
+        self.big_win_floor_pct = big_win_floor_pct
         self.max_cost_share = max_cost_share
         self.round_trip_cost_pct = round_trip_cost_pct
 
@@ -206,14 +211,20 @@ class ORB(Strategy):
                 )
 
             if peak_gain >= effective_lock_pct:
-                trail_pct = (
-                    self.big_win_trail_pct if peak_gain >= self.big_win_pct
-                    else self.peak_trail_pct
-                )
-                floor = max(
-                    entry * (1 + effective_lock_pct),
-                    peak * (1.0 - trail_pct),
-                )
+                if peak_gain >= self.big_win_pct:
+                    # 진짜 추세로 판단한 이상 진입가 기준 고정 바닥만 지킨다 --
+                    # 고점이 이후 더 올라도 이 바닥은 따라 올라가지 않는다
+                    # (2026-08-31, 사용자 요청). 이미 확보된 lock_pct 바닥보다
+                    # 낮아지는 일은 없도록 둘 중 큰 쪽을 쓴다.
+                    floor = max(
+                        entry * (1 + effective_lock_pct),
+                        entry * (1 + self.big_win_floor_pct),
+                    )
+                else:
+                    floor = max(
+                        entry * (1 + effective_lock_pct),
+                        peak * (1.0 - self.peak_trail_pct),
+                    )
                 if price <= floor:
                     return self._signal(
                         window, Action.EXIT,

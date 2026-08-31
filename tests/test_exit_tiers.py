@@ -7,9 +7,15 @@ clears lock_pct, where the floor never drops below entry+lock_pct and
 otherwise trails the peak by peak_trail_pct.
 
 2026-08-27 (user request): a position that has run further -- past
-big_win_pct -- widens that trail to big_win_trail_pct instead of the
-tighter peak_trail_pct, so a real trend is not stopped out by a small
-pullback that peak_trail_pct alone would have caught.
+big_win_pct -- used to widen that trail to a looser peak-relative one, so a
+real trend was not stopped out by a small pullback peak_trail_pct alone
+would have caught.
+
+2026-08-31 (user request): "3%이상 오르면 2%로 아래 떨어질때까지 기다리다
+팔기로" -- past big_win_pct the floor is now a FIXED entry-relative
+big_win_floor_pct rather than any kind of trail behind the peak. However
+much higher the peak climbs afterward, the floor does not follow it up;
+only a genuine fall back to that fixed floor triggers the exit.
 """
 
 from __future__ import annotations
@@ -62,32 +68,41 @@ STRATEGIES = [
 
 
 @pytest.mark.parametrize("make_strategy", STRATEGIES)
-def test_a_big_win_widens_the_trail_past_where_the_normal_trail_would_exit(make_strategy):
-    """The whole point of the feature: this pullback must NOT be an exit."""
+def test_a_big_win_uses_a_fixed_entry_relative_floor(make_strategy):
+    """Once past big_win_pct, the floor is entry + big_win_floor_pct -- not
+    a trail behind the peak at all."""
     strategy = make_strategy()
     entry = 10_000.0
     peak = entry * (1 + strategy.big_win_pct + 0.01)  # comfortably past big_win_pct
-    floor_default_trail = peak * (1.0 - strategy.peak_trail_pct)
-    floor_big_win_trail = peak * (1.0 - strategy.big_win_trail_pct)
-    assert floor_big_win_trail < floor_default_trail  # sanity: the feature only matters if this holds
+    floor = max(
+        entry * (1 + strategy.lock_pct), entry * (1 + strategy.big_win_floor_pct)
+    )
 
-    # A price between the two floors would exit under the narrow trail but
-    # must hold under the widened one.
-    price = (floor_default_trail + floor_big_win_trail) / 2
-    signal = strategy.evaluate(_window(price), _position(entry, peak))
+    signal = strategy.evaluate(_window(floor + 1.0), _position(entry, peak))
     assert signal.action is Action.HOLD, signal.reason
+
+    signal = strategy.evaluate(_window(floor - 1.0), _position(entry, peak))
+    assert signal.action is Action.EXIT
+    assert "익절" in signal.reason
 
 
 @pytest.mark.parametrize("make_strategy", STRATEGIES)
-def test_a_big_win_still_exits_once_it_falls_through_the_wider_floor(make_strategy):
+def test_the_fixed_floor_does_not_rise_as_the_peak_climbs_further(make_strategy):
+    """The whole point of the 2026-08-31 change: a peak far past big_win_pct
+    must not raise the floor -- unlike the old peak-relative trail, the
+    position rides all the way back down to the same fixed floor."""
     strategy = make_strategy()
     entry = 10_000.0
-    peak = entry * (1 + strategy.big_win_pct + 0.01)
-    floor_big_win_trail = max(
-        entry * (1 + strategy.lock_pct), peak * (1.0 - strategy.big_win_trail_pct)
+    high_peak = entry * (1 + strategy.big_win_pct + 0.05)  # well past the threshold
+    floor = max(
+        entry * (1 + strategy.lock_pct), entry * (1 + strategy.big_win_floor_pct)
     )
-    price = floor_big_win_trail - 1.0
-    signal = strategy.evaluate(_window(price), _position(entry, peak))
+
+    # Far below the peak, but still above the fixed floor -- must hold.
+    signal = strategy.evaluate(_window(floor + 1.0), _position(entry, high_peak))
+    assert signal.action is Action.HOLD, signal.reason
+
+    signal = strategy.evaluate(_window(floor - 1.0), _position(entry, high_peak))
     assert signal.action is Action.EXIT
     assert "익절" in signal.reason
 

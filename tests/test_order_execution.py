@@ -95,7 +95,10 @@ def test_kosdaq_uses_its_own_tick_ladder():
 
 
 class _FakeExecBroker:
-    def __init__(self, orderbook=None, reject_with=None, holdings=None, holdings_error=None):
+    def __init__(
+        self, orderbook=None, reject_with=None, holdings=None, holdings_error=None,
+        dry_run=False,
+    ):
         self._orderbook = orderbook
         self.orders: list[dict] = []
         #: If set, submit_order raises this BrokerError instead of filling.
@@ -104,6 +107,7 @@ class _FakeExecBroker:
         #: instance/class to raise instead.
         self._holdings = holdings or {}
         self._holdings_error = holdings_error
+        self.dry_run = dry_run
 
     def get_stock_info(self, code):
         from broker import StockInfo
@@ -354,3 +358,68 @@ def test_rejected_exit_does_nothing_when_the_holdings_check_also_fails(portfolio
     )
 
     assert portfolio.get("005930") is not None  # cannot confirm either way -- left alone
+
+
+# ---------------------------------------------------------------------------
+# _reconcile_holdings_with_broker -- catches a manual buy/sell the bot never
+# saw once per cycle, instead of only when its own exit logic happens to try
+# acting on the stale position and gets rejected (2026-08-31, user-reported:
+# 내가 금호전기도 매수매도 했고 지금 현대약품도 매도 직접했는데 이걸 봇이
+# 알고 있나? -- a position sold by hand while sitting quietly between its
+# stop and its lock floor could go a long time before the bot ever noticed).
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_clears_a_position_sold_outside_the_bot(portfolio, config):
+    broker = _FakeExecBroker(holdings={})  # broker confirms nothing held
+    engine = _exec_engine(portfolio, config, broker)
+    _open_exec_position(portfolio)
+
+    engine._reconcile_holdings_with_broker()
+
+    assert portfolio.get("005930") is None
+    assert engine._tg_notifier.sent
+
+
+def test_reconcile_leaves_a_position_the_broker_still_holds(portfolio, config):
+    from broker import Holding
+
+    broker = _FakeExecBroker(holdings={"005930": Holding(code="005930", qty=10.0)})
+    engine = _exec_engine(portfolio, config, broker)
+    _open_exec_position(portfolio)
+
+    engine._reconcile_holdings_with_broker()
+
+    assert portfolio.get("005930") is not None
+    assert engine._tg_notifier.sent == []
+
+
+def test_reconcile_does_nothing_in_dry_run_mode(portfolio, config):
+    """DryRunBroker doesn't even implement get_holdings() -- this must never
+    be called for a paper/dry-run session."""
+    broker = _FakeExecBroker(dry_run=True, holdings_error=AttributeError("should not be called"))
+    engine = _exec_engine(portfolio, config, broker)
+    _open_exec_position(portfolio)
+
+    engine._reconcile_holdings_with_broker()  # must not raise
+
+    assert portfolio.get("005930") is not None
+
+
+def test_reconcile_does_nothing_with_no_open_positions(portfolio, config):
+    broker = _FakeExecBroker(holdings_error=AssertionError("should not be called"))
+    engine = _exec_engine(portfolio, config, broker)
+
+    engine._reconcile_holdings_with_broker()  # must not raise, must not call get_holdings
+
+
+def test_reconcile_leaves_positions_alone_when_the_holdings_check_fails(portfolio, config):
+    from broker import BrokerError
+
+    broker = _FakeExecBroker(holdings_error=BrokerError("holdings unavailable"))
+    engine = _exec_engine(portfolio, config, broker)
+    _open_exec_position(portfolio)
+
+    engine._reconcile_holdings_with_broker()
+
+    assert portfolio.get("005930") is not None

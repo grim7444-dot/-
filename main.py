@@ -1336,6 +1336,8 @@ class TradingEngine:
             logger.error("open-order fetch failed, assuming none: %s", exc)
             open_orders = []
 
+        self._reconcile_holdings_with_broker()
+
         capacity = rt.risk.capacity(account.equity)
         logger.info("portfolio capacity: %s", capacity.describe())
 
@@ -1708,13 +1710,62 @@ class TradingEngine:
             "%s: exit rejected and broker confirms 0 held -- local position was stale, "
             "clearing it: %s", code, exc,
         )
+        self._clear_stale_position(code, f"매도 거부 후 실제 보유 0주 확인 (원인: {exc})")
+
+    def _clear_stale_position(self, code: str, note: str) -> None:
+        """Drop a position from local state with no fabricated trade record
+        (no fees, no exit reason a strategy actually chose) -- used whenever
+        the broker itself, not our own exit logic, is the authority that a
+        tracked position is already gone."""
+        rt = self.rt
         rt.portfolio.state.positions.pop(code, None)
         rt.portfolio.save()
         self._tg_notifier.send(
-            f"⚠️ {rt.name_of(code)}({code}) 매도 거부 -- 실제 계좌에는 이미 없는 "
-            f"것으로 확인되어 로컬 포지션 기록을 정리했습니다. 원인: {exc}\n"
-            "실제 체결/잔고는 HTS·MTS에서 직접 확인해주세요."
+            f"⚠️ {rt.name_of(code)}({code}) 로컬 포지션 기록을 정리했습니다. "
+            f"{note}\n실제 체결/잔고는 HTS·MTS에서 직접 확인해주세요."
         )
+
+    def _reconcile_holdings_with_broker(self) -> None:
+        """Catch a manual buy/sell the bot never saw, before its own exit
+        logic ever gets a reason to act on the stale position.
+
+        2026-08-31 (user-reported): the user sold an open position by hand
+        on the real account while the bot was still tracking it as open,
+        riding its profit trail. _reconcile_rejected_exit already self-heals
+        this the moment the bot's own stop/exit logic tries to act and gets
+        rejected -- but a position sitting quietly between its stop and its
+        lock floor can go a long time without any exit attempt at all,
+        during which it keeps occupying a position slot and its risk budget
+        for a holding that no longer exists. This runs once per cycle
+        instead, comparing every locally-tracked position against the
+        broker's own holdings directly, so a manual sell is noticed on the
+        very next cycle rather than only if/when the bot happens to try
+        selling it itself.
+
+        Only runs against a real (non-dry-run) broker -- a paper/dry-run
+        broker has no real holdings to compare against, and DryRunBroker
+        does not even implement get_holdings().
+        """
+        rt = self.rt
+        if rt.broker.dry_run:
+            return
+        positions = rt.portfolio.state.positions
+        if not positions:
+            return
+        try:
+            holdings = rt.broker.get_holdings()
+        except BrokerError as exc:
+            logger.debug("holdings reconciliation skipped: %s", exc)
+            return
+        for code in list(positions):
+            real_qty = holdings[code].qty if code in holdings else 0.0
+            if real_qty > 0:
+                continue
+            logger.warning(
+                "%s: tracked as open but broker shows 0 held -- likely sold "
+                "outside the bot, clearing the stale local position", code,
+            )
+            self._clear_stale_position(code, "봇 밖에서 매도된 것으로 보여 자동 정리")
 
     def _submit_entry(
         self,

@@ -5,13 +5,17 @@
 쓰는 정석 패턴: 첫 몇 분의 반응성 매매 노이즈를 걸러내고, 그 구간에서 형성된
 매물대를 실제로 뚫을 만한 힘이 있는지를 본다.
 
-진입 조건은 4중이다 -- 레인지 돌파 하나만으로는 부족하다:
+진입 조건:
 
 1. 종가가 레인지 고점 위로 마감 (거래량 동반)
-2. 세션 VWAP 위 -- 레인지는 뚫었지만 VWAP 아래면 기관 매수 없이 개인들만
-   반응한 "가짜 돌파(buyer's trap)"일 가능성이 크다
-3. trend_ema 위 -- 상위 추세와 같은 방향인지 확인
-4. 반등봉 강도(bar_strength) -- 종가가 봉 상단 근처에서 마감했는지
+2. trend_ema 위 -- 상위 추세와 같은 방향인지 확인
+3. 반등봉 강도(bar_strength) -- 종가가 봉 상단 근처에서 마감했는지
+4. (기본 비활성) 세션 VWAP 위 -- 레인지는 뚫었지만 VWAP 아래면 기관 매수
+   없이 개인들만 반응한 "가짜 돌파(buyer's trap)"일 가능성이 크다는
+   취지였지만, 강한 진짜 돌파에서도 레인지는 이미 뚫었는데 당일 누적
+   VWAP은 아직 못 넘은 구간이 한동안 이어지는 경우가 많아 진입을 필요
+   이상으로 늦춘다는 사용자 피드백 (2026-08-31) -- use_vwap_filter로
+   다시 켤 수 있다.
 
 익절/손절은 눌림목 반등(PullbackBounce)과 동일한 3단계 트레일을 그대로
 쓴다 -- 이미 검증된 로직을 재사용해 익절 방식의 일관성을 유지한다.
@@ -70,6 +74,12 @@ class ORB(Strategy):
         #: 상위 추세 판정용 EMA.
         trend_ema: int = 21,
         min_bar_strength: float = 0.5,
+        #: 세션 VWAP 위 확인 -- 기본 비활성 (2026-08-31, 사용자 요청: "돌파매매도
+        #: 느리고" -- 레인지는 이미 뚫었는데 당일 누적 VWAP은 아직 못 넘은
+        #: 구간이 한동안 이어지는 경우가 많아 진입을 필요 이상으로 늦춘다는
+        #: 피드백. 대신 개인 매수만으로 반짝 뚫었다 되돌리는 가짜 돌파에 물릴
+        #: 위험은 커진다 -- 다시 켜려면 True로.
+        use_vwap_filter: bool = False,
         #: 고정 손절 폭.
         stop_pct: float = 0.017,
         #: 정상 stop_pct보다 넓은 손절폭 -- 두 경우에 쓴다 (2026-08-28, 사용자
@@ -120,6 +130,7 @@ class ORB(Strategy):
         self.volume_mult = volume_mult
         self.trend_ema = trend_ema
         self.min_bar_strength = min_bar_strength
+        self.use_vwap_filter = use_vwap_filter
         self.stop_pct = stop_pct
         self.early_stop_pct = early_stop_pct
         self.early_stop_until = parse_clock(early_stop_until, "early_stop_until")
@@ -249,16 +260,19 @@ class ORB(Strategy):
         if price <= trend_now:
             return self._hold(window, f"EMA{self.trend_ema} {trend_now:,.0f} 아래 -- 상승 추세 아님")
 
-        vwap = session_vwap(window)
-        vwap_now = vwap.iloc[-1]
-        if pd.isna(vwap_now):
-            return self._hold(window, "VWAP not established")
-        vwap_now = float(vwap_now)
-        if price <= vwap_now:
-            return self._hold(
-                window, f"VWAP {vwap_now:,.0f} 아래 -- 레인지는 뚫었어도 매수세 없음"
-                if price > range_high else f"레인지 고점 {range_high:,.0f} 미돌파",
-            )
+        vwap_note = ""
+        if self.use_vwap_filter:
+            vwap = session_vwap(window)
+            vwap_now = vwap.iloc[-1]
+            if pd.isna(vwap_now):
+                return self._hold(window, "VWAP not established")
+            vwap_now = float(vwap_now)
+            if price <= vwap_now:
+                return self._hold(
+                    window, f"VWAP {vwap_now:,.0f} 아래 -- 레인지는 뚫었어도 매수세 없음"
+                    if price > range_high else f"레인지 고점 {range_high:,.0f} 미돌파",
+                )
+            vwap_note = f", VWAP {vwap_now:,.0f} 위"
 
         if price <= range_high:
             return self._hold(window, f"레인지 고점 {range_high:,.0f} 미돌파 (레인지 저점 {range_low:,.0f})")
@@ -284,8 +298,8 @@ class ORB(Strategy):
         return self._signal(
             window, Action.ENTER_LONG,
             f"ORB: 오프닝 레인지({self.range_minutes}분) 고점 {range_high:,.0f} 돌파 "
-            f"{vol_ratio:.2f}x 거래량, VWAP {vwap_now:,.0f} 위, EMA{self.trend_ema} 위 "
-            f"[손절 {effective_stop_pct:.1%}, 무장 {self.arm_pct:.0%}, 확정 {self.lock_pct:.0%}]",
+            f"{vol_ratio:.2f}x 거래량{vwap_note}, EMA{self.trend_ema} 위 "
+            f"[손절 {effective_stop_pct:.1%}, 무장 {self.arm_pct:.0%}, 확정 {effective_lock_pct:.0%}]",
             effective_atr if effective_atr > 0 else atr_value,
             meta={"range_high": range_high, "range_low": range_low, "volume_ratio": vol_ratio},
         )

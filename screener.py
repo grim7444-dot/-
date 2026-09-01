@@ -93,8 +93,13 @@ _SCALPING_CFG_TEMPLATE: dict[str, Any] = {
     "strategy": "orb",
     "timeframe": "1Min",
     "min_qty": 1,
-    "entry_window": ["09:05", "14:50"],  # 레인지(09:00-09:05) 완성 직후부터
-    "force_exit_at": "15:10",
+    # entry_window 종료 14:50 -> 15:00, force_exit_at 15:10 -> 15:15 (2026-09-01,
+    # 사용자 요청: "오후에는 완전 멈추고" -- 오늘 실거래에서 15:19에 실제
+    # 돌파 신호가 났는데도 진입창이 14:50에 닫혀 그냥 버려졌다. late_exit_minutes
+    # (20분)가 force_exit_at 기준이라 15:15로 미뤄도 안전장치(마지막 20분,
+    # 즉 14:55부터 정체 시 조기 익절)는 그대로 유지된다.
+    "entry_window": ["09:05", "15:00"],  # 레인지(09:00-09:05) 완성 직후부터
+    "force_exit_at": "15:15",
     "params": {
         "range_minutes": 5,
         "volume_lookback": 10,
@@ -152,8 +157,10 @@ _PULLBACK_CFG_TEMPLATE: dict[str, Any] = {
     "strategy": "pullback_bounce",
     "timeframe": "1Min",
     "min_qty": 1,
-    "entry_window": ["09:15", "14:50"],
-    "force_exit_at": "15:10",
+    # entry_window/force_exit_at 조정 이유는 _SCALPING_CFG_TEMPLATE 쪽 주석 참고
+    # (2026-09-01, 사용자 요청).
+    "entry_window": ["09:15", "15:00"],
+    "force_exit_at": "15:15",
     "params": {
         "trend_ema": 20,
         "swing_lookback": 7,

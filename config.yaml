@@ -178,7 +178,10 @@ universe:
     params:
       trend_ema: 20
       volume_mult: 1.2
-      close_strength: 0.7
+      # close_strength 0.7 -> 0.55 (2026-09-01, 사용자 요청: "종가매매도
+      # 않하고") -- 실거래에서 상단 70% 요구가 너무 엄격해 계속 무거래로
+      # 지나갔다 (관측된 종가 위치: 8%, 26%). 상단 절반 근처로 완화.
+      close_strength: 0.55
       atr_trail_mult: 2.0
 
   "093370":
@@ -484,7 +487,7 @@ universe:
     params:
       trend_ema: 20
       volume_mult: 1.2
-      close_strength: 0.7
+      close_strength: 0.55  # 0.7 -> 0.55 (2026-09-01) -- 002990 항목 주석 참고
       atr_trail_mult: 2.0
 
   "101730":
@@ -500,7 +503,7 @@ universe:
     params:
       trend_ema: 20
       volume_mult: 1.2
-      close_strength: 0.7
+      close_strength: 0.55
       atr_trail_mult: 2.0
 
   "228340":
@@ -516,7 +519,7 @@ universe:
     params:
       trend_ema: 20
       volume_mult: 1.2
-      close_strength: 0.7
+      close_strength: 0.55
       atr_trail_mult: 2.0
 
   "439960":
@@ -533,7 +536,7 @@ universe:
     params:
       trend_ema: 20
       volume_mult: 1.2
-      close_strength: 0.7
+      close_strength: 0.55
       atr_trail_mult: 2.0
 
   "247540":
@@ -549,7 +552,7 @@ universe:
     params:
       trend_ema: 20
       volume_mult: 1.2
-      close_strength: 0.7
+      close_strength: 0.55
       atr_trail_mult: 2.0
 
   "028300":
@@ -565,7 +568,7 @@ universe:
     params:
       trend_ema: 20
       volume_mult: 1.2
-      close_strength: 0.7
+      close_strength: 0.55
       atr_trail_mult: 2.0
 
   "263750":
@@ -581,7 +584,7 @@ universe:
     params:
       trend_ema: 20
       volume_mult: 1.2
-      close_strength: 0.7
+      close_strength: 0.55
       atr_trail_mult: 2.0
 
   "293490":
@@ -597,7 +600,7 @@ universe:
     params:
       trend_ema: 20
       volume_mult: 1.2
-      close_strength: 0.7
+      close_strength: 0.55
       atr_trail_mult: 2.0
 
 # ---------------------------------------------------------------------------

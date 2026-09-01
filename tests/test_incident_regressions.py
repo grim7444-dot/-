@@ -2067,3 +2067,27 @@ def test_cmd_reset_daily_baseline_with_no_credentials_is_a_no_op(tmp_path, monke
     rc = main.cmd_reset_daily_baseline(args)
 
     assert rc == 1
+
+
+# --------------------------------------------------------------------------
+# 2026-09-01, user-reported: "오후에는 완전 멈추고 종가매매도 않하고" -- a real
+# ORB breakout fired at 15:19 today and was rejected purely for landing after
+# the screener's 14:50 entry cutoff, and both configured close_auction stocks
+# sat idle because neither cleared the old 70% strong-close bar (they closed
+# at 8% and 26% of the day's range). Both were loosened.
+# --------------------------------------------------------------------------
+
+
+def test_screener_templates_allow_entries_until_15_00():
+    import screener
+
+    assert screener._SCALPING_CFG_TEMPLATE["entry_window"] == ["09:05", "15:00"]
+    assert screener._SCALPING_CFG_TEMPLATE["force_exit_at"] == "15:15"
+    assert screener._PULLBACK_CFG_TEMPLATE["entry_window"] == ["09:15", "15:00"]
+    assert screener._PULLBACK_CFG_TEMPLATE["force_exit_at"] == "15:15"
+
+
+def test_close_auction_default_strength_is_loosened_to_55_percent():
+    from strategies.close_auction import CloseAuction
+
+    assert CloseAuction(symbol="TEST").close_strength == 0.55

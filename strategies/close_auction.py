@@ -51,7 +51,9 @@ class CloseAuction(Strategy):
         volume_mult: float = 1.2,
         #: How near the high of the day the price must be, as a fraction of
         #: the day's range. 0.7 means the top 30%.
-        close_strength: float = 0.7,
+        # 0.7 -> 0.55 (2026-09-01, 사용자 요청): 실거래에서 상단 70% 요구가
+        # 너무 엄격해 계속 무거래로 지나갔다 (관측된 종가 위치: 8%, 26%).
+        close_strength: float = 0.55,
         #: OBV must be higher now than this many sessions ago -- multi-day
         #: accumulation confirmation, on top of today's own strong close.
         use_obv_filter: bool = True,

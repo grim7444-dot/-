@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -1950,3 +1951,119 @@ def test_symbol_loss_streak_resets_on_a_new_day(tmp_path):
     portfolio.state.day_start_date = "2000-01-01"  # force a "new day" on the next mark_equity
     portfolio.mark_equity(500_000.0)
     assert portfolio.state.symbol_loss_streak == {}
+
+
+# --------------------------------------------------------------------------
+# Portfolio.reset_daily_baseline (2026-09-01, user-reported): bought 001210
+# by hand; its own gain alone pushed today's equity past the +2% daily
+# profit lock before the bot had traded anything, blocking every new entry
+# for the rest of the session. Resetting the baseline lets the lock start
+# counting from right now instead.
+# --------------------------------------------------------------------------
+
+
+def test_reset_daily_baseline_moves_the_baseline_to_the_given_equity(tmp_path):
+    portfolio = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    portfolio.mark_equity(550_000.0)
+    assert portfolio.state.day_start_equity == 550_000.0
+
+    old = portfolio.reset_daily_baseline(570_000.0)
+
+    assert old == 550_000.0
+    assert portfolio.state.day_start_equity == 570_000.0
+
+
+def test_reset_daily_baseline_leaves_peak_equity_untouched(tmp_path):
+    """The drawdown kill switch's reference must not move with the lock's."""
+    portfolio = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    portfolio.mark_equity(550_000.0)
+    portfolio.mark_equity(600_000.0)
+    assert portfolio.state.peak_equity == 600_000.0
+
+    portfolio.reset_daily_baseline(600_000.0)
+
+    assert portfolio.state.peak_equity == 600_000.0
+
+
+def test_reset_daily_baseline_clears_the_daily_profit_lock(tmp_path):
+    from main import _daily_profit_lock_reason
+
+    portfolio = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    portfolio.mark_equity(550_000.0)
+    # A manual buy's gain alone trips the +2% lock before the bot has traded.
+    equity_now = 570_000.0
+    assert _daily_profit_lock_reason(equity_now, portfolio.state.day_start_equity, 0.02)
+
+    portfolio.reset_daily_baseline(equity_now)
+
+    assert _daily_profit_lock_reason(equity_now, portfolio.state.day_start_equity, 0.02) is None
+
+
+def test_reset_daily_baseline_persists_across_a_restart(tmp_path):
+    first = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    first.mark_equity(550_000.0)
+    first.reset_daily_baseline(570_000.0)
+
+    second = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    assert second.state.day_start_equity == 570_000.0
+
+
+def test_cmd_reset_daily_baseline_updates_the_portfolio_with_yes(tmp_path, monkeypatch):
+    import main
+    from broker import AccountSnapshot
+
+    class _FakeBroker:
+        dry_run = False
+
+        def get_account(self):
+            return AccountSnapshot(equity=570_000.0, cash=100_000.0, buying_power=100_000.0)
+
+    portfolio = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    portfolio.mark_equity(550_000.0)
+
+    fake_rt = SimpleNamespace(broker=_FakeBroker(), portfolio=portfolio)
+    monkeypatch.setattr(main, "build_runtime", lambda *a, **k: fake_rt)
+
+    args = main.build_parser().parse_args(["reset-daily-baseline", "--live", "--yes"])
+    rc = main.cmd_reset_daily_baseline(args)
+
+    assert rc == 0
+    assert portfolio.state.day_start_equity == 570_000.0
+
+
+def test_cmd_reset_daily_baseline_without_yes_asks_and_respects_no(tmp_path, monkeypatch):
+    import main
+    from broker import AccountSnapshot
+
+    class _FakeBroker:
+        dry_run = False
+
+        def get_account(self):
+            return AccountSnapshot(equity=570_000.0, cash=100_000.0, buying_power=100_000.0)
+
+    portfolio = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    portfolio.mark_equity(550_000.0)
+
+    fake_rt = SimpleNamespace(broker=_FakeBroker(), portfolio=portfolio)
+    monkeypatch.setattr(main, "build_runtime", lambda *a, **k: fake_rt)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "no")
+
+    args = main.build_parser().parse_args(["reset-daily-baseline", "--live"])
+    rc = main.cmd_reset_daily_baseline(args)
+
+    assert rc == 1
+    assert portfolio.state.day_start_equity == 550_000.0  # unchanged
+
+
+def test_cmd_reset_daily_baseline_with_no_credentials_is_a_no_op(tmp_path, monkeypatch):
+    import main
+    from broker import DryRunBroker
+
+    portfolio = Portfolio(**_paths(tmp_path), mode_label="DRY-RUN")
+    fake_rt = SimpleNamespace(broker=DryRunBroker(), portfolio=portfolio)
+    monkeypatch.setattr(main, "build_runtime", lambda *a, **k: fake_rt)
+
+    args = main.build_parser().parse_args(["reset-daily-baseline", "--yes"])
+    rc = main.cmd_reset_daily_baseline(args)
+
+    assert rc == 1

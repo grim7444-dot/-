@@ -458,6 +458,27 @@ class Portfolio:
         self.save()
         return trade
 
+    def reset_daily_baseline(self, equity: float) -> float:
+        """Reset today's profit-lock baseline to *equity* right now; returns
+        the old baseline.
+
+        day_start_equity is normally frozen at the day's first mark_equity()
+        call, and the daily profit lock (main._daily_profit_lock_reason)
+        compares today's equity against it. That is the right reference for
+        the bot's own trading gains -- but a stock bought by hand before the
+        bot placed anything today inflates equity the same way, and can trip
+        the lock before the session has traded at all (2026-09-01,
+        user-reported: bought 001210 by hand, its own gain alone tripped the
+        +2% lock at 09:26). This moves the baseline to right now, so the lock
+        only counts what happens from this point forward. peak_equity (the
+        drawdown kill switch's reference) is untouched.
+        """
+        old = self.state.day_start_equity
+        self.state.day_start_equity = equity
+        self.state.day_start_date = utcnow().date().isoformat()
+        self.save()
+        return old
+
     def record_symbol_result(self, code: str, is_profit: bool) -> int:
         """Update `code`'s same-day consecutive-loss streak; returns the new
         count. A profit exit clears it to 0; a loss increments it.

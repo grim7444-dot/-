@@ -2854,6 +2854,60 @@ def cmd_adopt(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reset_daily_baseline(args: argparse.Namespace) -> int:
+    """Reset today's daily-profit-lock baseline to the current account equity.
+
+    day_start_equity is set once, at the day's first mark_equity() call, and
+    the daily profit lock compares today's equity against it -- correct when
+    the gain is the bot's own trading, but a stock bought by hand before the
+    bot placed anything today inflates equity the same way and can trip the
+    lock before the session has traded at all. This moves the baseline to
+    right now; peak_equity (the drawdown kill switch's reference) is
+    untouched, so that protection is unaffected.
+    """
+    rt = build_runtime(args, cli_live=bool(getattr(args, "live", False)), force_dry_run=False)
+
+    if isinstance(rt.broker, DryRunBroker):
+        print("\n  No broker credentials loaded; nothing to reset against.")
+        return 1
+
+    try:
+        account = rt.broker.get_account()
+    except BrokerError as exc:
+        print(f"\n  Could not read the account: {exc}")
+        return 1
+
+    old = rt.portfolio.state.day_start_equity
+    print()
+    print("=" * 78)
+    print("  RESET DAILY PROFIT-LOCK BASELINE".center(78))
+    print("=" * 78)
+    print(f"  Old baseline (today's start) : {old:>14,.0f} KRW")
+    print(f"  New baseline (now)           : {account.equity:>14,.0f} KRW")
+    if old > 0:
+        diff = account.equity - old
+        print(
+            f"  Removed from today's tracked gain: {diff:+,.0f} KRW ({diff / old:+.2%})"
+        )
+    print("  The drawdown kill switch's reference (peak equity) is unchanged.")
+    print("=" * 78)
+
+    if not args.yes:
+        answer = input("\n  Reset today's baseline to current equity? [yes/no] ").strip().lower()
+        if answer not in ("yes", "y"):
+            print("\n  Nothing was changed.")
+            return 1
+
+    rt.portfolio.reset_daily_baseline(account.equity)
+    print(
+        f"\n  Baseline reset. Today's profit lock now tracks gains from "
+        f"{account.equity:,.0f} KRW forward."
+    )
+    print("\n  Next:  python main.py resume")
+    print("=" * 78)
+    return 0
+
+
 def cmd_check(args: argparse.Namespace) -> int:
     """Read-only connectivity probe. Places no orders, ever.
 
@@ -3414,6 +3468,16 @@ def build_parser() -> argparse.ArgumentParser:
     adopt.add_argument("--live", action="store_true", help="read the live account")
     adopt.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
+    reset_baseline = sub.add_parser(
+        "reset-daily-baseline",
+        help="reset today's profit-lock baseline to current equity "
+        "(e.g. a manual buy inflated today's tracked gain)",
+    )
+    reset_baseline.add_argument("--live", action="store_true", help="read the live account")
+    reset_baseline.add_argument(
+        "--yes", action="store_true", help="skip the confirmation prompt"
+    )
+
     chk = sub.add_parser(
         "check", help="read-only connectivity probe against the broker (no orders)"
     )
@@ -3462,6 +3526,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return cmd_setup(args)
     if args.command == "adopt":
         return cmd_adopt(args)
+    if args.command == "reset-daily-baseline":
+        return cmd_reset_daily_baseline(args)
     if args.command == "check":
         return cmd_check(args)
     if args.command == "status":

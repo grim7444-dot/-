@@ -49,6 +49,16 @@ risk:
   late_exit_minutes: 20
   late_exit_stall_pct: 0.015
   late_exit_min_profit_pct: 0.005
+  # 시간대 무관 정체 청산 (2026-09-02, 사용자 요청: "1%에서 눌림목으로
+  # 30분이상 갈때는 최대한 손해는 안보게 1.5%~-0.8%정도에서 익손절") --
+  # 위 late_exit는 마감 20분 전에만 작동하는데, 이건 하루 중 아무 때나
+  # 30분 이상 보유하고도 확정선(lock_pct)을 못 넘긴 포지션에 적용된다.
+  # 현재 수익률이 stall_exit_lower_pct~stall_exit_upper_pct 구간 안에 있을
+  # 때만 작동 -- 그 위는 lock_pct 트레일이, 그 아래는 정상 손절이 이미
+  # 담당하므로 둘 다 안 걸리는 애매한 구간만 이걸로 정리한다.
+  stall_exit_minutes: 30
+  stall_exit_upper_pct: 0.015
+  stall_exit_lower_pct: -0.008
   # 상한가(+30%) 후보 홀드 (2026-08-27, 사용자 요청): 진입가 대비 26% 이상
   # 오르면 -- ±30% 가격제한폭 상한가에 근접했다는 뜻 -- 당일 강제청산
   # (force_exit_at)과 확정 익절 트레일을 모두 보류하고, 다음날
@@ -167,7 +177,7 @@ universe:
       # 4%, 폭은 2%로 넓혔다.
       peak_trail_pct: 0.005
       big_win_pct: 0.04
-      big_win_trail_pct: 0.02
+      big_win_trail_pct: 0.015
       max_cost_share: 0.35
 
   "002990":
@@ -230,7 +240,7 @@ universe:
       # 4%, 폭은 2%로 넓혔다.
       peak_trail_pct: 0.005
       big_win_pct: 0.04
-      big_win_trail_pct: 0.02
+      big_win_trail_pct: 0.015
       max_cost_share: 0.35
 
   "006340":
@@ -274,7 +284,7 @@ universe:
       # 4%, 폭은 2%로 넓혔다.
       peak_trail_pct: 0.005
       big_win_pct: 0.04
-      big_win_trail_pct: 0.02
+      big_win_trail_pct: 0.015
       max_cost_share: 0.35
 
   "073240":
@@ -318,7 +328,7 @@ universe:
       # 4%, 폭은 2%로 넓혔다.
       peak_trail_pct: 0.005
       big_win_pct: 0.04
-      big_win_trail_pct: 0.02
+      big_win_trail_pct: 0.015
       max_cost_share: 0.35
 
   "086520":

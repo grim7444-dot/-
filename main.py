@@ -393,6 +393,50 @@ def _late_exit_reason(
     return None
 
 
+def _stall_exit_reason(
+    position: Position,
+    price: float,
+    now: datetime,
+    rules: SessionRules,
+    risk_cfg: Mapping[str, Any],
+) -> str | None:
+    """Reason to cut a stalled position loose, or None to keep holding.
+
+    User-requested (2026-09-02): "1%에서 눌림목으로 30분이상 갈때는 최대한
+    손해는 안보게 1.5%~-0.8%정도에서 익손절" -- a position that has been
+    open risk.stall_exit_minutes (default 30) without ever clearing its
+    lock tier would otherwise just drift, since the normal stop/lock exits
+    only fire at their own (often wider) thresholds. This only acts while
+    the current gain sits inside [stall_exit_lower_pct, stall_exit_upper_pct]
+    (default -0.8%~+1.5%) -- above that band the lock tier's own trail
+    already manages it (every configured lock_pct is >= the upper bound),
+    and below it the normal stop is closer than this would be anyway, so
+    this only closes the gap neither one covers: a trade that is neither
+    clearly working nor clearly failing, just sitting there.
+
+    Close-auction (overnight) holds are exempt -- holding past the close is
+    the plan for those, not a stall.
+    """
+    if position is None or rules.hold_overnight:
+        return None
+    entry_dt = position.entry_datetime()
+    if entry_dt is None:
+        return None
+    minutes_held = (now - entry_dt).total_seconds() / 60.0
+    stall_minutes = float(risk_cfg.get("stall_exit_minutes", 30))
+    if minutes_held < stall_minutes:
+        return None
+    entry = position.entry_price
+    if not entry:
+        return None
+    gain = (price - entry) / entry
+    upper = float(risk_cfg.get("stall_exit_upper_pct", 0.015))
+    lower = float(risk_cfg.get("stall_exit_lower_pct", -0.008))
+    if not (lower <= gain <= upper):
+        return None
+    return f"{minutes_held:.0f}분째 정체 ({gain:+.2%}) -- 더 안 끌고 정리"
+
+
 def _near_limit_decision(
     position: Position,
     price: float,
@@ -1573,6 +1617,21 @@ class TradingEngine:
                 logger.warning("%s: LATE-SESSION TAKE-PROFIT - %s", label, reason)
                 self._submit_exit(
                     code, position, price, reason, open_orders, asset_cfg,
+                    session_ok, session_reason, market=market,
+                )
+                return
+
+        # A trade that has been open risk.stall_exit_minutes without ever
+        # clearing its lock tier, any time of day (not just near the force
+        # exit) -- see _stall_exit_reason for the exact band this acts in.
+        if position is not None:
+            stall_reason = _stall_exit_reason(
+                position, price, now, rules, rt.config.get("risk") or {}
+            )
+            if stall_reason is not None:
+                logger.warning("%s: STALL EXIT - %s", label, stall_reason)
+                self._submit_exit(
+                    code, position, price, stall_reason, open_orders, asset_cfg,
                     session_ok, session_reason, market=market,
                 )
                 return

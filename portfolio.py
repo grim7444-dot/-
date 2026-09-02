@@ -163,6 +163,25 @@ class Position:
             moment = moment.astimezone(KST)
         return moment.time()
 
+    def entry_datetime(self) -> "datetime | None":
+        """The full KST-aware moment this position was opened, if known.
+
+        Same defensive parsing as entry_date()/entry_time_of_day(), but
+        keeping the date too -- needed to measure how long a position has
+        actually been held (main._stall_exit_reason), which a bare time()
+        cannot answer.
+        """
+        raw = (self.entry_time or "").strip()
+        if not raw:
+            return None
+        try:
+            moment = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if moment.tzinfo is not None:
+            moment = moment.astimezone(KST)
+        return moment
+
     def effective_stop(self) -> float:
         """The stop actually in force: the tighter of hard stop and trail."""
         if self.trail_stop is None:

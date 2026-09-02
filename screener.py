@@ -137,7 +137,7 @@ _SCALPING_CFG_TEMPLATE: dict[str, Any] = {
         # 4%, 폭은 2%로 넓혔다.
         "peak_trail_pct": 0.005,
         "big_win_pct": 0.04,
-        "big_win_trail_pct": 0.02,
+        "big_win_trail_pct": 0.015,
         "max_cost_share": 0.35,
     },
 }
@@ -198,7 +198,7 @@ _PULLBACK_CFG_TEMPLATE: dict[str, Any] = {
         # 4%, 폭은 2%로 넓혔다.
         "peak_trail_pct": 0.005,
         "big_win_pct": 0.04,
-        "big_win_trail_pct": 0.02,
+        "big_win_trail_pct": 0.015,
         "max_cost_share": 0.35,
     },
 }

@@ -1236,6 +1236,108 @@ def test_late_exit_thresholds_are_configurable_via_risk_cfg():
 
 
 # ---------------------------------------------------------------------------
+# 14b. time-of-day-independent stall exit (2026-09-02, user request): "1%에서
+#    눌림목으로 30분이상 갈때는 최대한 손해는 안보게 1.5%~-0.8%정도에서
+#    익손절" -- unlike late_exit above (only the last 20 minutes before a
+#    force exit), this fires any time of day once a position has been open
+#    30+ minutes without clearing its lock tier.
+# ---------------------------------------------------------------------------
+
+
+def _stall_position(entry_price: float, entry_time: str) -> "Position":
+    from portfolio import LONG, Position
+
+    return Position(
+        symbol="005930", side=LONG, qty=1,
+        entry_price=entry_price, stop_price=entry_price * 0.98, stop_distance=entry_price * 0.02,
+        entry_time=entry_time,
+    )
+
+
+def _stall_rules(hold_overnight=False):
+    from market.session_rules import SessionRules
+
+    return SessionRules(force_exit_at=time(15, 10), hold_overnight=hold_overnight)
+
+
+def test_stall_exit_fires_after_30_minutes_inside_the_band():
+    from main import _stall_exit_reason
+
+    position = _stall_position(10_000.0, "2026-09-02T00:00:00+00:00")  # 09:00 KST
+    now = datetime(2026, 9, 2, 9, 30, tzinfo=KST)  # exactly 30 minutes later
+    # +1.0% gain -- inside the default [-0.8%, +1.5%] band.
+    reason = _stall_exit_reason(position, 10_100.0, now, _stall_rules(), {})
+    assert reason is not None
+    assert "30분째" in reason
+
+
+def test_stall_exit_does_nothing_before_30_minutes():
+    from main import _stall_exit_reason
+
+    position = _stall_position(10_000.0, "2026-09-02T00:00:00+00:00")
+    now = datetime(2026, 9, 2, 9, 29, tzinfo=KST)  # 29 minutes -- just short
+    assert _stall_exit_reason(position, 10_100.0, now, _stall_rules(), {}) is None
+
+
+def test_stall_exit_does_nothing_above_the_upper_band():
+    """A real winner past +1.5% is the lock tier's job, not this one's."""
+    from main import _stall_exit_reason
+
+    position = _stall_position(10_000.0, "2026-09-02T00:00:00+00:00")
+    now = datetime(2026, 9, 2, 9, 30, tzinfo=KST)
+    assert _stall_exit_reason(position, 10_200.0, now, _stall_rules(), {}) is None  # +2.0%
+
+
+def test_stall_exit_does_nothing_below_the_lower_band():
+    """A real loser past -0.8% is the normal stop's job, not this one's."""
+    from main import _stall_exit_reason
+
+    position = _stall_position(10_000.0, "2026-09-02T00:00:00+00:00")
+    now = datetime(2026, 9, 2, 9, 30, tzinfo=KST)
+    assert _stall_exit_reason(position, 9_880.0, now, _stall_rules(), {}) is None  # -1.2%
+
+
+def test_stall_exit_exempts_close_auction_overnight_holds():
+    from main import _stall_exit_reason
+
+    position = _stall_position(10_000.0, "2026-09-02T00:00:00+00:00")
+    now = datetime(2026, 9, 2, 9, 30, tzinfo=KST)
+    rules = _stall_rules(hold_overnight=True)
+    assert _stall_exit_reason(position, 10_100.0, now, rules, {}) is None
+
+
+def test_stall_exit_thresholds_are_configurable_via_risk_cfg():
+    from main import _stall_exit_reason
+
+    position = _stall_position(10_000.0, "2026-09-02T00:00:00+00:00")
+    now = datetime(2026, 9, 2, 9, 30, tzinfo=KST)
+    # Default would fire at +1.0% (see the first test above); a longer
+    # required duration must suppress it at exactly 30 minutes held.
+    longer_cfg = {"stall_exit_minutes": 45}
+    assert _stall_exit_reason(position, 10_100.0, now, _stall_rules(), longer_cfg) is None
+
+
+def test_stall_exit_does_nothing_with_no_parseable_entry_time():
+    from main import _stall_exit_reason
+
+    position = _stall_position(10_000.0, "")
+    now = datetime(2026, 9, 2, 9, 30, tzinfo=KST)
+    assert _stall_exit_reason(position, 10_100.0, now, _stall_rules(), {}) is None
+
+
+def test_entry_datetime_parses_a_tz_aware_iso_string():
+    position = _stall_position(10_000.0, "2026-09-02T00:00:00+00:00")
+    dt = position.entry_datetime()
+    assert dt is not None
+    assert dt == datetime(2026, 9, 2, 9, 0, tzinfo=KST)  # UTC -> KST
+
+
+def test_entry_datetime_returns_none_when_unset():
+    position = _stall_position(10_000.0, "")
+    assert position.entry_datetime() is None
+
+
+# ---------------------------------------------------------------------------
 # 15. the daily 복기 report fires once at the close, and the weekly rollup
 #    fires alongside it every Friday (2026-08-27, user request)
 # ---------------------------------------------------------------------------

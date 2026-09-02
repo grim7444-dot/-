@@ -129,6 +129,35 @@ def test_evening_report_always_includes_the_복기_section(portfolio, config):
     assert "stop hit" in text
 
 
+def test_evening_report_shows_a_same_day_close_auction_entry_still_open(portfolio, config):
+    """2026-09-02 user request: "종가매매도 전부 보고 할수있도록" -- a
+    close_auction buy taken tonight (15:15-15:19) does not exit until
+    tomorrow morning, so without this it never showed up anywhere in
+    tonight's report."""
+    from portfolio import LONG, Position
+    from report import build_evening_report
+
+    today = date(2026, 9, 2)
+    portfolio.open_position(Position(
+        symbol="460930", side=LONG, qty=10,
+        entry_price=10_000.0, stop_price=9_800.0, stop_distance=200.0,
+        strategy="close_auction",
+    ))
+    risk = RiskManager(config, portfolio)
+
+    text = build_evening_report(config, portfolio, risk, "PAPER", day=today)
+    assert "Open positions (1)" in text
+    assert "460930" in text
+
+
+def test_evening_report_omits_the_open_positions_section_when_flat(portfolio, config):
+    from report import build_evening_report
+
+    risk = RiskManager(config, portfolio)
+    text = build_evening_report(config, portfolio, risk, "PAPER", day=date(2026, 9, 2))
+    assert "Open positions" not in text
+
+
 # ---------------------------------------------------------------------------
 # build_weekly_report
 # ---------------------------------------------------------------------------

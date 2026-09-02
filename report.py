@@ -275,6 +275,22 @@ def build_evening_report(
                 f"equity {float(row.get('ending_equity') or 0):,.0f}"
             )
 
+    # 2026-09-02 (user request): "종가매매도 전부 보고할 수 있도록" -- a
+    # close_auction entry taken tonight (15:15-15:19) does not exit until
+    # tomorrow morning, so it never appeared anywhere in this report: not in
+    # "Trades closed" (it has not closed) and this report had no open-
+    # positions section at all, unlike the morning report. Without this, a
+    # close-auction buy was invisible from the moment it was entered until
+    # the next evening's report finally showed its outcome.
+    positions = portfolio.positions()
+    if positions:
+        lines += ["", DIVIDER, f"Open positions ({len(positions)})"]
+        for code, pos in positions.items():
+            lines.append(
+                f"  {_label(code, config):<20} {pos.side:<5} "
+                f"{int(pos.qty)} @ {pos.entry_price:,.0f} stop {pos.effective_stop():,.0f}"
+            )
+
     lines += _retrospective_lines(rows, config)
 
     if state.stopped:

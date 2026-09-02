@@ -184,6 +184,16 @@ class DrawdownStatus:
 
 
 def evaluate_drawdown(peak_equity: float, equity: float, limit_pct: float) -> DrawdownStatus:
+    """Rule 5's drawdown kill switch.
+
+    limit_pct <= 0 disables it entirely (2026-09-02, explicit user request:
+    "킬스위치는 없애는게 좋을듯 하다" -- confirmed "완전히 제거" after being
+    told this removes the only floor on the live account) -- never breached,
+    regardless of how far equity has fallen from its peak. Only ``limit_pct
+    <= 0`` disables it; ``limit_pct == 0`` would otherwise breach on almost
+    every call, since drawdown >= 0 is true anywhere off the exact peak --
+    the opposite of what "disabled" has to mean here.
+    """
     if peak_equity <= 0:
         return DrawdownStatus(peak_equity, equity, 0.0, limit_pct, False)
     drawdown = max(0.0, (peak_equity - equity) / peak_equity)
@@ -192,7 +202,9 @@ def evaluate_drawdown(peak_equity: float, equity: float, limit_pct: float) -> Dr
         equity=equity,
         drawdown_pct=drawdown,
         limit_pct=limit_pct,
-        breached=drawdown >= limit_pct,
+        # Real drawdown is still reported either way (status/reports keep
+        # showing it) -- only whether it can ever *breach* changes.
+        breached=(limit_pct > 0 and drawdown >= limit_pct),
     )
 
 

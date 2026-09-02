@@ -33,7 +33,13 @@ risk:
   max_total_risk_pct: 0.06
   max_open_positions: 6
   # Rule 5: peak-to-trough equity drawdown that trips the kill switch.
-  max_drawdown_pct: 0.10
+  # DISABLED (2026-09-02, explicit user request: "킬스위치는 없애는게
+  # 좋을듯 하다" -> confirmed "완전히 제거" after being told this removes
+  # the only floor on the live account against a bad day). 0 (or any
+  # non-positive value) means never breached -- see evaluate_drawdown()'s
+  # docstring in risk/manager.py. Restore a positive value (e.g. 0.10) to
+  # bring it back; nothing else needs to change.
+  max_drawdown_pct: 0
   atr_period: 14
   # Hard stop distance in ATR multiples. 1.0 => a 1-ATR adverse move loses
   # exactly per_trade_pct of equity.

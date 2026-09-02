@@ -184,7 +184,25 @@ def test_drawdown_at_or_beyond_the_limit_trips(equity):
     assert evaluate_drawdown(10_000_000, equity, 0.10).breached is True
 
 
+@pytest.mark.parametrize("limit_pct", [0.0, -0.1])
+def test_zero_or_negative_limit_disables_the_kill_switch_entirely(limit_pct):
+    """2026-09-02, explicit user request: "킬스위치는 없애는게 좋을듯 하다"
+    -> confirmed "완전히 제거". A non-positive limit must never breach, no
+    matter how far equity has fallen -- the naive drawdown >= limit_pct
+    check would otherwise breach on almost every call at limit_pct == 0."""
+    status = evaluate_drawdown(peak_equity=10_000_000, equity=1.0, limit_pct=limit_pct)
+    assert status.breached is False
+    # The real drawdown is still reported (status/reports keep showing it) --
+    # only whether it can ever *breach* changes.
+    assert status.drawdown_pct == pytest.approx(0.9999999)
+
+
 def test_kill_switch_stops_cancels_and_flattens(portfolio, recording_broker, config):
+    # The live config disables the kill switch (max_drawdown_pct: 0, 2026-09-02
+    # user request) -- this test exercises the mechanism itself, which must
+    # still work correctly whenever it *is* enabled, so it sets its own
+    # threshold rather than depend on the live default.
+    config = {**config, "risk": {**config["risk"], "max_drawdown_pct": 0.10}}
     manager = RiskManager(config, portfolio)
     portfolio.mark_equity(EQUITY)
     portfolio.open_position(_pos("009830"))

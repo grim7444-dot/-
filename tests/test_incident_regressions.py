@@ -144,7 +144,12 @@ OPEN = datetime(2026, 8, 18, 11, 0, tzinfo=KST)         # a Tuesday, mid-session
 
 
 def _stopped_manager(portfolio, config, broker, calendar):
-    manager = RiskManager(config, portfolio, calendar=calendar)
+    # The live config disables the kill switch (max_drawdown_pct: 0, 2026-09-02
+    # user request) -- these tests exercise the mechanism itself, which must
+    # still work correctly whenever it *is* enabled, so they set their own
+    # threshold rather than depend on the live default.
+    test_config = {**config, "risk": {**config["risk"], "max_drawdown_pct": 0.10}}
+    manager = RiskManager(test_config, portfolio, calendar=calendar)
     portfolio.mark_equity(10_000_000.0)
     status = manager.check_drawdown(8_800_000.0)
     assert status.breached is True

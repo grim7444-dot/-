@@ -1813,8 +1813,6 @@ class TradingEngine:
         if rt.broker.dry_run:
             return
         positions = rt.portfolio.state.positions
-        if not positions:
-            return
         try:
             holdings = rt.broker.get_holdings()
         except BrokerError as exc:
@@ -1829,6 +1827,84 @@ class TradingEngine:
                 "outside the bot, clearing the stale local position", code,
             )
             self._clear_stale_position(code, "봇 밖에서 매도된 것으로 보여 자동 정리")
+
+        # 2026-09-02 (live incident): the reverse direction -- 000440 filled
+        # at the broker (order submitted successfully) but the local
+        # position record was never written, most likely because
+        # submit_order() itself raised (e.g. a network timeout on the
+        # confirmation response) after the order had already gone through.
+        # run_cycle's per-code try/except then just logged and moved on,
+        # leaving a real, unprotected holding with no local stop -- nothing
+        # noticed until the user spotted the price drop by hand ~10 minutes
+        # later. This closes that gap: any broker holding not in
+        # positions is adopted with a stop the moment it's still in today's
+        # active universe (so a strategy/ATR context exists to size one);
+        # otherwise it can only be flagged, the same "left alone" case
+        # cmd_adopt already prints for a holding outside the universe.
+        for code, h in holdings.items():
+            if h.qty <= 0 or code in positions:
+                continue
+            self._adopt_untracked_holding(code, h)
+
+    def _adopt_untracked_holding(self, code: str, holding) -> None:
+        rt = self.rt
+        strategy = rt.strategies.get(code)
+        asset_cfg = rt.universe.get(code)
+        if strategy is None or asset_cfg is None:
+            logger.error(
+                "%s: broker holds %s shares untracked by the bot, and it is "
+                "outside today's universe -- cannot size a stop automatically. "
+                "Run `python main.py adopt --live --yes` after adding it to "
+                "config.yaml, or manage it by hand.",
+                code, holding.qty,
+            )
+            self._tg_notifier.send(
+                f"⚠️ {rt.name_of(code)}({code}) {holding.qty:,.0f}주가 봇에 "
+                f"기록되지 않은 채 계좌에 있습니다 (유니버스 밖이라 자동 스탑을 "
+                f"못 겁니다). 직접 확인해주세요."
+            )
+            return
+        try:
+            barset = rt.market_data.get_bars(
+                code=code,
+                timeframe=asset_cfg.get("timeframe", "1Day"),
+                lookback_bars=max((strategy.warmup or 30) + 30, 120),
+                market=rt.market_of(code),
+            )
+            atr_value = last_valid(atr_indicator(barset.bars, rt.risk.atr_period)) or 0.0
+            price = holding.current_price or float(barset.bars["close"].iloc[-1])
+        except Exception as exc:  # never let this block the rest of the cycle
+            logger.error("%s: could not price an untracked holding: %s", code, exc)
+            return
+        if atr_value <= 0 or price <= 0:
+            logger.error(
+                "%s: broker holds %s shares untracked by the bot and no ATR "
+                "is available yet -- cannot place a stop this cycle, will "
+                "retry next cycle.", code, holding.qty,
+            )
+            return
+        distance = atr_value * rt.risk.hard_stop_atr_mult
+        stop = rt.rules.stop_price(price, distance, rt.market_of(code))
+        rt.portfolio.open_position(Position(
+            symbol=code,
+            side=LONG,
+            qty=holding.qty,
+            entry_price=holding.avg_price or price,
+            stop_price=stop,
+            stop_distance=distance,
+            strategy=strategy.name,
+            entry_time=str(datetime.now(KST)),
+        ))
+        logger.warning(
+            "%s: broker holds %s shares untracked by the bot -- auto-adopted "
+            "with stop %s (order likely filled but the local record was "
+            "never written, e.g. a timeout right after submit_order)",
+            code, holding.qty, f"{stop:,.0f}",
+        )
+        self._tg_notifier.send(
+            f"⚠️ {rt.name_of(code)}({code}) {holding.qty:,.0f}주가 봇 기록에 "
+            f"없던 상태로 발견돼 자동 편입했습니다. 손절 {stop:,.0f}원."
+        )
 
     def _live_sell_quote(self, code: str) -> float | None:
         """The freshest available sell-side reference price for `code` --

@@ -146,7 +146,7 @@ class _FakeExecNotifier:
 
 def _exec_engine(
     portfolio, config, broker, use_limit_orders=True, limit_buffer_ticks=2,
-    stop_limit_buffer_ticks=5,
+    stop_limit_buffer_ticks=5, universe=None, strategies=None, market_data=None,
 ):
     from main import TradingEngine
     from risk.manager import RiskManager
@@ -155,6 +155,9 @@ def _exec_engine(
         def name_of(self, code):
             return ""
 
+        def market_of(self, code):
+            return KOSPI
+
     engine = TradingEngine.__new__(TradingEngine)
     rt = _FakeRTForExec()
     rt.config = config
@@ -162,6 +165,9 @@ def _exec_engine(
     rt.risk = RiskManager(config, portfolio)
     rt.rules = RULES
     rt.broker = broker
+    rt.universe = universe or {}
+    rt.strategies = strategies or {}
+    rt.market_data = market_data
     engine.rt = rt
     engine._last_exit_time = {}
     engine._last_exit_was_profit = {}
@@ -406,11 +412,19 @@ def test_reconcile_does_nothing_in_dry_run_mode(portfolio, config):
     assert portfolio.get("005930") is not None
 
 
-def test_reconcile_does_nothing_with_no_open_positions(portfolio, config):
-    broker = _FakeExecBroker(holdings_error=AssertionError("should not be called"))
+def test_reconcile_does_nothing_with_no_open_positions_and_no_broker_holdings(portfolio, config):
+    """No local positions and nothing at the broker either -- a true no-op.
+
+    get_holdings() is still called (2026-09-02: it must be, to catch a
+    holding the broker has that the bot never recorded at all -- see the
+    untracked-holdings tests below), it just reports nothing either way.
+    """
+    broker = _FakeExecBroker(holdings={})
     engine = _exec_engine(portfolio, config, broker)
 
-    engine._reconcile_holdings_with_broker()  # must not raise, must not call get_holdings
+    engine._reconcile_holdings_with_broker()  # must not raise
+
+    assert engine._tg_notifier.sent == []
 
 
 def test_reconcile_leaves_positions_alone_when_the_holdings_check_fails(portfolio, config):
@@ -423,6 +437,93 @@ def test_reconcile_leaves_positions_alone_when_the_holdings_check_fails(portfoli
     engine._reconcile_holdings_with_broker()
 
     assert portfolio.get("005930") is not None
+
+
+# ---------------------------------------------------------------------------
+# The reverse direction (2026-09-02, live incident): 000440 filled at the
+# broker -- submit_order() had already gone through -- but the local
+# position record was never written, most plausibly because submit_order()
+# itself raised (e.g. a network timeout waiting for the confirmation
+# response) after Kiwoom had already accepted the order. run_cycle's
+# per-code try/except just logs and moves on to the next code, so nothing
+# else would have noticed a real, unprotected holding sitting with no local
+# stop -- until the user spotted the price drop by hand roughly ten minutes
+# later. _reconcile_holdings_with_broker now also checks this direction.
+# ---------------------------------------------------------------------------
+
+
+class _FakeBarSet:
+    def __init__(self, bars):
+        self.bars = bars
+
+
+class _FakeMarketData:
+    def __init__(self, bars):
+        self._bars = bars
+
+    def get_bars(self, **kwargs):
+        return _FakeBarSet(self._bars)
+
+
+class _FakeUntrackedStrategy:
+    name = "orb"
+    warmup = 20
+
+
+def test_reconcile_auto_adopts_an_untracked_holding_within_the_universe(portfolio, config, bars):
+    from broker import Holding
+
+    broker = _FakeExecBroker(
+        holdings={"005930": Holding(code="005930", qty=10.0, avg_price=10_000.0, current_price=9_800.0)}
+    )
+    engine = _exec_engine(
+        portfolio, config, broker,
+        universe={"005930": {"timeframe": "1Min"}},
+        strategies={"005930": _FakeUntrackedStrategy()},
+        market_data=_FakeMarketData(bars),
+    )
+
+    engine._reconcile_holdings_with_broker()
+
+    position = portfolio.get("005930")
+    assert position is not None
+    assert position.qty == 10.0
+    assert position.entry_price == 10_000.0
+    assert position.stop_price < 9_800.0  # a real stop below the current price
+    assert engine._tg_notifier.sent  # alerted, not silent
+
+
+def test_reconcile_only_alerts_for_an_untracked_holding_outside_the_universe(portfolio, config):
+    """No strategy/ATR context to size a stop -- flag it, do not guess."""
+    from broker import Holding
+
+    broker = _FakeExecBroker(holdings={"005930": Holding(code="005930", qty=10.0, avg_price=10_000.0)})
+    engine = _exec_engine(portfolio, config, broker)  # empty universe/strategies
+
+    engine._reconcile_holdings_with_broker()
+
+    assert portfolio.get("005930") is None
+    assert engine._tg_notifier.sent
+
+
+def test_reconcile_does_not_touch_an_already_tracked_holding(portfolio, config, bars):
+    """A holding that matches an existing local position is left exactly as is."""
+    from broker import Holding
+
+    broker = _FakeExecBroker(holdings={"005930": Holding(code="005930", qty=10.0, avg_price=10_000.0)})
+    engine = _exec_engine(
+        portfolio, config, broker,
+        universe={"005930": {"timeframe": "1Min"}},
+        strategies={"005930": _FakeUntrackedStrategy()},
+        market_data=_FakeMarketData(bars),
+    )
+    _open_exec_position(portfolio, code="005930", entry_price=9_500.0)
+
+    engine._reconcile_holdings_with_broker()
+
+    # untouched -- still the original entry_price, not re-adopted at avg_price
+    assert portfolio.get("005930").entry_price == 9_500.0
+    assert engine._tg_notifier.sent == []
 
 
 # ---------------------------------------------------------------------------

@@ -604,29 +604,6 @@ universe:
       close_strength: 0.55
       atr_trail_mult: 2.0
 
-  # TEMPORARY -- emergency adopt-only entry (2026-09-02). The bot bought 34
-  # shares of 000440 (order submitted, filled at the broker) but the local
-  # position record never got written -- 000440 was a screener pick, not in
-  # this static universe, so `adopt` couldn't see it to attach a stop. Only
-  # here to let `adopt --live --yes` recognize and protect it; delete once
-  # adopted (state.json keeps managing it from then on regardless of this
-  # entry). market is an unverified guess -- doesn't affect the stop math.
-  "000440":
-    name: 중앙에너비스
-    market: KOSPI
-    enabled: true
-    strategy: orb
-    timeframe: 1Min
-    min_qty: 1
-    entry_window: ["09:05", "15:00"]
-    force_exit_at: "15:15"
-    params:
-      range_minutes: 5
-      trend_ema: 21
-      stop_pct: 0.013
-      early_stop_pct: 0.02
-      early_stop_until: "09:30"
-
 # ---------------------------------------------------------------------------
 # KRX market rules
 # ---------------------------------------------------------------------------

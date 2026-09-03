@@ -1,0 +1,887 @@
+# ---------------------------------------------------------------------------
+# KRX trading bot — configuration
+#
+# Nothing secret lives here. App keys and tokens are read from .env only.
+# ---------------------------------------------------------------------------
+
+account:
+  # Used by the dry-run broker and as the backtest starting equity (KRW).
+  # Update this to match your actual account equity before live trading.
+  starting_equity: 550000
+  currency: KRW
+
+risk:
+  # 청산 직후 같은 종목 재진입 금지 시간(분) -- 방금 매도한 저항선을
+  # 바로 다시 쫓아 사는 것을 막는다. 15 -> 5 (2026-09-02, 사용자 요청):
+  # 047770 코데즈컴바인이 09:48:58 진입 후 48초 만에 손절(4,235 -> 4,150)
+  # 됐는데, 직후 2분 안에 4,285 -> 4,345까지 반등 -- 봇이 09:50/09:52에
+  # 같은 돌파 신호를 다시 냈지만 15분 쿨다운에 막혀 재진입을 못 했다.
+  # 5 -> 10 (같은 날, 사용자 요청: "손실이 크니까 늘려보자"): 5분으로
+  # 줄인 뒤 047770/159010/067310이 전부 같은 종목에서 두 번씩 손절 --
+  # 오늘 실현손익 -52,420원 중 000440 사고를 뺀 -16,452원의 상당수가
+  # 이 반복 재진입에서 나왔다. 5분은 너무 짧아 재진입 채터링을 유발했고,
+  # 10분으로 절충한다. 익절 후에는 이 쿨다운이 아예 안 걸린다
+  # (_reentry_cooldown_reason 참고) -- 여기 적용되는 건 손절 후 재진입뿐이다.
+  entry_cooldown_minutes: 10
+  # 같은 종목 당일 연속 손절 몇 번까지 재진입을 허용할지 (2026-08-31,
+  # 사용자 요청: 하루 매매표에서 079650/004310/014950/033790/387690 등이
+  # 2~4번씩 재진입하며 뒤로 갈수록 더 크게 손절 -- "이런식의 매매는
+  # 의미없어"). 이 횟수를 채우면 그 종목만 당일 신규 진입이 막힌다 --
+  # 다른 종목은 무관하고, 한 번이라도 익절하면 그 종목 카운트는 0으로
+  # 리셋된다. 0으로 두면 비활성화.
+  max_symbol_losses_per_day: 2
+  # Rule 4: every trade risks exactly this fraction of *current* equity.
+  per_trade_pct: 0.01
+  # Portfolio-wide caps. 1% x 8 stocks would put 8% at risk at once; these
+  # hold total exposure to 6% across at most 6 open positions.
+  max_total_risk_pct: 0.06
+  max_open_positions: 6
+  # Rule 5: peak-to-trough equity drawdown that trips the kill switch.
+  # DISABLED (2026-09-02, explicit user request: "킬스위치는 없애는게
+  # 좋을듯 하다" -> confirmed "완전히 제거" after being told this removes
+  # the only floor on the live account against a bad day). 0 (or any
+  # non-positive value) means never breached -- see evaluate_drawdown()'s
+  # docstring in risk/manager.py. Restore a positive value (e.g. 0.10) to
+  # bring it back; nothing else needs to change.
+  max_drawdown_pct: 0
+  atr_period: 14
+  # Hard stop distance in ATR multiples. 1.0 => a 1-ATR adverse move loses
+  # exactly per_trade_pct of equity.
+  hard_stop_atr_mult: 1.0
+  # Never let a single position exceed this share of equity in notional terms.
+  max_position_notional_pct: 0.90
+  # 당일청산(force_exit_at) 20분 전부터: 고점 대비 1.5% 눌려서 더 못 오르고
+  # 있는데 그래도 아직 +0.5% 이상 수익이면, 2% 확정선까지 기다리지 않고
+  # 바로 그 자리에서 익절한다 (2026-08-27, 사용자 요청). 눌림목이 마감
+  # 직전까지 정체돼 있으면 강제청산 때 본전/손실로 끝날 위험도 있고, 그
+  # 자리를 다른 매매가 못 쓰게 묶어두기도 하기 때문. 종가매매(익일 아침
+  # 청산) 종목에는 적용 안 함 -- 그건 애초에 밤새 들고 가는 게 계획이다.
+  late_exit_minutes: 20
+  late_exit_stall_pct: 0.015
+  late_exit_min_profit_pct: 0.005
+  # 시간대 무관 정체 청산 (2026-09-02, 사용자 요청: "1%에서 눌림목으로
+  # 30분이상 갈때는 최대한 손해는 안보게 1.5%~-0.8%정도에서 익손절") --
+  # 위 late_exit는 마감 20분 전에만 작동하는데, 이건 하루 중 아무 때나
+  # 30분 이상 보유하고도 확정선(lock_pct)을 못 넘긴 포지션에 적용된다.
+  # 현재 수익률이 stall_exit_lower_pct~stall_exit_upper_pct 구간 안에 있을
+  # 때만 작동 -- 그 위는 lock_pct 트레일이, 그 아래는 정상 손절이 이미
+  # 담당하므로 둘 다 안 걸리는 애매한 구간만 이걸로 정리한다.
+  stall_exit_minutes: 30
+  stall_exit_upper_pct: 0.015
+  stall_exit_lower_pct: -0.008
+  # 상한가(+30%) 후보 홀드 (2026-08-27, 사용자 요청): 진입가 대비 26% 이상
+  # 오르면 -- ±30% 가격제한폭 상한가에 근접했다는 뜻 -- 당일 강제청산
+  # (force_exit_at)과 확정 익절 트레일을 모두 보류하고, 다음날
+  # near_limit_exit_time 이후에 매도한다. 상한가 근처에서 파는 대신 계속
+  # 들고 가서 익일 갭상승/추가 상한가 가능성을 노리는 전략. 하드스탑(ATR
+  # 기반)은 안전장치로 계속 살아있다 -- 급반전 시 보호는 유지.
+  near_limit_hold_pct: 0.26
+  near_limit_exit_time: "09:05"
+  # 눌림 후 반등 조기 익절 (2026-08-27, 사용자 요청): 진입 후 고점이 아니라
+  # "최저점"이 진입가 대비 1.8% 이상 눌렸던 포지션은, 그 뒤 반등해도 정상
+  # 확정선(2%)까지 못 가고 다시 밀리는 경우가 많다고 보고 1.5%에서 먼저
+  # 정리한다. 한 번도 이만큼 안 눌린 포지션(순조롭게 오른 경우)은 그대로
+  # 정상 lock_pct(2%) 로직을 탄다 -- 이 규칙은 "눌렸다 반등" 패턴에만 적용.
+  dip_recovery_dip_pct: 0.018
+  dip_recovery_profit_pct: 0.015
+  # 일일 수익 락 (2026-08-27, 사용자 요청: 하루 최소 2%는 남겨야 된다): 오늘
+  # 자산이 장 시작 대비 이 비율 이상 늘면 신규 진입을 잠근다. 이미 번 걸
+  # 새 리스크로 다시 거는 걸 막는다는 취지 -- 기존 포지션의 손절/청산
+  # 로직은 그대로 계속 작동하니 오늘 수익은 계속 늘 수 있다. 0으로 두면
+  # 비활성.
+  daily_profit_lock_pct: 0.02
+  # Retail short selling of KRX equities is not practically available, and
+  # futures (including the futures inside inverse ETFs) are out of scope.
+  # A short signal therefore closes a position but never opens one.
+  long_only: true
+  theme_filter:
+    enabled: true
+
+# Two stocks in one theme are one thesis sized twice, so only one position per
+# theme is allowed at a time. Single-member themes never block anything.
+themes:
+  beauty: ["161890", "192820", "278470"]  # 한국콜마, 코스맥스, 에이피알
+  construction: ["002990", "228340"]      # 금호건설, 동양파일 (건설 + PHC파일)
+  # 금호타이어 shares a name with 금호건설 but not an owner: it was sold to
+  # Doublestar in 2018. Tyres track the auto cycle, construction does not, so
+  # they are deliberately separate themes.
+  auto_parts: ["073240"]                  # 금호타이어
+  power_energy: ["006340", "009830"]      # 대원전선, 한화솔루션
+  battery_materials: ["093370", "247540", "086520", "003670"] # 후성, 에코프로비엠, 에코프로, 포스코퓨처엠
+  shipbuilding: ["460930"]                # 현대힘스
+  robotics: ["439960"]                    # 코스모로보틱스
+  game: ["101730", "263750", "293490"]   # 위메이드맥스, 펄어비스, 카카오게임즈
+  pharma: ["028300", "068270", "196170"] # HLB, 셀트리온, 알테오젠
+
+# ---------------------------------------------------------------------------
+# Universe
+#
+# `name` and `market` are for display and for tax/tick selection. Run
+# `python main.py profile` with network access to verify them against the
+# official listing data — a wrong `market` mis-prices the transaction tax.
+# ---------------------------------------------------------------------------
+universe:
+  # --- Day trading (단타), 30-minute bars ----------------------------------
+  # Assigned by measured volatility, not by sector: `profile` put these five
+  # above the 8% daily-ATR line.
+  #
+  # The timeframe comes from `profile --atr-sweep`, which measured ATR at each
+  # candidate. What matters is costs as a share of what a trade risks -- the
+  # hard stop is one ATR, so that ratio is 0.38% / ATR%:
+  #
+  #     3Min 112%   5Min 72%   10Min 42%   15Min 32%   30Min 20%   60Min 12%
+  #
+  # A breakout system does not earn 0.42R a trade, so 30-minute bars are the
+  # first that survive their own friction. This is still a day trade: entries
+  # 09:15-14:30, flat at 15:10. There are 13 bars in a session, so signals are
+  # much rarer than on a faster bar -- that is what the cost structure buys.
+  #
+  # entry_window keeps entries out of the opening minutes, where the spread is
+  # widest and no channel has formed yet, and stops them well before the
+  # flat-out. force_exit_at closes every position at 15:10, ten minutes before
+  # the closing auction -- a position still open when the auction starts
+  # cannot be sold at a predictable price and becomes an overnight hold.
+  "009830":
+    name: 한화솔루션
+    market: KOSPI
+    enabled: false  # 고정 종목 비활성 -- 스크리너가 매일 거래량 터진 종목으로 대체
+    strategy: pullback_bounce
+    timeframe: 1Min
+    min_qty: 1
+    entry_window: ["09:00", "11:00"]
+    force_exit_at: "15:10"
+    params:
+      trend_ema: 20
+      swing_lookback: 7
+      pullback_bars: 2
+      pullback_min_pct: 0.005
+      min_bar_strength: 0.25
+      # stop_pct 1.7%->1.3%, lock_pct 2%->2.5% (2026-08-27, 사용자 요청):
+      # 손익비를 정석(1:2)에 더 가깝게 좁힌 손절/넓힌 목표로 조정 -- 실거래
+      # 로그 기준 평균 손익비가 그에 못 미쳤다는 지적에서 나온 변경. 승률은
+      # 더 자주 손절 걸려 낮아질 수 있지만, 구조적으로 더 나은 R:R을 노림
+      # (아래 3개 블록 + screener.py 템플릿도 동일하게 변경).
+      stop_pct: 0.013
+      # 오전 09:00~09:30은 낙폭이 커서 정상 1.3%로는 노이즈에도 자주 걸린다는
+      # 사용자 피드백 (2026-08-28) -- 이 구간만 2%로 넓힌다.
+      early_stop_pct: 0.02
+      early_stop_until: "09:30"
+      # 11시~15시 사이 신규 진입은 손절/확정 폭을 대칭 1.5%/1.5%로 고정
+      # (2026-08-28, 사용자 요청: "너무 거래가 없네 -- 익절1.5% 손절1.5%로
+      # 가자 11시부터3시까지"). 진입 시점 기준으로 한 번 정해지면 그
+      # 포지션이 살아있는 동안 계속 유지된다.
+      midday_stop_pct: 0.015
+      midday_lock_pct: 0.015
+      midday_window_start: "11:00"
+      midday_window_end: "15:00"
+      arm_pct: 0.012
+      lock_pct: 0.025
+      # peak_trail_pct 0.3%->0.5%, big_win_pct 4%->3% (2026-08-28, 사용자
+      # 요청): 익절 후 종목이 눌림 없이 계속 오르는데도 좁은 0.3% 트레일에
+      # 미리 털리고, 이미 판 자리라 재진입 쿨다운에 막혀 못 쫓아가는 문제 --
+      # 트레일을 넓히고 넓은 트레일이 붙는 문턱도 낮춘다 (재진입 쿨다운
+      # 자체는 익절 후 재진입에 한해 건너뛰도록 main.py에서 별도로 바꿈).
+      # big_win_pct 3%->4%, big_win_trail_pct 1%->2% (2026-08-31, 사용자
+      # 요청): 고정 바닥(진입가+2%)을 먼저 시도했다가 "안되, 고점 대비
+      # 하락"으로 정정 -- 그대로 고점 대비 트레일 방식을 유지하고 문턱은
+      # 4%, 폭은 2%로 넓혔다.
+      peak_trail_pct: 0.005
+      big_win_pct: 0.04
+      big_win_trail_pct: 0.015
+      max_cost_share: 0.35
+
+  "002990":
+    name: 금호건설
+    market: KOSPI
+    enabled: true  # 종가매매 활성 -- 사용자 요청
+    strategy: close_auction
+    timeframe: 1Day
+    min_qty: 1
+    entry_window: ["15:15", "15:19"]
+    force_exit_at: "09:05"
+    hold_overnight: true
+    params:
+      trend_ema: 20
+      volume_mult: 1.2
+      # close_strength 0.7 -> 0.55 (2026-09-01, 사용자 요청: "종가매매도
+      # 않하고") -- 실거래에서 상단 70% 요구가 너무 엄격해 계속 무거래로
+      # 지나갔다 (관측된 종가 위치: 8%, 26%). 상단 절반 근처로 완화.
+      close_strength: 0.55
+      atr_trail_mult: 2.0
+
+  "093370":
+    name: 후성
+    market: KOSPI
+    enabled: false  # 고정 종목 비활성 -- 스크리너가 매일 거래량 터진 종목으로 대체
+    strategy: pullback_bounce
+    timeframe: 1Min
+    min_qty: 1
+    entry_window: ["09:00", "11:00"]
+    force_exit_at: "15:10"
+    params:
+      trend_ema: 20
+      swing_lookback: 7
+      pullback_bars: 2
+      pullback_min_pct: 0.005
+      min_bar_strength: 0.25
+      stop_pct: 0.013
+      # 오전 09:00~09:30은 낙폭이 커서 정상 1.3%로는 노이즈에도 자주 걸린다는
+      # 사용자 피드백 (2026-08-28) -- 이 구간만 2%로 넓힌다.
+      early_stop_pct: 0.02
+      early_stop_until: "09:30"
+      # 11시~15시 사이 신규 진입은 손절/확정 폭을 대칭 1.5%/1.5%로 고정
+      # (2026-08-28, 사용자 요청: "너무 거래가 없네 -- 익절1.5% 손절1.5%로
+      # 가자 11시부터3시까지"). 진입 시점 기준으로 한 번 정해지면 그
+      # 포지션이 살아있는 동안 계속 유지된다.
+      midday_stop_pct: 0.015
+      midday_lock_pct: 0.015
+      midday_window_start: "11:00"
+      midday_window_end: "15:00"
+      arm_pct: 0.012
+      lock_pct: 0.025
+      # peak_trail_pct 0.3%->0.5%, big_win_pct 4%->3% (2026-08-28, 사용자
+      # 요청): 익절 후 종목이 눌림 없이 계속 오르는데도 좁은 0.3% 트레일에
+      # 미리 털리고, 이미 판 자리라 재진입 쿨다운에 막혀 못 쫓아가는 문제 --
+      # 트레일을 넓히고 넓은 트레일이 붙는 문턱도 낮춘다 (재진입 쿨다운
+      # 자체는 익절 후 재진입에 한해 건너뛰도록 main.py에서 별도로 바꿈).
+      # big_win_pct 3%->4%, big_win_trail_pct 1%->2% (2026-08-31, 사용자
+      # 요청): 고정 바닥(진입가+2%)을 먼저 시도했다가 "안되, 고점 대비
+      # 하락"으로 정정 -- 그대로 고점 대비 트레일 방식을 유지하고 문턱은
+      # 4%, 폭은 2%로 넓혔다.
+      peak_trail_pct: 0.005
+      big_win_pct: 0.04
+      big_win_trail_pct: 0.015
+      max_cost_share: 0.35
+
+  "006340":
+    name: 대원전선
+    market: KOSPI
+    enabled: false  # 고정 종목 비활성 -- 스크리너가 매일 거래량 터진 종목으로 대체
+    strategy: pullback_bounce
+    timeframe: 1Min
+    min_qty: 1
+    entry_window: ["09:00", "11:00"]
+    force_exit_at: "15:10"
+    params:
+      trend_ema: 20
+      swing_lookback: 7
+      pullback_bars: 2
+      pullback_min_pct: 0.005
+      min_bar_strength: 0.25
+      stop_pct: 0.013
+      # 오전 09:00~09:30은 낙폭이 커서 정상 1.3%로는 노이즈에도 자주 걸린다는
+      # 사용자 피드백 (2026-08-28) -- 이 구간만 2%로 넓힌다.
+      early_stop_pct: 0.02
+      early_stop_until: "09:30"
+      # 11시~15시 사이 신규 진입은 손절/확정 폭을 대칭 1.5%/1.5%로 고정
+      # (2026-08-28, 사용자 요청: "너무 거래가 없네 -- 익절1.5% 손절1.5%로
+      # 가자 11시부터3시까지"). 진입 시점 기준으로 한 번 정해지면 그
+      # 포지션이 살아있는 동안 계속 유지된다.
+      midday_stop_pct: 0.015
+      midday_lock_pct: 0.015
+      midday_window_start: "11:00"
+      midday_window_end: "15:00"
+      arm_pct: 0.012
+      lock_pct: 0.025
+      # peak_trail_pct 0.3%->0.5%, big_win_pct 4%->3% (2026-08-28, 사용자
+      # 요청): 익절 후 종목이 눌림 없이 계속 오르는데도 좁은 0.3% 트레일에
+      # 미리 털리고, 이미 판 자리라 재진입 쿨다운에 막혀 못 쫓아가는 문제 --
+      # 트레일을 넓히고 넓은 트레일이 붙는 문턱도 낮춘다 (재진입 쿨다운
+      # 자체는 익절 후 재진입에 한해 건너뛰도록 main.py에서 별도로 바꿈).
+      # big_win_pct 3%->4%, big_win_trail_pct 1%->2% (2026-08-31, 사용자
+      # 요청): 고정 바닥(진입가+2%)을 먼저 시도했다가 "안되, 고점 대비
+      # 하락"으로 정정 -- 그대로 고점 대비 트레일 방식을 유지하고 문턱은
+      # 4%, 폭은 2%로 넓혔다.
+      peak_trail_pct: 0.005
+      big_win_pct: 0.04
+      big_win_trail_pct: 0.015
+      max_cost_share: 0.35
+
+  "073240":
+    name: 금호타이어
+    market: KOSPI
+    enabled: false  # 고정 종목 비활성 -- 스크리너가 매일 거래량 터진 종목으로 대체
+    strategy: pullback_bounce
+    timeframe: 1Min
+    min_qty: 1
+    entry_window: ["09:00", "11:00"]
+    force_exit_at: "15:10"
+    params:
+      trend_ema: 20
+      swing_lookback: 7
+      pullback_bars: 2
+      pullback_min_pct: 0.005
+      min_bar_strength: 0.25
+      stop_pct: 0.013
+      # 오전 09:00~09:30은 낙폭이 커서 정상 1.3%로는 노이즈에도 자주 걸린다는
+      # 사용자 피드백 (2026-08-28) -- 이 구간만 2%로 넓힌다.
+      early_stop_pct: 0.02
+      early_stop_until: "09:30"
+      # 11시~15시 사이 신규 진입은 손절/확정 폭을 대칭 1.5%/1.5%로 고정
+      # (2026-08-28, 사용자 요청: "너무 거래가 없네 -- 익절1.5% 손절1.5%로
+      # 가자 11시부터3시까지"). 진입 시점 기준으로 한 번 정해지면 그
+      # 포지션이 살아있는 동안 계속 유지된다.
+      midday_stop_pct: 0.015
+      midday_lock_pct: 0.015
+      midday_window_start: "11:00"
+      midday_window_end: "15:00"
+      arm_pct: 0.012
+      lock_pct: 0.025
+      # peak_trail_pct 0.3%->0.5%, big_win_pct 4%->3% (2026-08-28, 사용자
+      # 요청): 익절 후 종목이 눌림 없이 계속 오르는데도 좁은 0.3% 트레일에
+      # 미리 털리고, 이미 판 자리라 재진입 쿨다운에 막혀 못 쫓아가는 문제 --
+      # 트레일을 넓히고 넓은 트레일이 붙는 문턱도 낮춘다 (재진입 쿨다운
+      # 자체는 익절 후 재진입에 한해 건너뛰도록 main.py에서 별도로 바꿈).
+      # big_win_pct 3%->4%, big_win_trail_pct 1%->2% (2026-08-31, 사용자
+      # 요청): 고정 바닥(진입가+2%)을 먼저 시도했다가 "안되, 고점 대비
+      # 하락"으로 정정 -- 그대로 고점 대비 트레일 방식을 유지하고 문턱은
+      # 4%, 폭은 2%로 넓혔다.
+      peak_trail_pct: 0.005
+      big_win_pct: 0.04
+      big_win_trail_pct: 0.015
+      max_cost_share: 0.35
+
+  "086520":
+    name: 에코프로
+    market: KOSDAQ
+    enabled: false  # 85,700원 — 현재 자본으로 매수 불가
+    strategy: scalping
+    timeframe: 3Min
+    min_qty: 1
+    entry_window: ["09:10", "14:30"]
+    force_exit_at: "15:10"
+    params:
+      period: 3
+      volume_mult: 1.3
+      atr_trail_mult: 1.5
+      stop_pct: 0.020
+      take_profit_pct: 0.04
+      max_cost_share: 0.35
+      volume_exit_mult: 2.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.3
+      use_vwap_filter: false
+
+  "003670":
+    name: 포스코퓨처엠
+    market: KOSPI
+    enabled: false  # 167,900원 — 현재 자본으로 매수 불가
+    strategy: scalping
+    timeframe: 3Min
+    min_qty: 1
+    entry_window: ["09:10", "14:30"]
+    force_exit_at: "15:10"
+    params:
+      period: 3
+      volume_mult: 1.3
+      atr_trail_mult: 1.5
+      stop_pct: 0.020
+      take_profit_pct: 0.04
+      max_cost_share: 0.35
+      volume_exit_mult: 2.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.3
+      use_vwap_filter: false
+
+  "068270":
+    name: 셀트리온
+    market: KOSPI
+    enabled: false  # 192,800원 — 현재 자본으로 매수 불가
+    strategy: scalping
+    timeframe: 3Min
+    min_qty: 1
+    entry_window: ["09:10", "14:30"]
+    force_exit_at: "15:10"
+    params:
+      period: 3
+      volume_mult: 1.3
+      atr_trail_mult: 1.5
+      stop_pct: 0.020
+      take_profit_pct: 0.04
+      max_cost_share: 0.35
+      volume_exit_mult: 2.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.3
+      use_vwap_filter: false
+
+  "196170":
+    name: 알테오젠
+    market: KOSDAQ
+    enabled: false  # 321,000원 — 현재 자본으로 매수 불가
+    strategy: scalping
+    timeframe: 3Min
+    min_qty: 1
+    entry_window: ["09:10", "14:30"]
+    force_exit_at: "15:10"
+    params:
+      period: 3
+      volume_mult: 1.3
+      atr_trail_mult: 1.5
+      stop_pct: 0.020
+      take_profit_pct: 0.04
+      max_cost_share: 0.35
+      volume_exit_mult: 2.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.3
+      use_vwap_filter: false
+
+  # --- K-beauty OEM/ODM (뷰티 테마) ----------------------------------------
+  "161890":
+    name: 한국콜마
+    market: KOSPI
+    enabled: false  # 139,700원 — 현재 자본으로 매수 불가
+    strategy: scalping
+    timeframe: 3Min
+    min_qty: 1
+    entry_window: ["09:10", "14:30"]
+    force_exit_at: "15:10"
+    params:
+      period: 3
+      volume_mult: 1.3
+      atr_trail_mult: 1.5
+      stop_pct: 0.020
+      take_profit_pct: 0.04
+      max_cost_share: 0.35
+      volume_exit_mult: 2.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.3
+      use_vwap_filter: false
+
+  "192820":
+    name: 코스맥스
+    market: KOSPI
+    enabled: false  # 280,500원 — 현재 자본으로 매수 불가
+    strategy: scalping
+    timeframe: 3Min
+    min_qty: 1
+    entry_window: ["09:10", "14:30"]
+    force_exit_at: "15:10"
+    params:
+      period: 3
+      volume_mult: 1.3
+      atr_trail_mult: 1.5
+      stop_pct: 0.020
+      take_profit_pct: 0.04
+      max_cost_share: 0.35
+      volume_exit_mult: 2.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.3
+      use_vwap_filter: false
+
+  "278470":
+    name: 에이피알
+    market: KOSDAQ
+    enabled: false  # 408,000원 — 현재 자본으로 매수 불가
+    strategy: scalping
+    timeframe: 3Min
+    min_qty: 1
+    entry_window: ["09:10", "14:30"]
+    force_exit_at: "15:10"
+    params:
+      period: 3
+      volume_mult: 1.3
+      atr_trail_mult: 1.5
+      stop_pct: 0.020
+      take_profit_pct: 0.04
+      max_cost_share: 0.35
+      volume_exit_mult: 2.0
+      peak_trail_pct: 0.02
+      min_bar_strength: 0.3
+      use_vwap_filter: false
+
+  # --- Close-based trading (종가매매), daily bars ---------------------------
+  # The four quietest names. Their intraday range barely clears the round trip,
+  # so the move worth having is the overnight one -- and a smaller daily range
+  # also means a smaller gap, which matters because NOTHING protects these
+  # positions between the close and the next open. Kiwoom holds no resting
+  # stop order and the bot is not running, so a gap through the stop is taken
+  # in full at the opening auction.
+  #
+  # Entry is 15:15-15:19, the last continuous-trading minutes; the exit is the
+  # next morning at 09:05, five minutes after the open, unconditionally.
+  "460930":
+    name: 현대힘스
+    market: KOSDAQ
+    enabled: true  # 종가매매 활성 -- 사용자가 직접 종가에 매수, 내일 아침 09:05 매도
+    strategy: close_auction
+    timeframe: 1Day
+    min_qty: 1
+    entry_window: ["15:15", "15:19"]
+    force_exit_at: "09:05"
+    hold_overnight: true
+    params:
+      trend_ema: 20
+      volume_mult: 1.2
+      close_strength: 0.55  # 0.7 -> 0.55 (2026-09-01) -- 002990 항목 주석 참고
+      atr_trail_mult: 2.0
+
+  "101730":
+    name: 위메이드맥스
+    market: KOSDAQ
+    enabled: false  # 종가매매 비활성 — 갭하락 위험
+    strategy: close_auction
+    timeframe: 1Day
+    min_qty: 1
+    entry_window: ["15:15", "15:19"]
+    force_exit_at: "09:05"
+    hold_overnight: true
+    params:
+      trend_ema: 20
+      volume_mult: 1.2
+      close_strength: 0.55
+      atr_trail_mult: 2.0
+
+  "228340":
+    name: 동양파일
+    market: KOSDAQ
+    enabled: false  # 종가매매 비활성 — 갭하락 위험
+    strategy: close_auction
+    timeframe: 1Day
+    min_qty: 1
+    entry_window: ["15:15", "15:19"]
+    force_exit_at: "09:05"
+    hold_overnight: true
+    params:
+      trend_ema: 20
+      volume_mult: 1.2
+      close_strength: 0.55
+      atr_trail_mult: 2.0
+
+  "439960":
+    name: 코스모로보틱스
+    market: KOSDAQ
+    enabled: false  # 종가매매 비활성 — 갭하락 위험
+    listed_on: "2026-05-11"
+    strategy: close_auction
+    timeframe: 1Day
+    min_qty: 1
+    entry_window: ["15:15", "15:19"]
+    force_exit_at: "09:05"
+    hold_overnight: true
+    params:
+      trend_ema: 20
+      volume_mult: 1.2
+      close_strength: 0.55
+      atr_trail_mult: 2.0
+
+  "247540":
+    name: 에코프로비엠
+    market: KOSDAQ
+    enabled: false  # 고가 — 현재 자본으로 매수 불가
+    strategy: close_auction
+    timeframe: 1Day
+    min_qty: 1
+    entry_window: ["15:15", "15:19"]
+    force_exit_at: "09:05"
+    hold_overnight: true
+    params:
+      trend_ema: 20
+      volume_mult: 1.2
+      close_strength: 0.55
+      atr_trail_mult: 2.0
+
+  "028300":
+    name: HLB
+    market: KOSDAQ
+    enabled: false  # 고가 바이오 — 현재 자본으로 매수 불가
+    strategy: close_auction
+    timeframe: 1Day
+    min_qty: 1
+    entry_window: ["15:15", "15:19"]
+    force_exit_at: "09:05"
+    hold_overnight: true
+    params:
+      trend_ema: 20
+      volume_mult: 1.2
+      close_strength: 0.55
+      atr_trail_mult: 2.0
+
+  "263750":
+    name: 펄어비스
+    market: KOSDAQ
+    enabled: false  # 종가매매 비활성 — 갭하락 위험
+    strategy: close_auction
+    timeframe: 1Day
+    min_qty: 1
+    entry_window: ["15:15", "15:19"]
+    force_exit_at: "09:05"
+    hold_overnight: true
+    params:
+      trend_ema: 20
+      volume_mult: 1.2
+      close_strength: 0.55
+      atr_trail_mult: 2.0
+
+  "293490":
+    name: 카카오게임즈
+    market: KOSDAQ
+    enabled: false  # 종가매매 비활성 — 갭하락 위험
+    strategy: close_auction
+    timeframe: 1Day
+    min_qty: 1
+    entry_window: ["15:15", "15:19"]
+    force_exit_at: "09:05"
+    hold_overnight: true
+
+    params:
+      trend_ema: 20
+      volume_mult: 1.2
+      close_strength: 0.55
+      atr_trail_mult: 2.0
+
+# ---------------------------------------------------------------------------
+# KRX market rules
+# ---------------------------------------------------------------------------
+krx:
+  # Daily price limit. At the limit there is no counterparty, so orders are
+  # skipped rather than assumed filled.
+  price_limit_pct: 0.30
+
+  # Quote grid. VERIFY against the current KRX rulebook — these have been
+  # revised before, and a stale ladder silently mis-prices every stop.
+  tick_ladder:
+    KOSPI:
+      - {below: 2000, tick: 1}
+      - {below: 5000, tick: 5}
+      - {below: 20000, tick: 10}
+      - {below: 50000, tick: 50}
+      - {below: 200000, tick: 100}
+      - {below: 500000, tick: 500}
+      - {below: inf, tick: 1000}
+    KOSDAQ:
+      - {below: 2000, tick: 1}
+      - {below: 5000, tick: 5}
+      - {below: 20000, tick: 10}
+      - {below: 50000, tick: 50}
+      - {below: inf, tick: 100}
+
+  # Non-trading weekdays. Weekends are excluded automatically; Korean public
+  # holidays, substitute holidays and ad-hoc closures cannot be derived from a
+  # rule and must be listed here. Refresh with:
+  #     python main.py profile --refresh-calendar
+  holidays: []
+
+# ---------------------------------------------------------------------------
+# Rule 11: cost assumptions live here and print with every result set.
+#
+# Unlike a US venue, the SELL side pays transaction tax on top of commission.
+# VERIFY the current rates before trading — they have been cut in stages.
+# ---------------------------------------------------------------------------
+costs:
+  commission_bps: 1.5          # broker commission, per side
+  sell_tax_bps:                # transaction tax, SELL side only
+    KOSPI: 15.0
+    KOSDAQ: 15.0
+  slippage_bps: 10.0           # small/mid caps slip more than index ETFs
+
+# ---------------------------------------------------------------------------
+# Kiwoom REST API
+#
+# Paths and api-id codes. VERIFY against https://openapi.kiwoom.com/ and the
+# official examples before live trading.
+# ---------------------------------------------------------------------------
+kiwoom:
+  endpoints: {}                # override DEFAULT_ENDPOINTS in broker.py
+  api_ids: {}                  # override DEFAULT_API_IDS in broker.py
+
+api:
+  max_retries: 5
+  backoff_base_seconds: 2.0
+  backoff_max_seconds: 60.0
+  timeout_seconds: 10.0
+  # Kiwoom throttles TR calls, so requests are serialised at this rate.
+  calls_per_second: 4.0
+
+schedule:
+  # How often the outer loop wakes to see which strategies are due.
+  tick_seconds: 10
+  intervals:
+    3Min: 180
+    10Min: 600
+    30Min: 1800
+    60Min: 3600
+    # Daily strategies are looked at once a day for a *signal*. An open
+    # position is re-checked every tick regardless -- see TradingEngine.
+    # due_codes -- because the hard stop lives in the loop and nowhere else.
+    1Day: 86400
+  # How long to sleep when KRX is closed before re-checking.
+  closed_market_sleep_seconds: 300
+
+backtest:
+  default_months: 6
+  # Rule 10: fills happen on the bar *after* the signal bar.
+  fill_delay_bars: 1
+  respect_price_limits: true
+
+# ---------------------------------------------------------------------------
+# Daily theme screener
+#
+# Runs once at 09:00-09:10 each session. Fetches KOSDAQ/KOSPI top stocks by
+# trading value, filters by ATR% and liquidity, and injects up to n_stocks
+# into the scalping universe for the day. Stocks already in `universe` are
+# never duplicated. Set enabled: false to use only the static universe.
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# NXT (NextTrade ATS) pre-market configuration
+#
+# At 08:00-08:30, the bot wakes up, queries each scalping stock's current NXT
+# price via Kiwoom, and compares it with the previous close. Stocks with a
+# pre-market drop larger than bearish_threshold_pct are skipped for entries
+# that day. Set enabled: false to disable the NXT scan entirely.
+# ---------------------------------------------------------------------------
+nxt:
+  enabled: true
+  # Skip long entries if NXT pre-market is down more than this vs prev close.
+  # -0.01 = -1%. Leave positive (e.g. 0.0) to block neutral pre-markets too.
+  bearish_threshold_pct: -0.01
+
+investor_flow:
+  enabled: true
+  lookback_days: 3          # 최근 3거래일 외국인·기관 순매수 합산
+  # require_smart_money: true 이면 외국인+기관 둘 다 순매도일 때 진입 차단
+  # false 이면 로그만 출력 (advisory), 진입은 허용
+  require_smart_money: false
+
+# ---------------------------------------------------------------------------
+# S&P 500 선물 실시간 방향 모니터
+#
+# 장 중 ES=F(E-mini S&P 500) 선물을 check_interval_seconds마다 조회해
+# 세션 시작 대비 bearish_threshold 이상 하락하면 신규 진입을 막는다.
+# yfinance 설치 필요: pip install yfinance
+# ---------------------------------------------------------------------------
+us_market:
+  enabled: true
+  symbol: "ES=F"                 # E-mini S&P 500 선물 (Yahoo Finance 티커)
+  check_interval_seconds: 300    # 5분마다 조회
+  bearish_threshold: -0.005      # -0.5% 이상 하락 시 진입 차단
+
+# ---------------------------------------------------------------------------
+# DART 전자공시 실시간 모니터
+#
+# https://opendart.fss.or.kr/ 에서 무료 API키 발급 후 .env에 추가:
+#   DART_API_KEY=발급받은키
+# 유니버스 종목의 계약·실적 공시는 진입 우선, CB·유상증자 공시는 진입 차단
+# ---------------------------------------------------------------------------
+dart:
+  enabled: false                 # DART_API_KEY 설정 후 true로 변경
+  poll_interval_seconds: 60      # 1분마다 신규 공시 체크
+  boost_duration_minutes: 30     # 긍정 공시 후 30분간 진입 우선
+  entry_relax_pct: 0.2           # 부스트 활성 중엔 진입 조건(거래량배수/봉강도/눌림폭) 20% 완화
+
+# ---------------------------------------------------------------------------
+# 트럼프 관련 뉴스 모니터 (구글 뉴스 RSS, API키 불필요)
+#
+# '트럼프' + 산업 키워드(관세·반도체·방산 등)가 함께 나오는 헤드라인을 감지해
+# 텔레그램으로 알린다. 사용자 요청으로 실제 진입 조건에도 반영된다 -- 테마
+# 매칭 종목은 부스트 지속시간 동안 entry_relax_pct만큼 조건이 완화된다.
+# 발언과 개별 종목의 실제 반응 사이엔 확실한 인과관계가 없다는 점은 여전해서,
+# 진입을 아예 막거나 강제로 걸지는 않고 기존 기술적 신호의 문턱만 낮춘다.
+# ---------------------------------------------------------------------------
+news:
+  enabled: true
+  query: "트럼프"
+  poll_interval_seconds: 300     # 5분마다 체크
+  boost_duration_minutes: 20     # 테마 매칭 시 진입 우선 부스트 지속시간
+  entry_relax_pct: 0.2           # 부스트 활성 중엔 진입 조건(거래량배수/봉강도/눌림폭) 20% 완화
+
+# ---------------------------------------------------------------------------
+# 다중 시간프레임 확인 (일봉 추세 필터)
+#
+# 세션 시작 시 한 번, 종목별 일봉 EMA(기본 20일) 추세를 계산해 캐시한다.
+# 일봉 자체가 하락 추세인 종목은 3분봉에서 아무리 좋은 신호가 나와도 매수
+# 진입을 막는다. 일봉 데이터가 없으면 막지 않는다(advisory 기본 통과).
+# ---------------------------------------------------------------------------
+daily_trend:
+  enabled: true
+  ema_period: 20
+
+# ---------------------------------------------------------------------------
+# 실시간 호가 불균형 (매수/매도 잔량비)
+#
+# ka10004(주식호가요청)로 진입 직전 매수/매도 10차 잔량 합계를 비교한다.
+# require_confirm: false 이면 로그만 남기고 진입은 막지 않는다(참고용).
+# 며칠 지켜보고 잔량비가 실제로 쓸만한 신호로 보이면 true로 올려서
+# min_ask_bid_ratio 미만일 때 진입을 실제로 차단하게 한다.
+# ---------------------------------------------------------------------------
+order_execution:
+  # 수수료/슬리피지 방지 주문 최적화 (2026-08-27, 사용자 요청): 시장가 대신
+  # 최우선호가(매수는 매도1호가, 매도는 매수1호가)에서 limit_buffer_ticks만큼
+  # 더 부른 지정가(marketable limit)로 주문한다 -- 시장가처럼 즉시 체결될
+  # 만큼 공격적이면서도, 최악의 체결가에 상한을 둔다. 호가 데이터가 없으면
+  # (조회 실패 등) 그냥 시장가로 보낸다 -- fail-open, 주문 자체를 막지 않음.
+  use_limit_orders: true
+  limit_buffer_ticks: 2
+  # 손절/시간강제청산도 시장가 대신 지정가로 (2026-08-28, 사용자 요청: "익절
+  # 손절을 시장가로 하지 말고 다른방법은 없을까 슬리피지도 더 타이트하게").
+  # 이 둘은 반드시 체결돼야 해서 그냥 시장가를 썼었는데, 시장가는 최악
+  # 체결가 상한이 아예 없다. limit_buffer_ticks보다 훨씬 공격적인 이 값으로
+  # 최우선호가를 크게 넘겨 부르면 거의 항상 즉시 체결되면서도 슬리피지
+  # 상한은 걸린다. 호가 데이터가 없을 때만 기존처럼 시장가로 자동 폴백.
+  stop_limit_buffer_ticks: 5
+
+orderbook:
+  enabled: true
+  require_confirm: false
+  # 매수잔량 우위 -> 매도잔량 우위 판단으로 전환 (2026-08-27, 사용자 요청):
+  # 매수벽이 두꺼운 게 아니라, 매도잔량이 매수잔량보다 이 배수 이상 많아야
+  # (매수세가 매도벽을 실제로 먹어치우는 중이라는 뜻) 통과시킨다 -- 두꺼운
+  # 매수벽은 허매수 받치기 후 물량 털기일 수 있다는 우려 반영.
+  min_ask_bid_ratio: 2.0   # require_confirm: true 시 매도잔량/매수잔량 >= 2.0
+
+execution_strength:
+  enabled: true
+  require_confirm: false
+  min_strength: 100.0   # 체결강도 100 = 매수/매도 체결량 균형 (require_confirm: true 시 기준)
+
+volatility_filter:
+  # 거래량과 변동성이 죽은 횡보장에서는 진입 신호가 나와도 매매하지 않는다
+  # (2026-08-27, 사용자 요청) -- 전략 조건이 기술적으로 맞아도 수수료만 나가는
+  # 헛매매 방지. 청산에는 전혀 영향 없음, 신규 진입만 막는다. 위 orderbook/
+  # execution_strength와 달리 처음부터 실제로 막는다(require_confirm 없음) --
+  # 사용자가 명시적으로 "매매하지 않도록 제한"이라고 요청했다. 부담스러우면
+  # enabled: false로 끄면 된다.
+  enabled: true
+  atr_period: 14
+  min_atr_pct: 0.004        # 14봉 ATR이 현재가의 0.4% 미만이면 "변동성 죽음"
+  volume_lookback: 20       # 기준 평균 거래량 계산 구간(봉)
+  recent_bars: 5            # 최근 이 구간의 평균을 기준과 비교
+  min_volume_ratio: 0.4     # 최근 평균이 기준 대비 40% 미만이면 "거래량 죽음"
+
+screener:
+  enabled: true
+  n_stocks: 12              # max dynamic stocks to add per session -- now the
+                             # ONLY source of the universe (static core disabled)
+  markets: ["KOSDAQ", "KOSPI"]
+  min_price: 3000           # skip sub-3000 KRW stocks (wide spreads)
+  max_price: 40000          # skip stocks above 4만원 (afford 10+ shares with current capital)
+  min_atr_pct: 0.015        # 1.5% daily ATR minimum (cost gate still applies)
+  min_trading_value_m: 500  # 500억 KRW daily trading value minimum (more picks)
+  refresh_interval_minutes: 10  # 장중 10분마다 순위 재스캔 → 핫 종목으로 자동 교체 (pykrx 데이터 늦게 채워질 때 더 빨리 감지)
+  require_uptrend: true     # 일봉 종가가 EMA(daily_trend.ema_period) 위인 종목만 후보로 (변동성만 크고 하락 중인 종목 제외)
+
+macro_gauge:
+  # 미국증시(S&P500)/WTI유/미국10년물금리/비트코인/달러지수 -- 사용자 정의로
+  # 다섯 다 "상승 = 강세"로 취급한다 (실제 매크로 상관관계는 더 복잡하지만,
+  # 명시적으로 이렇게 정의했다). 세션 시작 시 하루 한 번만 조회.
+  enabled: true
+  bullish_threshold: 4        # 5개 중 이 개수 이상 상승이면 "강세장(공격 모드)"
+  entry_relax_pct: 0.15       # 강세일 때 진입 조건(거래량배수/봉강도/눌림폭) 15% 완화
+  extra_positions: 1          # 강세일 때 동시 보유 종목 수 +1 (기본 6 -> 7)
+  risk_pct_boost: 1.2         # 강세일 때 종목당 리스크 배수 (1% -> 1.2%)
+
+telegram:
+  # Rule 12: dry-run by default. A missing token prints a preview, not an error.
+  # Set dry_run: false and add TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID to .env to enable.
+  dry_run: false
+  poll_interval_seconds: 3   # how often to poll for commands (/status, /stop, etc.)
+  parse_mode: Markdown
+
+live_banner:
+  countdown_seconds: 10
+
+paths:
+  trades_csv: trades.csv
+  daily_pnl_csv: daily_pnl.csv
+  state_file: state.json
+  log_file: logs/bot.log
+  cache_dir: data/cache

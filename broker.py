@@ -1,0 +1,1322 @@
+"""Broker adapters.
+
+``BrokerBase`` is the narrow surface the trading loop uses. Two implementations
+exist:
+
+``DryRunBroker``    simulates an account and *prints* orders instead of sending
+                    them. Used by ``--dry-run``, by every test, and whenever
+                    credentials are missing.
+``KiwoomBroker``    the real adapter, speaking Kiwoom's REST API. Its base URL
+                    and its credentials both come from
+                    :class:`settings.ModeDecision`, and on a paper run the live
+                    app key was never loaded - so there is no code path that
+                    reaches a live account without the triple confirmation.
+
+Kiwoom throttles TR calls per second, so every request goes through a rate
+limiter and a retry-with-backoff wrapper. ``requests`` is used directly rather
+than a third-party wrapper because the loop needs to own that behaviour.
+"""
+
+from __future__ import annotations
+
+import logging
+import random
+import re
+import threading
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar
+
+import pandas as pd
+
+from market.calendar import KST
+from market.rules import KOSPI
+from portfolio import LONG, SHORT
+from settings import Credentials, ModeDecision, mask_text
+
+logger = logging.getLogger("bot.broker")
+
+T = TypeVar("T")
+
+# Kiwoom REST paths and api-id codes.
+# VERIFY these against https://openapi.kiwoom.com/ and the official examples at
+# https://github.com/Kiwoom-Securities/Kiwoom-REST-API before live trading;
+# they are overridable from config.yaml under `kiwoom.endpoints`.
+DEFAULT_ENDPOINTS: dict[str, str] = {
+    "token": "/oauth2/token",
+    "order": "/api/dostk/ordr",
+    "account": "/api/dostk/acnt",
+    "chart": "/api/dostk/chart",
+    "stock_info": "/api/dostk/stkinfo",
+    "quote": "/api/dostk/mrkcond",  # 호가(주문 잔량) 조회 -- 체결강도(ka10046/47)도 같은 경로
+    # 순위정보 -- 커뮤니티 OpenAPI 명세 기준(x-real-path), 아직 실사용 응답으로
+    # 미검증. ka10046/47 때도 이 명세가 실제 응답과 정확히 일치했어서 신뢰도는
+    # 높지만, diagnose-orderbook 같은 읽기전용 진단으로 한 번 더 확인 권장.
+    "ranking": "/api/dostk/rkinfo",
+}
+
+DEFAULT_API_IDS: dict[str, str] = {
+    # Confirmed against Kiwoom's published sample code.
+    "account_list": "ka00001",   # 계좌번호조회
+    # Still unverified - correct these in config.yaml under kiwoom.api_ids
+    # against the portal's sample code before trading real money.
+    "buy": "kt10000",
+    "sell": "kt10001",
+    "cancel": "kt10003",
+    "balance": "kt00018",
+    "open_orders": "kt00007",
+    "market_codes": "ka10099",   # 종목정보 리스트
+    "minute_chart": "ka10080",
+    "daily_chart": "ka10081",
+    "stock_info": "ka10001",
+    "orderbook": "ka10004",      # 주식호가요청 (매수/매도 잔량) -- 실사용 응답으로 필드명 확정
+    # 체결강도(매수/매도 체결 비율) -- 커뮤니티 OpenAPI 명세로 endpoint(quote/
+    # mrkcond)까지는 확인, 실제 응답 형태는 diagnose-orderbook으로 검증 중.
+    "strength_hourly": "ka10046",  # 체결강도추이시간별요청 -> cntr_str_tm 리스트
+    "strength_daily": "ka10047",   # 체결강도추이일별요청 -> cntr_str_daly 리스트
+    # 실시간 순위 -- pykrx의 "오늘 거래대금" 데이터가 장 초반 비어있는 문제와
+    # 무관하게 키움 자체 실시간 데이터로 지금 뜨는 종목을 잡는다 (2026-08-27).
+    "volume_surge": "ka10023",   # 거래량급증요청 -> trde_qty_sdnin 리스트
+    "vi_triggered": "ka10054",   # 변동성완화장치발동종목요청 -> motn_stk 리스트 (endpoint: stock_info)
+}
+
+#: How many continuation pages a single logical request may pull.
+MAX_CONTINUATION_PAGES = 20
+
+
+class BrokerError(RuntimeError):
+    """Broker failure with any credential scrubbed from the message."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(mask_text(str(message)))
+
+
+class BrokerAuthError(BrokerError):
+    """Authentication failed permanently.
+
+    Wrong credentials or a wrong request shape produce the same answer every
+    time, so retrying only burns minutes before reporting the same thing. This
+    is raised past the retry wrapper and stops the caller immediately.
+    """
+
+
+@dataclass(frozen=True)
+class AccountSnapshot:
+    equity: float
+    cash: float
+    buying_power: float
+    currency: str = "KRW"
+
+
+@dataclass(frozen=True)
+class StockInfo:
+    code: str
+    name: str = ""
+    market: str = KOSPI
+    #: Exactly what the broker said the market was, before any defaulting.
+    #: ``market`` falls back to KOSPI when the field is absent, which makes it
+    #: useless for *verifying* a configured market tag -- the default would
+    #: confirm itself. Callers doing that check must read this instead.
+    market_raw: str = ""
+    tradable: bool = True
+    previous_close: float = 0.0
+    min_qty: float = 1.0
+
+
+@dataclass(frozen=True)
+class OrderBookSnapshot:
+    """Best bid/ask plus 10-level totals, from ka10004 (주식호가요청).
+
+    Field names confirmed against a live response on 2026-08-26 -- see
+    ``KiwoomBroker.get_orderbook`` for the exact mapping.
+    """
+
+    code: str
+    best_bid: float = 0.0
+    best_ask: float = 0.0
+    best_bid_qty: float = 0.0
+    best_ask_qty: float = 0.0
+    total_bid_qty: float = 0.0
+    total_ask_qty: float = 0.0
+
+    @property
+    def imbalance(self) -> float:
+        """총매수잔량 / 총매도잔량. >1이면 매수 우위, <1이면 매도 우위.
+
+        매도잔량이 0인 극단적인 경우(상한가 근처 등) 무한대 대신 큰 값으로
+        캡을 씌워, 이 값을 쓰는 쪽에서 나눗셈 예외를 신경 쓸 필요가 없게 한다.
+        """
+        if self.total_ask_qty <= 0:
+            return 10.0 if self.total_bid_qty > 0 else 1.0
+        return self.total_bid_qty / self.total_ask_qty
+
+
+@dataclass(frozen=True)
+class ExecutionStrength:
+    """체결강도 (매수/매도 체결량 비율, %) -- from ka10046 (체결강도추이시간별요청).
+
+    Field names confirmed against a live response on 2026-08-26.  100 is
+    neutral: above means buy-side fills have been dominating recent trades,
+    below means sell-side fills have. The 5/20/60-min figures are the same
+    ratio smoothed over longer windows, useful for telling a brief spike
+    apart from a sustained shift.
+    """
+
+    code: str
+    as_of: str = ""  # HHmmss, from cntr_tm
+    strength: float = 100.0        # cntr_str
+    strength_5min: float = 100.0   # cntr_str_5min
+    strength_20min: float = 100.0  # cntr_str_20min
+    strength_60min: float = 100.0  # cntr_str_60min
+
+
+@dataclass(frozen=True)
+class VolumeSurgeCandidate:
+    """A ticker Kiwoom itself flags as having an abnormal volume spike right now.
+
+    From ka10023 (거래량급증요청). Field names come from a community-maintained
+    OpenAPI spec, not yet cross-checked against a live response the way
+    ka10004/ka10046 were -- treat this the same as any other unverified field
+    mapping until confirmed live.
+
+    This exists independently of pykrx: the screener's own picks depend on
+    pykrx's "today" trading-value snapshot, which is not populated until well
+    after the open (confirmed 2026-08-27, candidates all read KRW 0 at
+    09:05). Kiwoom's own real-time ranking has no such lag.
+    """
+
+    code: str
+    name: str = ""
+    price: float = 0.0
+    change_pct: float = 0.0     # flu_rt
+    volume: float = 0.0         # now_trde_qty
+    surge_qty: float = 0.0      # sdnin_qty
+    surge_rate: float = 0.0     # sdnin_rt, %
+
+
+@dataclass(frozen=True)
+class ViTriggeredStock:
+    """A ticker currently halted for a volatility interruption (VI).
+
+    From ka10054 (변동성완화장치발동종목요청). Field names unverified the same
+    way as VolumeSurgeCandidate above. Korean day-trading convention treats a
+    VI trigger as a concentration-of-buying (or selling) signal in itself --
+    the 2-minute single-price auction it causes is a structural KRX mechanism,
+    not a matter of opinion, so it is a real signal even before any field is
+    live-confirmed.
+    """
+
+    code: str
+    name: str = ""
+    trigger_price: float = 0.0        # motn_pric
+    open_change_pct: float = 0.0      # open_pric_pre_flu_rt
+    trigger_count_today: int = 0      # vimotn_cnt
+    direction: str = ""               # viaplc_tp, raw as Kiwoom sends it
+
+
+@dataclass(frozen=True)
+class Holding:
+    """A position the account actually holds, as the broker reports it."""
+
+    code: str
+    qty: float
+    avg_price: float = 0.0
+    current_price: float = 0.0
+    #: Field names present in the broker row, for diagnosing a parse miss.
+    raw_fields: tuple[str, ...] = ()
+
+    @property
+    def market_value(self) -> float:
+        return self.qty * (self.current_price or self.avg_price)
+
+
+@dataclass
+class OrderResult:
+    code: str
+    side: str
+    qty: float
+    order_type: str = "market"
+    stop_price: float | None = None
+    submitted: bool = False
+    order_id: str = ""
+    note: str = ""
+
+
+# --------------------------------------------------------------------------
+# Reliability helpers
+# --------------------------------------------------------------------------
+
+
+class RateLimiter:
+    """Minimum spacing between API calls.
+
+    Kiwoom rejects bursts, and a rejected order is indistinguishable from a
+    dropped one from the loop's point of view, so requests are serialised
+    rather than merely retried.
+    """
+
+    def __init__(self, calls_per_second: float = 4.0) -> None:
+        self.min_interval = 1.0 / max(calls_per_second, 0.1)
+        self._lock = threading.Lock()
+        self._last = 0.0
+
+    def acquire(self, sleep: Callable[[float], None] = time.sleep) -> None:
+        with self._lock:
+            now = time.monotonic()
+            wait = self.min_interval - (now - self._last)
+            if wait > 0:
+                sleep(wait)
+            self._last = time.monotonic()
+
+
+def with_retry(
+    fn: Callable[[], T],
+    *,
+    max_retries: int = 5,
+    base_seconds: float = 2.0,
+    max_seconds: float = 60.0,
+    description: str = "broker call",
+    sleep: Callable[[float], None] = time.sleep,
+) -> T:
+    """Run *fn*, retrying transient API failures with exponential backoff.
+
+    An API drop must not kill the loop. After the final attempt the error
+    propagates (masked) so the caller can skip the cycle.
+    """
+    attempt = 0
+    while True:
+        try:
+            return fn()
+        except BrokerAuthError:
+            # Permanent: the same request will fail the same way next time.
+            raise
+        except Exception as exc:
+            attempt += 1
+            if attempt > max_retries:
+                raise BrokerError(
+                    f"{description} failed after {max_retries} retries: {exc}"
+                ) from None
+            delay = min(base_seconds * (2 ** (attempt - 1)), max_seconds)
+            delay += random.uniform(0, delay * 0.1)  # jitter
+            logger.warning(
+                "%s failed (attempt %d/%d): %s - retrying in %.1fs",
+                description,
+                attempt,
+                max_retries,
+                mask_text(str(exc)),
+                delay,
+            )
+            sleep(delay)
+
+
+# --------------------------------------------------------------------------
+# Interface
+# --------------------------------------------------------------------------
+
+
+class BrokerBase:
+    """Interface used by the trading loop."""
+
+    dry_run: bool = True
+    #: Appended to the mode label in state.json. Equity from a simulated
+    #: account and equity from a real one are not comparable, and neither is
+    #: comparable to a run that reads the real account but never trades it --
+    #: its positions diverge from the account's the moment a signal fires.
+    mode_suffix: str = "-SIM"
+
+    def get_account(self) -> AccountSnapshot:
+        raise NotImplementedError
+
+    def get_stock_info(self, code: str) -> StockInfo:
+        raise NotImplementedError
+
+    def get_orderbook(self, code: str) -> "OrderBookSnapshot | None":
+        """Best bid/ask + 10-level totals, or None when unavailable.
+
+        None (not a neutral snapshot) is the "don't know" answer -- callers
+        must treat it as advisory-not-available, same as every other optional
+        signal in this bot (investor flow, daily trend, DART).
+        """
+        return None
+
+    def get_execution_strength(self, code: str) -> "ExecutionStrength | None":
+        """Latest 체결강도 snapshot, or None when unavailable (advisory-not-available)."""
+        return None
+
+    def get_volume_surge(self, market: str = "000") -> "list[VolumeSurgeCandidate]":
+        """Tickers Kiwoom flags as having a real-time volume spike. Empty on failure."""
+        return []
+
+    def get_vi_triggered(self, market: str = "000") -> "list[ViTriggeredStock]":
+        """Tickers currently halted for a volatility interruption. Empty on failure."""
+        return []
+
+    def open_order_codes(self) -> list[str]:
+        raise NotImplementedError
+
+    def get_chart(
+        self,
+        code: str,
+        timeframe: str,
+        start: datetime,
+        end: datetime,
+        max_rows: int | None = None,
+    ) -> pd.DataFrame | None:
+        return None
+
+    def submit_order(
+        self,
+        code: str,
+        side: str,
+        qty: float,
+        price: float | None = None,
+        stop_price: float | None = None,
+        is_exit: bool = False,
+        note: str = "",
+    ) -> OrderResult:
+        raise NotImplementedError
+
+    def cancel_all_orders(self) -> int:
+        raise NotImplementedError
+
+    def close_all_positions(self) -> int:
+        raise NotImplementedError
+
+
+# --------------------------------------------------------------------------
+# Dry run
+# --------------------------------------------------------------------------
+
+
+class DryRunBroker(BrokerBase):
+    """Simulated broker. Never touches the network, never sends an order."""
+
+    dry_run = True
+    mode_suffix = "-SIM"
+
+    def __init__(
+        self,
+        starting_equity: float = 10_000_000.0,
+        stocks: Mapping[str, StockInfo] | None = None,
+        label: str = "DRY-RUN",
+    ) -> None:
+        self._equity = float(starting_equity)
+        self._cash = float(starting_equity)
+        self._stocks = dict(stocks or {})
+        self.label = label
+        self.submitted: list[OrderResult] = []
+        self.cancelled = 0
+        self.closed = 0
+
+    def get_account(self) -> AccountSnapshot:
+        return AccountSnapshot(equity=self._equity, cash=self._cash, buying_power=self._cash)
+
+    def set_equity(self, equity: float, cash: float | None = None) -> None:
+        self._equity = float(equity)
+        self._cash = float(equity if cash is None else cash)
+
+    def get_stock_info(self, code: str) -> StockInfo:
+        return self._stocks.get(code, StockInfo(code=code))
+
+    def open_order_codes(self) -> list[str]:
+        return []
+
+    def submit_order(
+        self,
+        code: str,
+        side: str,
+        qty: float,
+        price: float | None = None,
+        stop_price: float | None = None,
+        is_exit: bool = False,
+        note: str = "",
+    ) -> OrderResult:
+        result = OrderResult(
+            code=code,
+            side=side,
+            qty=qty,
+            stop_price=stop_price,
+            submitted=False,
+            note=note or "simulated",
+        )
+        self.submitted.append(result)
+        logger.info(
+            "[%s] would submit %s %s x%s stop=%s (%s) - NOT sent",
+            self.label,
+            side,
+            code,
+            qty,
+            f"{stop_price:,.0f}" if stop_price is not None else "n/a",
+            note or ("exit" if is_exit else "entry"),
+        )
+        return result
+
+    def cancel_all_orders(self) -> int:
+        self.cancelled += 1
+        logger.info("[%s] would cancel all open orders - NOT sent", self.label)
+        return 0
+
+    def close_all_positions(self) -> int:
+        self.closed += 1
+        logger.info("[%s] would close all positions - NOT sent", self.label)
+        return 0
+
+
+# --------------------------------------------------------------------------
+# Kiwoom
+# --------------------------------------------------------------------------
+
+
+class KiwoomBroker(BrokerBase):
+    """Kiwoom REST adapter (mock or live, decided by ``ModeDecision``)."""
+
+    dry_run = False
+    mode_suffix = ""
+
+    def __init__(
+        self,
+        decision: ModeDecision,
+        credentials: Credentials,
+        config: Mapping[str, Any] | None = None,
+        allowed_codes: Iterable[str] | None = None,
+    ) -> None:
+        if not credentials.has_kiwoom:
+            raise BrokerError(
+                f"Kiwoom {decision.label} credentials are missing; set them in .env"
+            )
+        if credentials.loaded_for != decision.label:
+            # Defensive: the credential set and the resolved mode must agree.
+            raise BrokerError(
+                f"credential set ({credentials.loaded_for}) does not match "
+                f"resolved mode ({decision.label}); refusing to trade"
+            )
+        config = config or {}
+        kiwoom_cfg = config.get("kiwoom") or {}
+        api_cfg = config.get("api") or {}
+
+        self.decision = decision
+        self.credentials = credentials
+        self.base_url = decision.endpoint.rstrip("/")
+        self.endpoints = {**DEFAULT_ENDPOINTS, **(kiwoom_cfg.get("endpoints") or {})}
+        self.api_ids = {**DEFAULT_API_IDS, **(kiwoom_cfg.get("api_ids") or {})}
+
+        self.max_retries = int(api_cfg.get("max_retries", 5))
+        self.base_seconds = float(api_cfg.get("backoff_base_seconds", 2.0))
+        self.max_seconds = float(api_cfg.get("backoff_max_seconds", 60.0))
+        self.timeout = float(api_cfg.get("timeout_seconds", 10.0))
+        self.limiter = RateLimiter(float(api_cfg.get("calls_per_second", 4.0)))
+
+        # An account can hold stocks this bot knows nothing about. Every order
+        # path is fenced to the configured universe so the bot cannot sell
+        # someone's unrelated position -- most importantly in the kill switch,
+        # which would otherwise liquidate the whole account.
+        self.allowed_codes: set[str] = {str(c) for c in (allowed_codes or ())}
+
+        self._token: str = ""
+        self._token_expires: datetime | None = None
+        #: Scalar fields from the most recent balance response, for `check`.
+        self.last_balance_fields: dict[str, str] = {}
+
+    # -- auth --------------------------------------------------------------
+
+    def _access_token(self) -> str:
+        """Fetch and cache the OAuth access token, refreshing before expiry."""
+        now = datetime.now(KST)
+        if self._token and self._token_expires and now < self._token_expires:
+            return self._token
+
+        import requests
+
+        url = self.base_url + self.endpoints["token"]
+        payload = {
+            "grant_type": "client_credentials",
+            "appkey": self.credentials.app_key.reveal(),
+            "secretkey": self.credentials.secret_key.reveal(),
+        }
+
+        def _request():
+            self.limiter.acquire()
+            response = requests.post(url, json=payload, timeout=self.timeout)
+            response.raise_for_status()
+            return response.json()
+
+        data = with_retry(
+            _request,
+            max_retries=self.max_retries,
+            base_seconds=self.base_seconds,
+            max_seconds=self.max_seconds,
+            description="kiwoom token",
+        )
+        token = data.get("token") or data.get("access_token") or ""
+        if not token:
+            # Report what Kiwoom actually said. Field names only, never values,
+            # since one of those fields may be a token on a later API revision.
+            code = data.get("return_code", data.get("rt_cd", "?"))
+            message = data.get("return_msg", data.get("msg1", "")) or "(no message)"
+            keys = ", ".join(sorted(str(k) for k in data)) or "(empty response)"
+            raise BrokerAuthError(
+                f"token request rejected by {self.base_url} "
+                f"[return_code={code}] {message} | response fields: {keys}"
+            )
+        self._token = token
+        # Refresh a minute early rather than racing the expiry.
+        self._token_expires = now + timedelta(seconds=int(data.get("expires_in", 3600)) - 60)
+        logger.info("Kiwoom %s token acquired for %s", self.decision.label, self.base_url)
+        return self._token
+
+    # -- transport ---------------------------------------------------------
+
+    def _call_once(
+        self,
+        endpoint_key: str,
+        api_id_key: str,
+        body: Mapping[str, Any],
+        description: str,
+        cont_yn: str = "N",
+        next_key: str = "",
+    ) -> tuple[dict[str, Any], str, str]:
+        """One request. Returns ``(payload, cont_yn, next_key)``.
+
+        Kiwoom paginates through response headers rather than the body: a
+        ``cont-yn`` of ``Y`` means more rows exist and ``next-key`` is the
+        cursor for them.
+        """
+        import requests
+
+        url = self.base_url + self.endpoints[endpoint_key]
+
+        def _request():
+            self.limiter.acquire()
+            headers = {
+                "Content-Type": "application/json;charset=UTF-8",
+                "authorization": f"Bearer {self._access_token()}",
+                "api-id": self.api_ids[api_id_key],
+                "cont-yn": cont_yn,
+                "next-key": next_key,
+            }
+            response = requests.post(url, json=dict(body), headers=headers, timeout=self.timeout)
+            response.raise_for_status()
+            return (
+                response.json(),
+                str(response.headers.get("cont-yn") or "N"),
+                str(response.headers.get("next-key") or ""),
+            )
+
+        return with_retry(
+            _request,
+            max_retries=self.max_retries,
+            base_seconds=self.base_seconds,
+            max_seconds=self.max_seconds,
+            description=description,
+        )
+
+    def _call(
+        self,
+        endpoint_key: str,
+        api_id_key: str,
+        body: Mapping[str, Any],
+        description: str,
+    ) -> dict[str, Any]:
+        """Single page - for requests whose answer always fits in one."""
+        payload, _, _ = self._call_once(endpoint_key, api_id_key, body, description)
+        return payload
+
+    def _call_paged(
+        self,
+        endpoint_key: str,
+        api_id_key: str,
+        body: Mapping[str, Any],
+        description: str,
+        enough: Callable[[list[dict[str, Any]]], bool] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Follow ``cont-yn``/``next-key`` and return every page.
+
+        Charts and holdings can exceed one page, and stopping at the first one
+        silently truncates history - which would quietly shorten every
+        indicator lookback computed from it.
+
+        *enough* stops early once the caller has what it needs. Kiwoom returns
+        minute charts newest-first, so a caller that wants the last few hundred
+        bars gets them from the first page or two; paging to the cap instead
+        pulled about twelve thousand bars per stock per cycle, taking ten
+        seconds each and burning the rate limit for data nothing read.
+        """
+        pages: list[dict[str, Any]] = []
+        cont_yn, next_key = "N", ""
+        for _ in range(MAX_CONTINUATION_PAGES):
+            payload, cont_yn, next_key = self._call_once(
+                endpoint_key, api_id_key, body, description, cont_yn, next_key
+            )
+            pages.append(payload)
+            if enough is not None and enough(pages):
+                return pages
+            if cont_yn != "Y" or not next_key:
+                break
+        else:
+            logger.warning(
+                "%s: stopped after %d pages with more data available",
+                description,
+                MAX_CONTINUATION_PAGES,
+            )
+        return pages
+
+    # -- account -----------------------------------------------------------
+
+    def get_account_numbers(self) -> list[str]:
+        """계좌번호조회 (ka00001).
+
+        The lightest authenticated call Kiwoom exposes, and the only api-id
+        here confirmed against their published sample. That makes it the right
+        probe for "are the credentials and the endpoint actually working" -
+        it touches no positions and moves no money.
+        """
+        data = self._call("account", "account_list", {}, "get_account_numbers")
+        rows = data.get("acnt_list") or data.get("output") or []
+        if isinstance(rows, list):
+            return [str(r.get("accno") or r.get("acnt_no") or r).strip() for r in rows]
+        return []
+
+    #: Field names the balance TR might use for total account value and for
+    #: spendable cash, most specific first. Which ones a given TR revision
+    #: actually returns is not something documentation has settled reliably,
+    #: so ``last_balance_fields`` keeps the raw response for inspection.
+    EQUITY_FIELDS = ("prsm_dpst_aset_amt", "tot_est_amt", "tot_evlt_amt")
+    CASH_FIELDS = ("ord_alow_amt", "entr", "dpst", "d2_entra", "prsm_dpst")
+    #: Borrowings included in the account total but not spendable.
+    LOAN_FIELDS = ("tot_loan_amt", "tot_crd_loan_amt", "tot_crd_ls_amt")
+
+    def get_account(self) -> AccountSnapshot:
+        data = self._call(
+            "account",
+            "balance",
+            {"qry_tp": "1", "dmst_stex_tp": "KRX"},
+            "get_account",
+        )
+        # Kept for `check` to print. These are money amounts, not secrets, and
+        # seeing the real field names is the only way to tell an account that
+        # holds no cash from a field name we guessed wrong.
+        self.last_balance_fields = {
+            str(k): str(v)
+            for k, v in data.items()
+            if not isinstance(v, (list, dict))
+        }
+        equity = _first_amount(data, self.EQUITY_FIELDS)
+        cash = _first_amount(data, self.CASH_FIELDS)
+        holdings_value = _to_float(data.get("tot_evlt_amt"))
+
+        # This TR reports no deposit of its own: a real account showed
+        # prsm_dpst_aset_amt 550,310 and tot_evlt_amt 273,960 with no cash
+        # field at all, the missing 276,350 being the settled proceeds of a
+        # sale. Total assets are deposit + holdings - borrowings, so the
+        # deposit falls out of the identity. Cash reading zero is not
+        # cosmetic -- it fails the funding check on every buy, which is to
+        # say the bot would never open a position again.
+        if not cash and equity > holdings_value:
+            loans = sum(_to_float(data.get(name)) for name in self.LOAN_FIELDS)
+            derived = equity - holdings_value - loans
+            if derived > 0:
+                cash = derived
+                logger.info(
+                    "no deposit field in the balance response; derived cash "
+                    "%s from total %s - holdings %s - loans %s",
+                    f"{cash:,.0f}",
+                    f"{equity:,.0f}",
+                    f"{holdings_value:,.0f}",
+                    f"{loans:,.0f}",
+                )
+
+        # Whichever field supplied it, the account cannot be worth less than
+        # its stock plus its cash, and reporting it as less understates every
+        # risk figure derived from equity.
+        floor = holdings_value + cash
+        if floor > equity:
+            logger.warning(
+                "account equity reported as %s but holdings + cash is %s; "
+                "using the larger. Run `check` to see the raw balance fields.",
+                f"{equity:,.0f}",
+                f"{floor:,.0f}",
+            )
+            equity = floor
+        return AccountSnapshot(equity=equity, cash=cash, buying_power=cash)
+
+    #: Kiwoom's own market codes for the two boards.
+    MARKET_TYPES = {"kospi": "0", "kosdaq": "10"}
+
+    def get_market_codes(self, market: str) -> list[str]:
+        """Every listed code on a board.
+
+        KRX's own market-wide endpoints have been returning non-JSON for the
+        whole of this work, which leaves pykrx unable to answer "what is
+        listed" at all. Kiwoom answers it, and its per-stock endpoints are
+        already proven to work here.
+
+        What it cannot do is answer it *as of a past date*: this is the
+        current listing, so anything that has been delisted is missing. For a
+        study of what happens after a crash that omission runs one way, and
+        the caller is expected to say so.
+        """
+        market_tp = self.MARKET_TYPES.get(market.lower())
+        if market_tp is None:
+            raise BrokerError(
+                f"unknown market {market!r}; expected one of {sorted(self.MARKET_TYPES)}"
+            )
+        codes: list[str] = []
+        for page in self._call_paged(
+            "stock_info", "market_codes", {"mrkt_tp": market_tp}, f"market_codes({market})"
+        ):
+            rows = page.get("list") or page.get("output") or next(
+                (v for v in page.values() if isinstance(v, list) and v), []
+            )
+            for row in rows:
+                if isinstance(row, Mapping):
+                    raw = row.get("code") or row.get("stk_cd") or row.get("shrn_cd") or ""
+                else:
+                    raw = row
+                code = str(raw).strip().lstrip("A")[:6]
+                if len(code) == 6 and code.isdigit():
+                    codes.append(code)
+        seen: set[str] = set()
+        return [c for c in codes if not (c in seen or seen.add(c))]
+
+    def get_stock_info(self, code: str) -> StockInfo:
+        try:
+            data = self._call("stock_info", "stock_info", {"stk_cd": code}, f"stock_info({code})")
+        except BrokerError:
+            # Unknown or unreachable: treat as not tradable rather than guessing.
+            return StockInfo(code=code, tradable=False)
+        market_raw = str(data.get("mrkt_tp") or "").strip()
+        return StockInfo(
+            code=code,
+            name=str(data.get("stk_nm") or ""),
+            market=market_raw or KOSPI,
+            market_raw=market_raw,
+            tradable=str(data.get("trde_stop_yn") or "N").upper() != "Y",
+            previous_close=abs(_to_float(data.get("base_pric") or data.get("prev_close"))),
+        )
+
+    def get_orderbook(self, code: str) -> OrderBookSnapshot | None:
+        try:
+            data = self._call("quote", "orderbook", {"stk_cd": code}, f"orderbook({code})")
+        except BrokerError:
+            return None
+        return OrderBookSnapshot(
+            code=code,
+            best_bid=abs(_to_float(data.get("buy_fpr_bid"))),
+            best_ask=abs(_to_float(data.get("sel_fpr_bid"))),
+            best_bid_qty=_to_float(data.get("buy_fpr_req")),
+            best_ask_qty=_to_float(data.get("sel_fpr_req")),
+            total_bid_qty=_to_float(data.get("tot_buy_req")),
+            total_ask_qty=_to_float(data.get("tot_sel_req")),
+        )
+
+    def get_execution_strength(self, code: str) -> ExecutionStrength | None:
+        try:
+            data = self._call("quote", "strength_hourly", {"stk_cd": code}, f"strength({code})")
+        except BrokerError:
+            return None
+        rows = data.get("cntr_str_tm") or []
+        if not rows:
+            return None
+        latest = rows[0]  # newest-first, same convention as minute charts
+
+        def _pct(key: str) -> float:
+            raw = latest.get(key)
+            return _to_float(raw) if raw not in (None, "") else 100.0
+
+        return ExecutionStrength(
+            code=code,
+            as_of=str(latest.get("cntr_tm") or ""),
+            strength=_pct("cntr_str"),
+            strength_5min=_pct("cntr_str_5min"),
+            strength_20min=_pct("cntr_str_20min"),
+            strength_60min=_pct("cntr_str_60min"),
+        )
+
+    def get_volume_surge(self, market: str = "000") -> list[VolumeSurgeCandidate]:
+        body = {
+            "mrkt_tp": market,       # 000 전체, 001 코스피, 101 코스닥
+            "sort_tp": "1",          # 급증량 기준 정렬
+            "tm_tp": "2",            # 전일 대비 (분 단위 tm 파라미터 불필요)
+            "trde_qty_tp": "5",      # 5천주 이상 -- 너무 좁히지 않는 하한선
+            "tm": "",
+            "stk_cnd": "1",          # 관리종목 제외
+            "pric_tp": "0",          # 가격 전체
+            "stex_tp": "3",          # KRX+NXT 통합
+        }
+        try:
+            data = self._call("ranking", "volume_surge", body, f"volume_surge({market})")
+        except BrokerError:
+            return []
+        rows = data.get("trde_qty_sdnin") or []
+        out: list[VolumeSurgeCandidate] = []
+        for r in rows:
+            code = _clean_stock_code(r.get("stk_cd"))
+            if not code:
+                continue
+            out.append(VolumeSurgeCandidate(
+                code=code,
+                name=str(r.get("stk_nm") or ""),
+                price=abs(_to_float(r.get("cur_prc"))),
+                change_pct=_to_float(r.get("flu_rt")),
+                volume=_to_float(r.get("now_trde_qty")),
+                surge_qty=_to_float(r.get("sdnin_qty")),
+                surge_rate=_to_float(r.get("sdnin_rt")),
+            ))
+        return out
+
+    def get_vi_triggered(self, market: str = "000") -> list[ViTriggeredStock]:
+        body = {
+            "mrkt_tp": market,
+            "bf_mkrt_tp": "1",       # 정규시장
+            "stk_cd": "",            # 공백 = 시장구분 전체 조회
+            "motn_tp": "0",          # 정적+동적 VI 전체
+            "skip_stk": "000000000",  # 전종목 포함
+            "trde_qty_tp": "0",
+            "min_trde_qty": "",
+            "max_trde_qty": "",
+            "trde_prica_tp": "0",
+            "min_trde_prica": "",
+            "max_trde_prica": "",
+            "motn_drc": "1",         # 상승 VI만 -- 롱 온리라 하락 VI는 관심 대상 아님
+            "stex_tp": "3",
+        }
+        try:
+            data = self._call("stock_info", "vi_triggered", body, f"vi_triggered({market})")
+        except BrokerError:
+            return []
+        rows = data.get("motn_stk") or []
+        out: list[ViTriggeredStock] = []
+        for r in rows:
+            code = _clean_stock_code(r.get("stk_cd"))
+            if not code:
+                continue
+            out.append(ViTriggeredStock(
+                code=code,
+                name=str(r.get("stk_nm") or ""),
+                trigger_price=abs(_to_float(r.get("motn_pric"))),
+                open_change_pct=_to_float(r.get("open_pric_pre_flu_rt")),
+                trigger_count_today=int(_to_float(r.get("vimotn_cnt"))),
+                direction=str(r.get("viaplc_tp") or ""),
+            ))
+        return out
+
+    def open_order_codes(self) -> list[str]:
+        data = self._call("account", "open_orders", {"stex_tp": "0"}, "open_orders")
+        rows = data.get("output") or data.get("oso") or []
+        return [str(r.get("stk_cd") or "").strip() for r in rows if r.get("stk_cd")]
+
+    def get_chart(
+        self,
+        code: str,
+        timeframe: str,
+        start: datetime,
+        end: datetime,
+        max_rows: int | None = None,
+    ) -> pd.DataFrame | None:
+        """Intraday/daily bars from Kiwoom - pykrx cannot serve minute data."""
+        intraday = timeframe.endswith("Min")
+        body: dict[str, Any] = {"stk_cd": code, "upd_stkpc_tp": "1"}
+        if intraday:
+            body["tic_scope"] = timeframe.replace("Min", "")
+            key = "minute_chart"
+        else:
+            body["base_dt"] = end.strftime("%Y%m%d")
+            key = "daily_chart"
+        # Charts routinely span several pages; taking only the first would
+        # silently shorten every lookback computed from these bars.
+        def _rows_of(page: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+            return list(
+                page.get("output")
+                or next((v for v in page.values() if isinstance(v, list) and v), [])
+            )
+
+        enough = None
+        if max_rows:
+            def enough(pages: list[dict[str, Any]]) -> bool:
+                return sum(len(_rows_of(p)) for p in pages) >= max_rows
+
+        rows: list[Mapping[str, Any]] = []
+        for page in self._call_paged(
+            "chart", key, body, f"chart({code},{timeframe})", enough=enough
+        ):
+            rows.extend(_rows_of(page))
+        if not rows:
+            return None
+        return _chart_frame(rows, intraday)
+
+    # -- orders ------------------------------------------------------------
+
+    def submit_order(
+        self,
+        code: str,
+        side: str,
+        qty: float,
+        price: float | None = None,
+        stop_price: float | None = None,
+        is_exit: bool = False,
+        note: str = "",
+    ) -> OrderResult:
+        if self.allowed_codes and code not in self.allowed_codes:
+            raise BrokerError(
+                f"refusing to trade {code}: it is not in this bot's configured "
+                f"universe ({', '.join(sorted(self.allowed_codes))})"
+            )
+        api_id_key = "buy" if side == LONG else "sell"
+        body = {
+            "dmst_stex_tp": "KRX",
+            "stk_cd": code,
+            "ord_qty": str(int(qty)),
+            "ord_uv": "" if price is None else str(int(price)),
+            # "3" = market order; a limit price is only sent when one is given.
+            "trde_tp": "3" if price is None else "0",
+        }
+        data = self._call("order", api_id_key, body, f"submit_order({code})")
+        order_id = str(data.get("ord_no") or "")
+        return_code = str(data.get("return_code", "0"))
+        return_msg = str(data.get("return_msg", "(no message)"))
+        if return_code not in ("0", "") or not order_id:
+            # Kiwoom returns "N주 매수가능" when the requested qty exceeds
+            # available margin. Parse N and retry once with the reduced size.
+            if not is_exit and side == LONG:
+                m = re.search(r"(\d+)\s*주\s*매수가능", return_msg)
+                if m:
+                    reduced = int(m.group(1))
+                    if 0 < reduced < qty:
+                        logger.warning(
+                            "%s: broker capped qty to %d (requested %d); retrying",
+                            code, reduced, int(qty),
+                        )
+                        body["ord_qty"] = str(reduced)
+                        qty = reduced
+                        data = self._call("order", api_id_key, body, f"submit_order({code})")
+                        order_id = str(data.get("ord_no") or "")
+                        return_code = str(data.get("return_code", "0"))
+                        return_msg = str(data.get("return_msg", "(no message)"))
+            # Kiwoom returns "N주 매도가능" when position state qty > actual held qty.
+            # This happens when a buy was retried at a lower qty. Always retry on exits.
+            elif is_exit or side == SHORT:
+                m = re.search(r"(\d+)\s*주\s*매도가능", return_msg)
+                if m:
+                    reduced = int(m.group(1))
+                    if 0 < reduced < qty:
+                        logger.warning(
+                            "%s: sell capped qty to %d (requested %d, state mismatch); retrying",
+                            code, reduced, int(qty),
+                        )
+                        body["ord_qty"] = str(reduced)
+                        qty = reduced
+                        data = self._call("order", api_id_key, body, f"submit_order({code})")
+                        order_id = str(data.get("ord_no") or "")
+                        return_code = str(data.get("return_code", "0"))
+                        return_msg = str(data.get("return_msg", "(no message)"))
+            if return_code not in ("0", "") or not order_id:
+                # An empty order number means the venue did not accept it.
+                raise BrokerError(
+                    f"order for {code} was not accepted "
+                    f"[return_code={return_code}] {return_msg}"
+                )
+        logger.info(
+            "submitted %s %s x%s stop=%s id=%s",
+            side,
+            code,
+            qty,
+            f"{stop_price:,.0f}" if stop_price is not None else "n/a",
+            order_id,
+        )
+        # Kiwoom has no bracket order, so the hard stop is enforced by the loop:
+        # it checks the stop on every cycle and sends the exit itself.
+        return OrderResult(
+            code=code,
+            side=side,
+            qty=qty,
+            order_type="market" if price is None else "limit",
+            stop_price=stop_price,
+            submitted=True,
+            order_id=order_id,
+            note=note,
+        )
+
+    def cancel_all_orders(self) -> int:
+        count = 0
+        for code in self.open_order_codes():
+            try:
+                self._call(
+                    "order", "cancel", {"dmst_stex_tp": "KRX", "stk_cd": code}, f"cancel({code})"
+                )
+                count += 1
+            except BrokerError as exc:
+                logger.error("cancel failed for %s: %s", code, exc)
+        logger.warning("cancelled %d open order(s)", count)
+        return count
+
+    def get_holdings(self) -> dict[str, Holding]:
+        """What the account actually holds, with average and current price."""
+        data = self._call(
+            "account", "balance", {"qry_tp": "1", "dmst_stex_tp": "KRX"}, "get_holdings"
+        )
+        rows = data.get("output") or data.get("acnt_evlt_remn_indv_tot") or []
+        holdings: dict[str, Holding] = {}
+        for row in rows:
+            code = str(row.get("stk_cd") or "").strip().lstrip("A")
+            qty = _to_float(row.get("rmnd_qty") or row.get("hldg_qty"))
+            if not code or qty <= 0:
+                continue
+            holdings[code] = Holding(
+                code=code,
+                qty=qty,
+                # Field names vary by TR revision; raw_fields exposes what was
+                # actually present so a miss is diagnosable rather than silent.
+                avg_price=abs(
+                    _to_float(
+                        row.get("pur_pric") or row.get("buy_uv") or row.get("pchs_avg_pric")
+                    )
+                ),
+                current_price=abs(
+                    _to_float(row.get("cur_prc") or row.get("prpr") or row.get("evlt_pric"))
+                ),
+                raw_fields=tuple(sorted(str(k) for k in row)),
+            )
+        return holdings
+
+    def close_all_positions(self) -> int:
+        """Flatten everything.
+
+        Kiwoom has no flatten-everything endpoint, so holdings are read back
+        from the account and sold one by one. Reading them from the broker
+        rather than from local state matters here: the kill switch must close
+        what the account *actually* holds, including anything the bot's own
+        state file does not know about.
+        """
+        closed = 0
+        skipped: list[str] = []
+        for code, holding in self.get_holdings().items():
+            if self.allowed_codes and code not in self.allowed_codes:
+                # Not ours to sell. The account may hold anything.
+                skipped.append(code)
+                continue
+            try:
+                self.submit_order(
+                    code, SHORT, holding.qty, is_exit=True, note="kill switch flatten"
+                )
+                closed += 1
+            except BrokerError as exc:
+                logger.error("flatten failed for %s: %s", code, exc)
+        logger.warning("closed %d position(s)", closed)
+        if skipped:
+            logger.warning(
+                "left %d holding(s) untouched, outside this bot's universe: %s",
+                len(skipped),
+                ", ".join(sorted(skipped)),
+            )
+        return closed
+
+
+def _clean_stock_code(raw: Any) -> str:
+    """Extract the plain 6-digit KRX code Kiwoom's stk_cd fields carry.
+
+    Confirmed live 2026-08-28: the combined-market ranking TRs (ka10023/
+    ka10054, called with stex_tp="3" for KRX+NXT together) return codes
+    with a trailing venue suffix -- e.g. "108860_AL" -- that broke every
+    chart/orderbook/order lookup downstream, since those all expect a bare
+    6-digit code. get_market_codes already strips a leading "A" prefix
+    Kiwoom uses elsewhere; this generalizes to any prefix or suffix around
+    the 6 digits rather than assuming one specific shape.
+    """
+    match = re.search(r"\d{6}", str(raw or ""))
+    return match.group(0) if match else ""
+
+
+def _to_float(value: Any) -> float:
+    if value is None:
+        return 0.0
+    try:
+        return float(str(value).replace(",", "").strip() or 0.0)
+    except ValueError:
+        return 0.0
+
+
+def _first_amount(data: Mapping[str, Any], names: Sequence[str]) -> float:
+    """The first of *names* present in *data* with a non-zero amount.
+
+    Kiwoom returns the same concept under different keys across TR revisions,
+    and an absent key and a genuine zero are indistinguishable once both have
+    been coerced to 0.0 -- so try each candidate in order rather than relying
+    on ``or``, which cannot tell "field missing" from "account holds nothing".
+    """
+    for name in names:
+        if name in data:
+            amount = abs(_to_float(data[name]))
+            if amount:
+                return amount
+    return 0.0
+
+
+def _chart_frame(rows: list[Mapping[str, Any]], intraday: bool) -> pd.DataFrame | None:
+    """Normalise a Kiwoom chart payload into an OHLCV frame."""
+    records = []
+    for row in rows:
+        stamp = row.get("cntr_tm") or row.get("dt") or row.get("stck_bsop_date")
+        if not stamp:
+            continue
+        raw = "".join(ch for ch in str(stamp) if ch.isdigit())
+        if intraday and len(raw) >= 14:
+            fmt, raw = "%Y%m%d%H%M%S", raw[:14]
+        elif intraday and len(raw) >= 12:
+            fmt, raw = "%Y%m%d%H%M", raw[:12]
+        elif len(raw) >= 8:
+            fmt, raw = "%Y%m%d", raw[:8]
+        else:
+            continue
+        try:
+            when = datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+        records.append(
+            {
+                "timestamp": when.replace(tzinfo=KST),
+                # Kiwoom returns signed prices on some charts; magnitude is the price.
+                "open": abs(_to_float(row.get("open_pric"))),
+                "high": abs(_to_float(row.get("high_pric"))),
+                "low": abs(_to_float(row.get("low_pric"))),
+                "close": abs(_to_float(row.get("cur_prc"))),
+                "volume": abs(_to_float(row.get("trde_qty"))),
+            }
+        )
+    if not records:
+        return None
+    frame = pd.DataFrame(records).set_index("timestamp").sort_index()
+    return frame[frame["close"] > 0]
+
+
+# --------------------------------------------------------------------------
+# Factory
+# --------------------------------------------------------------------------
+
+
+class ReadOnlyBroker(BrokerBase):
+    """A real broker with the order paths removed.
+
+    Observation needs real bars. Running it on the simulated broker instead
+    means the minute charts fall back to the synthetic generator, and what
+    gets watched all day is a random walk -- which is worse than not watching,
+    because it looks like evidence.
+
+    So this delegates every read to the real adapter and answers every write
+    with a refusal. The refusal is the point: an order path that is absent
+    cannot be reached by a bug in the loop above it, which is a stronger
+    guarantee than a flag that some code path might forget to check.
+    """
+
+    dry_run = True
+    mode_suffix = "-OBSERVE"
+
+    def __init__(self, inner: BrokerBase) -> None:
+        self.inner = inner
+        self.label = "OBSERVE"
+        self.refused: list[OrderResult] = []
+
+    # -- reads pass through -------------------------------------------------
+
+    def get_account(self) -> AccountSnapshot:
+        return self.inner.get_account()
+
+    def get_stock_info(self, code: str) -> StockInfo:
+        return self.inner.get_stock_info(code)
+
+    def get_orderbook(self, code: str) -> OrderBookSnapshot | None:
+        return self.inner.get_orderbook(code)
+
+    def get_execution_strength(self, code: str) -> ExecutionStrength | None:
+        return self.inner.get_execution_strength(code)
+
+    def get_volume_surge(self, market: str = "000") -> list[VolumeSurgeCandidate]:
+        return self.inner.get_volume_surge(market)
+
+    def get_vi_triggered(self, market: str = "000") -> list[ViTriggeredStock]:
+        return self.inner.get_vi_triggered(market)
+
+    def open_order_codes(self) -> list[str]:
+        return self.inner.open_order_codes()
+
+    def get_chart(self, code, timeframe, start, end, max_rows=None):
+        return self.inner.get_chart(code, timeframe, start, end, max_rows=max_rows)
+
+    def get_holdings(self) -> dict[str, Holding]:
+        getter = getattr(self.inner, "get_holdings", None)
+        return getter() if getter else {}
+
+    def get_market_codes(self, market: str) -> list[str]:
+        getter = getattr(self.inner, "get_market_codes", None)
+        return getter(market) if getter else []
+
+    # -- writes are refused -------------------------------------------------
+
+    def submit_order(
+        self,
+        code: str,
+        side: str,
+        qty: float,
+        price: float | None = None,
+        stop_price: float | None = None,
+        is_exit: bool = False,
+        note: str = "",
+    ) -> OrderResult:
+        result = OrderResult(
+            code=code,
+            side=side,
+            qty=qty,
+            stop_price=stop_price,
+            submitted=False,
+            note=note or "observation",
+        )
+        self.refused.append(result)
+        logger.info(
+            "[OBSERVE] would submit %s %s x%s stop=%s (%s) - NOT sent",
+            side,
+            code,
+            qty,
+            f"{stop_price:,.0f}" if stop_price is not None else "n/a",
+            note or ("exit" if is_exit else "entry"),
+        )
+        return result
+
+    def cancel_all_orders(self) -> int:
+        logger.info("[OBSERVE] would cancel all open orders - NOT sent")
+        return 0
+
+    def close_all_positions(self) -> int:
+        logger.info("[OBSERVE] would flatten all positions - NOT sent")
+        return 0
+
+
+def build_broker(
+    decision: ModeDecision,
+    credentials: Credentials,
+    config: Mapping[str, Any],
+    force_dry_run: bool = False,
+) -> BrokerBase:
+    """Pick the broker for this run.
+
+    Without credentials, or with ``--dry-run``, we fall back to the simulated
+    broker: the bot stays usable end to end but cannot place an order.
+    """
+    starting_equity = float((config.get("account") or {}).get("starting_equity", 10_000_000.0))
+    if force_dry_run:
+        # With credentials, observation reads the real account and the real
+        # charts and refuses to trade. Without them there is nothing to read,
+        # so it falls back to simulation -- and says which it got.
+        if credentials.has_kiwoom:
+            universe = [str(c) for c in (config.get("universe") or {})]
+            return ReadOnlyBroker(
+                KiwoomBroker(decision, credentials, config, allowed_codes=universe)
+            )
+        return DryRunBroker(starting_equity=starting_equity, label="DRY-RUN")
+    if not credentials.has_kiwoom:
+        logger.warning(
+            "no Kiwoom %s credentials found in .env - falling back to the dry-run broker",
+            decision.label,
+        )
+        return DryRunBroker(starting_equity=starting_equity, label="NO-CREDENTIALS")
+    universe = [str(c) for c in (config.get("universe") or {})]
+    return KiwoomBroker(decision, credentials, config, allowed_codes=universe)

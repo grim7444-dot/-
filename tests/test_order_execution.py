@@ -1,0 +1,660 @@
+"""Marketable-limit order pricing (수수료/슬리피지 방지 주문 최적화).
+
+User request (2026-08-27, Korean): 수수료 및 슬리피지 방지 주문 최적화. A
+plain market order has no price protection -- in a thin book it can fill
+meaningfully worse than the price the bot decided on. _marketable_limit_price
+quotes past the best opposing quote by a small tick buffer: aggressive
+enough to fill immediately (crosses the spread, same as a market order
+would), but with an explicit ceiling/floor on how far the fill can drift.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from market.rules import KOSDAQ, KOSPI, KrxRules
+from portfolio import LONG, SHORT
+
+
+@dataclass
+class _FakeOrderBook:
+    best_bid: float = 0.0
+    best_ask: float = 0.0
+
+
+RULES = KrxRules()
+
+
+def test_buy_quotes_past_the_best_ask_by_the_tick_buffer():
+    from main import _marketable_limit_price
+
+    book = _FakeOrderBook(best_bid=9_990.0, best_ask=10_000.0)
+    price = _marketable_limit_price(book, LONG, KOSPI, RULES, buffer_ticks=2)
+    # tick at 10,000 KRW is 10 -- 2 ticks past the ask is 10,020.
+    assert price == 10_020.0
+
+
+def test_sell_quotes_past_the_best_bid_by_the_tick_buffer():
+    from main import _marketable_limit_price
+
+    book = _FakeOrderBook(best_bid=10_000.0, best_ask=10_010.0)
+    price = _marketable_limit_price(book, SHORT, KOSPI, RULES, buffer_ticks=2)
+    assert price == 9_980.0
+
+
+def test_zero_buffer_quotes_exactly_at_the_best_opposing_price():
+    from main import _marketable_limit_price
+
+    book = _FakeOrderBook(best_bid=9_990.0, best_ask=10_000.0)
+    assert _marketable_limit_price(book, LONG, KOSPI, RULES, buffer_ticks=0) == 10_000.0
+    assert _marketable_limit_price(book, SHORT, KOSPI, RULES, buffer_ticks=0) == 9_990.0
+
+
+def test_a_price_off_the_tick_grid_still_rounds_the_safe_direction():
+    from main import _marketable_limit_price
+
+    book = _FakeOrderBook(best_bid=9_990.0, best_ask=10_003.0)
+    # base+buffer = 10,023 -- not on the 10-KRW grid at this band -- must
+    # round UP (never down, which would fail to clear the ask).
+    price = _marketable_limit_price(book, LONG, KOSPI, RULES, buffer_ticks=2)
+    assert price == 10_030.0
+
+
+def test_no_orderbook_falls_back_to_a_plain_market_order():
+    """Missing quote data must never be a reason to refuse an otherwise-valid trade."""
+    from main import _marketable_limit_price
+
+    assert _marketable_limit_price(None, LONG, KOSPI, RULES, buffer_ticks=2) is None
+
+
+def test_a_zero_quote_also_falls_back_to_market():
+    from main import _marketable_limit_price
+
+    book = _FakeOrderBook(best_bid=0.0, best_ask=0.0)
+    assert _marketable_limit_price(book, LONG, KOSPI, RULES, buffer_ticks=2) is None
+    assert _marketable_limit_price(book, SHORT, KOSPI, RULES, buffer_ticks=2) is None
+
+
+def test_kosdaq_uses_its_own_tick_ladder():
+    from main import _marketable_limit_price
+
+    book = _FakeOrderBook(best_bid=9_990.0, best_ask=10_000.0)
+    kospi_price = _marketable_limit_price(book, LONG, KOSPI, RULES, buffer_ticks=2)
+    kosdaq_price = _marketable_limit_price(book, LONG, KOSDAQ, RULES, buffer_ticks=2)
+    # Same inputs, routed through the market-specific tick ladder each time --
+    # this only asserts they're each computed via their own market's rules,
+    # not that they must differ (KOSPI/KOSDAQ ladders can coincide at a price).
+    assert kospi_price == RULES.round_to_tick(10_020.0, KOSPI, "up")
+    assert kosdaq_price == RULES.round_to_tick(10_020.0, KOSDAQ, "up")
+
+
+# ---------------------------------------------------------------------------
+# _submit_exit routing: a chosen take-profit uses a limit order, a stop or a
+# forced time exit uses a plain market order regardless of the config toggle
+# ---------------------------------------------------------------------------
+
+
+class _FakeExecBroker:
+    def __init__(
+        self, orderbook=None, reject_with=None, holdings=None, holdings_error=None,
+        dry_run=False,
+    ):
+        self._orderbook = orderbook
+        self.orders: list[dict] = []
+        #: If set, submit_order raises this BrokerError instead of filling.
+        self._reject_with = reject_with
+        #: dict[str, Holding] returned by get_holdings(), or an exception
+        #: instance/class to raise instead.
+        self._holdings = holdings or {}
+        self._holdings_error = holdings_error
+        self.dry_run = dry_run
+
+    def get_stock_info(self, code):
+        from broker import StockInfo
+
+        return StockInfo(code=code, tradable=True)
+
+    def get_orderbook(self, code):
+        return self._orderbook
+
+    def get_holdings(self):
+        if self._holdings_error is not None:
+            raise self._holdings_error
+        return self._holdings
+
+    def submit_order(self, **kwargs):
+        from broker import OrderResult
+
+        self.orders.append(kwargs)
+        if self._reject_with is not None:
+            raise self._reject_with
+        return OrderResult(
+            code=kwargs["code"], side=kwargs["side"], qty=kwargs["qty"], submitted=True, order_id="1",
+        )
+
+
+class _FakeExecNotifier:
+    def __init__(self):
+        self.sent: list[str] = []
+
+    def send(self, text, *a, **k):
+        self.sent.append(text)
+
+    def alert_exit(self, *a, **k):
+        pass
+
+
+def _exec_engine(
+    portfolio, config, broker, use_limit_orders=True, limit_buffer_ticks=2,
+    stop_limit_buffer_ticks=5, universe=None, strategies=None, market_data=None,
+):
+    from main import TradingEngine
+    from risk.manager import RiskManager
+
+    class _FakeRTForExec:
+        def name_of(self, code):
+            return ""
+
+        def market_of(self, code):
+            return KOSPI
+
+    engine = TradingEngine.__new__(TradingEngine)
+    rt = _FakeRTForExec()
+    rt.config = config
+    rt.portfolio = portfolio
+    rt.risk = RiskManager(config, portfolio)
+    rt.rules = RULES
+    rt.broker = broker
+    rt.universe = universe or {}
+    rt.strategies = strategies or {}
+    rt.market_data = market_data
+    engine.rt = rt
+    engine._last_exit_time = {}
+    engine._last_exit_was_profit = {}
+    engine._tg_notifier = _FakeExecNotifier()
+    engine._use_limit_orders = use_limit_orders
+    engine._limit_buffer_ticks = limit_buffer_ticks
+    engine._stop_limit_buffer_ticks = stop_limit_buffer_ticks
+    return engine
+
+
+def _open_exec_position(portfolio, code="005930", entry_price=10_000.0):
+    from portfolio import LONG, Position
+
+    portfolio.open_position(
+        Position(
+            symbol=code, side=LONG, qty=10,
+            entry_price=entry_price, stop_price=entry_price * 0.98, stop_distance=entry_price * 0.02,
+        )
+    )
+    return portfolio.get(code)
+
+
+def test_submit_exit_uses_a_limit_price_for_a_chosen_take_profit(portfolio, config):
+    book = _FakeOrderBook(best_bid=10_000.0, best_ask=10_010.0)
+    broker = _FakeExecBroker(orderbook=book)
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 10_050.0, "확정 익절", [], {}, True, "",
+        market=KOSPI, urgent=False,
+    )
+
+    assert len(broker.orders) == 1
+    assert broker.orders[0]["price"] == 9_980.0  # sell: best_bid - 2 ticks
+
+
+def test_submit_exit_uses_a_wider_limit_price_for_an_urgent_exit(portfolio, config):
+    """The hard-stop / forced-time-exit path (2026-08-28, user request: 시장가로
+    하지 말고 -- don't use plain market orders here either). It crosses the
+    book by stop_limit_buffer_ticks (5, wider than the normal 2) instead of
+    going in with no price cap at all."""
+    book = _FakeOrderBook(best_bid=10_000.0, best_ask=10_010.0)
+    broker = _FakeExecBroker(orderbook=book)
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 9_800.0, "stop hit", [], {}, True, "",
+        market=KOSPI, urgent=True,
+    )
+
+    assert len(broker.orders) == 1
+    assert broker.orders[0]["price"] == 9_950.0  # sell: best_bid - 5 ticks
+
+
+def test_submit_exit_falls_back_to_market_with_no_orderbook_even_when_urgent(portfolio, config):
+    """The one case nothing can bound: no quote data at all means a plain
+    market order regardless of urgency -- same fail-open as the take-profit
+    path, never a reason to refuse an otherwise-valid exit."""
+    broker = _FakeExecBroker(orderbook=None)
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 9_800.0, "stop hit", [], {}, True, "",
+        market=KOSPI, urgent=True,
+    )
+
+    assert broker.orders[0]["price"] is None
+
+
+def test_submit_exit_falls_back_to_market_with_no_orderbook_even_when_not_urgent(portfolio, config):
+    broker = _FakeExecBroker(orderbook=None)
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 10_050.0, "확정 익절", [], {}, True, "",
+        market=KOSPI, urgent=False,
+    )
+
+    assert broker.orders[0]["price"] is None
+
+
+def test_submit_exit_respects_the_global_use_limit_orders_toggle(portfolio, config):
+    book = _FakeOrderBook(best_bid=10_000.0, best_ask=10_010.0)
+    broker = _FakeExecBroker(orderbook=book)
+    engine = _exec_engine(portfolio, config, broker, use_limit_orders=False)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 10_050.0, "확정 익절", [], {}, True, "",
+        market=KOSPI, urgent=False,
+    )
+
+    assert broker.orders[0]["price"] is None
+
+
+# ---------------------------------------------------------------------------
+# _submit_exit records whether the exit was a profit-lock exit -- feeds the
+# re-entry cooldown bypass (2026-08-28, see _reentry_cooldown_reason in
+# test_incident_regressions.py section 18b).
+# ---------------------------------------------------------------------------
+
+
+def test_submit_exit_marks_a_profit_lock_exit_as_a_profit_exit(portfolio, config):
+    broker = _FakeExecBroker(orderbook=None)
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 10_250.0, "고점 +3.00%에서 반락 -- +2.50% 확정 익절", [], {}, True, "",
+        market=KOSPI, urgent=False,
+    )
+
+    assert engine._last_exit_was_profit["005930"] is True
+
+
+def test_submit_exit_marks_a_stop_loss_exit_as_not_a_profit_exit(portfolio, config):
+    broker = _FakeExecBroker(orderbook=None)
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 9_870.0, "1.3% 손절 (-1.30%)", [], {}, True, "",
+        market=KOSPI, urgent=True,
+    )
+
+    assert engine._last_exit_was_profit["005930"] is False
+
+
+# ---------------------------------------------------------------------------
+# A rejected exit reconciles against the broker's actual holdings instead of
+# leaving a stale position to retry forever (2026-08-28 live incident: 122640
+# 예스티 stayed in state.json after Kiwoom's real sellable qty was already 0,
+# and every cycle re-tried the same rejected sell with no way out).
+# ---------------------------------------------------------------------------
+
+
+def test_rejected_exit_clears_a_position_the_broker_confirms_is_gone(portfolio, config):
+    from broker import BrokerError
+
+    broker = _FakeExecBroker(
+        reject_with=BrokerError(
+            "order for 005930 was not accepted [return_code=20] "
+            "[2000](800033:매도가능수량이 부족합니다. 0주 매도가능)"
+        ),
+        holdings={},  # broker reports nothing held for this code
+    )
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 30_350.0, "stop hit", [], {}, True, "",
+        market=KOSPI, urgent=True,
+    )
+
+    assert portfolio.get("005930") is None  # stale local position cleared
+    assert engine._tg_notifier.sent  # user was told
+
+
+def test_rejected_exit_leaves_the_position_when_broker_still_holds_it(portfolio, config):
+    from broker import BrokerError, Holding
+
+    broker = _FakeExecBroker(
+        reject_with=BrokerError("temporary rejection"),
+        holdings={"005930": Holding(code="005930", qty=10.0)},
+    )
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 30_350.0, "stop hit", [], {}, True, "",
+        market=KOSPI, urgent=True,
+    )
+
+    assert portfolio.get("005930") is not None  # left alone for the next cycle to retry
+
+
+def test_rejected_exit_does_nothing_when_the_holdings_check_also_fails(portfolio, config):
+    from broker import BrokerError
+
+    broker = _FakeExecBroker(
+        reject_with=BrokerError("temporary rejection"),
+        holdings_error=BrokerError("holdings unavailable too"),
+    )
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 30_350.0, "stop hit", [], {}, True, "",
+        market=KOSPI, urgent=True,
+    )
+
+    assert portfolio.get("005930") is not None  # cannot confirm either way -- left alone
+
+
+# ---------------------------------------------------------------------------
+# _reconcile_holdings_with_broker -- catches a manual buy/sell the bot never
+# saw once per cycle, instead of only when its own exit logic happens to try
+# acting on the stale position and gets rejected (2026-08-31, user-reported:
+# 내가 금호전기도 매수매도 했고 지금 현대약품도 매도 직접했는데 이걸 봇이
+# 알고 있나? -- a position sold by hand while sitting quietly between its
+# stop and its lock floor could go a long time before the bot ever noticed).
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_clears_a_position_sold_outside_the_bot(portfolio, config):
+    broker = _FakeExecBroker(holdings={})  # broker confirms nothing held
+    engine = _exec_engine(portfolio, config, broker)
+    _open_exec_position(portfolio)
+
+    engine._reconcile_holdings_with_broker()
+
+    assert portfolio.get("005930") is None
+    assert engine._tg_notifier.sent
+
+
+def test_reconcile_leaves_a_position_the_broker_still_holds(portfolio, config):
+    from broker import Holding
+
+    broker = _FakeExecBroker(holdings={"005930": Holding(code="005930", qty=10.0)})
+    engine = _exec_engine(portfolio, config, broker)
+    _open_exec_position(portfolio)
+
+    engine._reconcile_holdings_with_broker()
+
+    assert portfolio.get("005930") is not None
+    assert engine._tg_notifier.sent == []
+
+
+def test_reconcile_does_nothing_in_dry_run_mode(portfolio, config):
+    """DryRunBroker doesn't even implement get_holdings() -- this must never
+    be called for a paper/dry-run session."""
+    broker = _FakeExecBroker(dry_run=True, holdings_error=AttributeError("should not be called"))
+    engine = _exec_engine(portfolio, config, broker)
+    _open_exec_position(portfolio)
+
+    engine._reconcile_holdings_with_broker()  # must not raise
+
+    assert portfolio.get("005930") is not None
+
+
+def test_reconcile_does_nothing_with_no_open_positions_and_no_broker_holdings(portfolio, config):
+    """No local positions and nothing at the broker either -- a true no-op.
+
+    get_holdings() is still called (2026-09-02: it must be, to catch a
+    holding the broker has that the bot never recorded at all -- see the
+    untracked-holdings tests below), it just reports nothing either way.
+    """
+    broker = _FakeExecBroker(holdings={})
+    engine = _exec_engine(portfolio, config, broker)
+
+    engine._reconcile_holdings_with_broker()  # must not raise
+
+    assert engine._tg_notifier.sent == []
+
+
+def test_reconcile_leaves_positions_alone_when_the_holdings_check_fails(portfolio, config):
+    from broker import BrokerError
+
+    broker = _FakeExecBroker(holdings_error=BrokerError("holdings unavailable"))
+    engine = _exec_engine(portfolio, config, broker)
+    _open_exec_position(portfolio)
+
+    engine._reconcile_holdings_with_broker()
+
+    assert portfolio.get("005930") is not None
+
+
+# ---------------------------------------------------------------------------
+# The reverse direction (2026-09-02, live incident): 000440 filled at the
+# broker -- submit_order() had already gone through -- but the local
+# position record was never written, most plausibly because submit_order()
+# itself raised (e.g. a network timeout waiting for the confirmation
+# response) after Kiwoom had already accepted the order. run_cycle's
+# per-code try/except just logs and moves on to the next code, so nothing
+# else would have noticed a real, unprotected holding sitting with no local
+# stop -- until the user spotted the price drop by hand roughly ten minutes
+# later. _reconcile_holdings_with_broker now also checks this direction.
+# ---------------------------------------------------------------------------
+
+
+class _FakeBarSet:
+    def __init__(self, bars):
+        self.bars = bars
+
+
+class _FakeMarketData:
+    def __init__(self, bars):
+        self._bars = bars
+
+    def get_bars(self, **kwargs):
+        return _FakeBarSet(self._bars)
+
+
+class _FakeUntrackedStrategy:
+    name = "orb"
+    warmup = 20
+
+
+def test_reconcile_auto_adopts_an_untracked_holding_within_the_universe(portfolio, config, bars):
+    from broker import Holding
+
+    broker = _FakeExecBroker(
+        holdings={"005930": Holding(code="005930", qty=10.0, avg_price=10_000.0, current_price=9_800.0)}
+    )
+    engine = _exec_engine(
+        portfolio, config, broker,
+        universe={"005930": {"timeframe": "1Min"}},
+        strategies={"005930": _FakeUntrackedStrategy()},
+        market_data=_FakeMarketData(bars),
+    )
+
+    engine._reconcile_holdings_with_broker()
+
+    position = portfolio.get("005930")
+    assert position is not None
+    assert position.qty == 10.0
+    assert position.entry_price == 10_000.0
+    assert position.stop_price < 9_800.0  # a real stop below the current price
+    assert engine._tg_notifier.sent  # alerted, not silent
+
+
+def test_reconcile_only_alerts_for_an_untracked_holding_outside_the_universe(portfolio, config):
+    """No strategy/ATR context to size a stop -- flag it, do not guess."""
+    from broker import Holding
+
+    broker = _FakeExecBroker(holdings={"005930": Holding(code="005930", qty=10.0, avg_price=10_000.0)})
+    engine = _exec_engine(portfolio, config, broker)  # empty universe/strategies
+
+    engine._reconcile_holdings_with_broker()
+
+    assert portfolio.get("005930") is None
+    assert engine._tg_notifier.sent
+
+
+def test_reconcile_does_not_touch_an_already_tracked_holding(portfolio, config, bars):
+    """A holding that matches an existing local position is left exactly as is."""
+    from broker import Holding
+
+    broker = _FakeExecBroker(holdings={"005930": Holding(code="005930", qty=10.0, avg_price=10_000.0)})
+    engine = _exec_engine(
+        portfolio, config, broker,
+        universe={"005930": {"timeframe": "1Min"}},
+        strategies={"005930": _FakeUntrackedStrategy()},
+        market_data=_FakeMarketData(bars),
+    )
+    _open_exec_position(portfolio, code="005930", entry_price=9_500.0)
+
+    engine._reconcile_holdings_with_broker()
+
+    # untouched -- still the original entry_price, not re-adopted at avg_price
+    assert portfolio.get("005930").entry_price == 9_500.0
+    assert engine._tg_notifier.sent == []
+
+
+# ---------------------------------------------------------------------------
+# _live_protective_breach -- catches a protective price (stop or locked
+# floor) already crossed by a live quote, instead of waiting up to a full
+# minute for the next bar close to notice (2026-08-31, live incident: 187660
+# 페니트리움바이오 fell from a locked +1.74% to -0.41% within a single
+# 1-minute bar; see the "protective_price"/"protective_kind" meta the
+# strategies now attach to every HOLD/EXIT while managing a position).
+# ---------------------------------------------------------------------------
+
+
+def test_live_sell_quote_returns_the_best_bid(portfolio, config):
+    book = _FakeOrderBook(best_bid=9_950.0, best_ask=9_960.0)
+    engine = _exec_engine(portfolio, config, _FakeExecBroker(orderbook=book))
+    assert engine._live_sell_quote("005930") == 9_950.0
+
+
+def test_live_sell_quote_is_none_with_no_orderbook(portfolio, config):
+    engine = _exec_engine(portfolio, config, _FakeExecBroker(orderbook=None))
+    assert engine._live_sell_quote("005930") is None
+
+
+def test_live_sell_quote_is_none_when_the_broker_call_fails(portfolio, config):
+    from broker import BrokerError
+
+    class _FailingOrderbookBroker(_FakeExecBroker):
+        def get_orderbook(self, code):
+            raise BrokerError("orderbook unavailable")
+
+    engine = _exec_engine(portfolio, config, _FailingOrderbookBroker())
+    assert engine._live_sell_quote("005930") is None
+
+
+def test_live_protective_breach_fires_on_a_stop_already_crossed(portfolio, config):
+    book = _FakeOrderBook(best_bid=9_780.0, best_ask=9_790.0)  # below the 9,800 stop
+    engine = _exec_engine(portfolio, config, _FakeExecBroker(orderbook=book))
+    position = _open_exec_position(portfolio, entry_price=10_000.0)
+
+    result = engine._live_protective_breach(
+        "005930", position, {"protective_price": 9_800.0, "protective_kind": "stop"},
+    )
+
+    assert result is not None
+    reason, live_price, urgent = result
+    assert "손절" in reason
+    assert live_price == 9_780.0
+    assert urgent is True
+
+
+def test_live_protective_breach_fires_on_a_locked_floor_already_crossed(portfolio, config):
+    book = _FakeOrderBook(best_bid=10_130.0, best_ask=10_140.0)  # below the 10,150 floor
+    engine = _exec_engine(portfolio, config, _FakeExecBroker(orderbook=book))
+    position = _open_exec_position(portfolio, entry_price=10_000.0)
+
+    result = engine._live_protective_breach(
+        "005930", position, {"protective_price": 10_150.0, "protective_kind": "floor"},
+    )
+
+    assert result is not None
+    reason, live_price, urgent = result
+    assert "익절" in reason
+    assert live_price == 10_130.0
+    assert urgent is False
+
+
+def test_live_protective_breach_does_nothing_when_the_quote_is_still_above(portfolio, config):
+    book = _FakeOrderBook(best_bid=9_950.0, best_ask=9_960.0)  # above the 9,800 stop
+    engine = _exec_engine(portfolio, config, _FakeExecBroker(orderbook=book))
+    position = _open_exec_position(portfolio, entry_price=10_000.0)
+
+    result = engine._live_protective_breach(
+        "005930", position, {"protective_price": 9_800.0, "protective_kind": "stop"},
+    )
+
+    assert result is None
+
+
+def test_live_protective_breach_does_nothing_without_meta(portfolio, config):
+    engine = _exec_engine(portfolio, config, _FakeExecBroker(orderbook=None))
+    position = _open_exec_position(portfolio, entry_price=10_000.0)
+
+    assert engine._live_protective_breach("005930", position, {}) is None
+
+
+def test_live_protective_breach_ignores_short_positions(portfolio, config):
+    from portfolio import SHORT, Position
+
+    book = _FakeOrderBook(best_bid=9_780.0, best_ask=9_790.0)
+    engine = _exec_engine(portfolio, config, _FakeExecBroker(orderbook=book))
+    position = Position(
+        symbol="005930", side=SHORT, qty=10,
+        entry_price=10_000.0, stop_price=10_200.0, stop_distance=200.0,
+    )
+
+    result = engine._live_protective_breach(
+        "005930", position, {"protective_price": 9_800.0, "protective_kind": "stop"},
+    )
+
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _submit_exit feeds Portfolio.record_symbol_result -- the per-symbol
+# consecutive-loss circuit breaker's data source (2026-08-31, see
+# test_incident_regressions.py section 26).
+# ---------------------------------------------------------------------------
+
+
+def test_submit_exit_records_a_loss_against_the_symbol_streak(portfolio, config):
+    broker = _FakeExecBroker(orderbook=None)
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 9_870.0, "1.3% 손절 (-1.30%)", [], {}, True, "",
+        market=KOSPI, urgent=True,
+    )
+
+    assert portfolio.state.symbol_loss_streak.get("005930") == 1
+
+
+def test_submit_exit_clears_the_symbol_streak_on_a_profit_exit(portfolio, config):
+    broker = _FakeExecBroker(orderbook=None)
+    engine = _exec_engine(portfolio, config, broker)
+    portfolio.record_symbol_result("005930", is_profit=False)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 10_250.0, "고점 +3.00%에서 반락 -- +2.50% 확정 익절", [], {}, True, "",
+        market=KOSPI, urgent=False,
+    )
+
+    assert "005930" not in portfolio.state.symbol_loss_streak

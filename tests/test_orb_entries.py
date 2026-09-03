@@ -183,3 +183,66 @@ def test_range_chase_filter_threshold_is_configurable():
     window = _quiet_then_breakout_window(10_010 * 1.10)  # +10%, under a 20% cap
     signal = strategy.evaluate(window, None)
     assert signal.action is Action.ENTER_LONG, signal.reason
+
+
+# ---------------------------------------------------------------------------
+# Pullback-from-session-high filter (2026-09-03, user request): "손절 전에
+# 미리 추세 전환을 알아차리게" -- trend_ema alone is a short average, so a
+# stock that already peaked today and is sliding back down can still read as
+# "trend intact" for a while before the EMA catches up. 067290 peaked at
+# 3,785 at 09:24 and was entered at 3,640 (-3.8% off that peak) at 09:49,
+# then stopped out. This checks the pullback off *today's own high so far*
+# directly, independent of the EMA.
+# ---------------------------------------------------------------------------
+
+
+def _spike_then_pullback_window(session_high: float, breakout_close: float) -> pd.DataFrame:
+    """09:00-09:05 opening range (high 10,010), a spike bar up to
+    `session_high`, six settling bars (so trend_ema, period 5, catches up to
+    roughly the settled level), then a final breakout bar at `breakout_close`
+    -- still above the range high, but pulled back from the earlier spike.
+    """
+    rows = [dict(open=10_000, high=10_010, low=9_990, close=10_000, volume=1_000) for _ in range(5)]
+    rows.append(dict(
+        open=10_005, high=session_high, low=10_000, close=session_high - 20, volume=1_500,
+    ))
+    settle = breakout_close - 20
+    rows.extend(
+        dict(open=settle, high=settle + 5, low=settle - 5, close=settle, volume=1_000)
+        for _ in range(6)
+    )
+    rows.append(dict(
+        open=settle, high=breakout_close + 10, low=settle - 5,
+        close=breakout_close, volume=1_500,
+    ))
+    idx = pd.date_range("2026-08-31 09:00", periods=len(rows), freq="1min", tz="Asia/Seoul")
+    return pd.DataFrame(rows, index=idx)
+
+
+def test_pullback_from_session_high_filter_is_on_by_default():
+    assert ORB(symbol="TEST").max_pullback_from_session_high_pct == 0.03
+
+
+def test_pullback_filter_allows_a_breakout_close_to_todays_high():
+    strategy = _orb()
+    # session_high 10,300, entry 10,250 -- 0.5% off the high, well inside 3%.
+    window = _spike_then_pullback_window(session_high=10_300.0, breakout_close=10_250.0)
+    signal = strategy.evaluate(window, None)
+    assert signal.action is Action.ENTER_LONG, signal.reason
+
+
+def test_pullback_filter_blocks_a_breakout_that_already_faded_off_todays_high():
+    strategy = _orb()
+    # session_high 10,800, entry 10,200 -- 5.6% off the high, past the 3% cap,
+    # even though 10,200 is still comfortably above the opening range high.
+    window = _spike_then_pullback_window(session_high=10_800.0, breakout_close=10_200.0)
+    signal = strategy.evaluate(window, None)
+    assert signal.action is Action.HOLD
+    assert "추세 전환 우려" in signal.reason
+
+
+def test_pullback_filter_threshold_is_configurable():
+    strategy = _orb(max_pullback_from_session_high_pct=0.10)
+    window = _spike_then_pullback_window(session_high=10_800.0, breakout_close=10_200.0)
+    signal = strategy.evaluate(window, None)
+    assert signal.action is Action.ENTER_LONG, signal.reason

@@ -54,6 +54,16 @@ def _session_open_price(window: pd.DataFrame) -> float | None:
     return float(today_bars["open"].iloc[0])
 
 
+def _session_high_so_far(window: pd.DataFrame) -> float | None:
+    """The highest high among today's bars up to and including this one."""
+    idx = pd.DatetimeIndex(window.index)
+    today = idx[-1].normalize()
+    today_bars = window[idx.normalize() == today]
+    if today_bars.empty:
+        return None
+    return float(today_bars["high"].max())
+
+
 def _opening_range(
     window: pd.DataFrame, range_minutes: int, session_open_hour: int, session_open_minute: int
 ) -> tuple[float, float, bool] | None:
@@ -123,6 +133,14 @@ class ORB(Strategy):
         #: 필터가 사실상 같은 걸 재는 셈이지만, 레인지 이후 변동성이 커진
         #: 종목은 밴드가 이미 넓어져 있어 볼린저 필터만으로는 못 거른다.
         max_range_chase_pct: float = 0.07,
+        #: 오늘 이미 세운 고점 대비 이 이상 밀린 상태면 진입 보류 (2026-09-03,
+        #: 사용자 요청: "손절 전에 미리 추세 전환을 알아차리게" -- trend_ema
+        #: 하나만 보면, 당일 고점을 찍고 흘러내리는 중에도 짧은 EMA가 미처
+        #: 못 따라와 "추세 유지"로 잘못 읽힐 수 있다. 067290 사례: 09:24
+        #: 3,785원까지 올랐다가 09:49 3,640원(고점 대비 -3.8%)에 진입해 손절
+        #: -- 그 하락 자체가 이미 당일 되돌림 시작의 신호였다. range_high(그날
+        #: 오프닝 5분)와 달리 session_high는 그 이후 세션 전체에서 갱신된다.
+        max_pullback_from_session_high_pct: float = 0.03,
         #: 고정 손절 폭.
         stop_pct: float = 0.017,
         #: 정상 stop_pct보다 넓은 손절폭 -- 두 경우에 쓴다 (2026-08-28, 사용자
@@ -197,6 +215,7 @@ class ORB(Strategy):
         self.bb_mult = bb_mult
         self.max_bb_extension_pct = max_bb_extension_pct
         self.max_range_chase_pct = max_range_chase_pct
+        self.max_pullback_from_session_high_pct = max_pullback_from_session_high_pct
         self.stop_pct = stop_pct
         self.early_stop_pct = early_stop_pct
         self.early_stop_until = parse_clock(early_stop_until, "early_stop_until")
@@ -343,6 +362,19 @@ class ORB(Strategy):
             return self._hold(window, "trend EMA not established")
         if price <= trend_now:
             return self._hold(window, f"EMA{self.trend_ema} {trend_now:,.0f} 아래 -- 상승 추세 아님")
+
+        # trend_ema는 짧은 이동평균이라, 당일 고점을 찍고 흘러내리는 초입에는
+        # 아직 못 따라와 "추세 유지"로 잘못 읽힐 수 있다 -- 당일 세션 고점
+        # 대비 얼마나 밀렸는지를 별도로 본다 (2026-09-03, 사용자 요청).
+        session_high = _session_high_so_far(window)
+        if session_high and session_high > 0:
+            pullback_pct = (session_high - price) / session_high
+            if pullback_pct > self.max_pullback_from_session_high_pct:
+                return self._hold(
+                    window,
+                    f"당일 고점({session_high:,.0f}) 대비 {pullback_pct:.1%} 하락 -- "
+                    f"추세 전환 우려 (기준 {self.max_pullback_from_session_high_pct:.0%})",
+                )
 
         vwap_note = ""
         if self.use_vwap_filter:

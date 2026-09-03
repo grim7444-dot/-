@@ -250,11 +250,74 @@ def test_trend_broken_past_early_stop_until_still_exits_on_the_tighter_stop(make
 
 
 # ---------------------------------------------------------------------------
-# midday (11:00-15:00) symmetric 1.5%/1.5% override, decided once at entry
-# and held for the position's whole life (2026-08-28, user request: 너무
-# 거래가 없네. 익절1.5% 손절1.5%로 가자 11시부터3시까지-- faster turnover
-# in the middle of the day).
+# ORB-only: a wider stop for a position that was already up hot_move_pct+
+# from today's open at entry, as long as the trend stays intact (2026-09-02,
+# user request: "10%이상 급등하고 있는 종목을 추격할때는 3%정도 떨어져도
+# 조금더 기다려서 현재 강한종목이라면 조금 더 기다리다가 손절"). Unlike
+# early_stop_pct/trend_intact, this is keyed off how far price had already
+# run at entry, not the time of day.
 # ---------------------------------------------------------------------------
+
+
+def _hot_orb() -> ORB:
+    return ORB(
+        symbol="TEST", timeframe="1Min", trend_ema=5, volume_lookback=5,
+        stop_pct=0.013, hot_move_pct=0.10, hot_stop_pct=0.03,
+    )
+
+
+HOT_SESSION_OPEN = 10_000.0
+HOT_ENTRY = 11_200.0  # +12% off the session open -- clears hot_move_pct (10%)
+
+
+def test_hot_mover_entry_holds_a_pullback_that_would_stop_out_normally():
+    """3% off entry (10,864) is within the wider hot band, but already past
+    where the normal 1.3% stop (11,054) would have exited."""
+    strategy = _hot_orb()
+    window = _window_trend_intact(35, flat_level=10_500.0, last_close=10_870.0)
+    position = _position(entry_price=HOT_ENTRY, highest_price=HOT_ENTRY)
+    signal = strategy.evaluate(window, position)
+    assert signal.action is Action.HOLD, signal.reason
+
+
+def test_hot_mover_still_exits_once_the_wider_band_itself_is_cleared():
+    strategy = _hot_orb()
+    stop_price = HOT_ENTRY * (1 - strategy.hot_stop_pct)  # 10,864
+    window = _window_trend_intact(35, flat_level=10_500.0, last_close=stop_price - 1.0)
+    position = _position(entry_price=HOT_ENTRY, highest_price=HOT_ENTRY)
+    signal = strategy.evaluate(window, position)
+    assert signal.action is Action.EXIT
+    assert "3.0%" in signal.reason
+
+
+def test_hot_mover_band_stops_applying_once_the_trend_breaks():
+    """Same entry and same price as the HOLD case above, but the trend EMA
+    has caught up to (settled above) price -- trend_intact is False, so this
+    must fall back to the normal tighter stop and exit."""
+    strategy = _hot_orb()
+    window = _window_trend_intact(35, flat_level=11_200.0, last_close=10_870.0)
+    position = _position(entry_price=HOT_ENTRY, highest_price=HOT_ENTRY)
+    signal = strategy.evaluate(window, position)
+    assert signal.action is Action.EXIT
+    assert "1.3%" in signal.reason
+
+
+def test_an_entry_below_hot_move_pct_never_gets_the_wider_band():
+    """Only +5% off the open -- short of the 10% hot_move_pct threshold."""
+    strategy = _hot_orb()
+    entry = 10_500.0
+    stop_price = entry * (1 - strategy.hot_stop_pct)  # would HOLD if hot
+    # flat_level well above the close (not just barely) so the trend EMA is
+    # unambiguously broken -- see test_trend_broken_past_early_stop_until_*
+    # above for the same margin convention.
+    window = _window_trend_intact(35, flat_level=11_000.0, last_close=stop_price + 1.0)
+    position = _position(entry_price=entry, highest_price=entry)
+    signal = strategy.evaluate(window, position)
+    # Normal stop_pct (1.3%) is tighter than the hot band and should have
+    # already fired at this price.
+    assert signal.action is Action.EXIT
+    assert "1.3%" in signal.reason
+
 
 MIDDAY_STRATEGIES = [
     pytest.param(

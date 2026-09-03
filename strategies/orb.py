@@ -44,6 +44,16 @@ from strategies.base import Action, Signal, Strategy
 from strategies.scalping import session_vwap
 
 
+def _session_open_price(window: pd.DataFrame) -> float | None:
+    """Today's first bar's open -- the reference for "how far up today"."""
+    idx = pd.DatetimeIndex(window.index)
+    today = idx[-1].normalize()
+    today_bars = window[idx.normalize() == today]
+    if today_bars.empty:
+        return None
+    return float(today_bars["open"].iloc[0])
+
+
 def _opening_range(
     window: pd.DataFrame, range_minutes: int, session_open_hour: int, session_open_minute: int
 ) -> tuple[float, float, bool] | None:
@@ -114,6 +124,19 @@ class ORB(Strategy):
         #: 방식) 무-룩어헤드 원칙은 그대로 유지된다.
         early_stop_pct: float = 0.02,
         early_stop_until: str = "09:30",
+        #: 이미 당일 hot_move_pct 이상 급등한 종목을 추격매수할 때 (2026-09-02,
+        #: 사용자 요청: "10%이상 급등하고 있는 종목을 추격할때는 3%정도
+        #: 떨어져도 조금더 기다려서 현재 강한종목이라면 조금 더 기다리다가
+        #: 손절") -- 그런 종목은 정상 손절폭(stop_pct/early_stop_pct)이 너무
+        #: 좁아서 하루 종일 오르는 흐름 안의 정상적인 눌림에도 자주 털린다.
+        #: 진입가가 이미 당일 시가 대비 hot_move_pct 이상 오른 상태였고, 아직
+        #: 추세(trend_ema)가 살아있는 동안엔 hot_stop_pct로 여유를 준다 --
+        #: 다른 티어들과 마찬가지로 진입 시점 가격으로 한 번 정해지면
+        #: 포지션이 살아있는 동안 계속 유지되고, 추세가 꺾이면 즉시 일반
+        #: 티어로 돌아간다. 우선순위는 다른 모든 손절 티어보다 높다 -- "이미
+        #: 크게 오른 강한 종목"이라는 조건 자체가 나머지 티어보다 구체적이다.
+        hot_move_pct: float = 0.10,
+        hot_stop_pct: float = 0.03,
         #: 오후장(midday_window_start~midday_window_end) 시간대에 새로
         #: 진입하는 포지션은 손절/확정 폭을 대칭 1.5%/1.5%로 고정 (2026-08-28,
         #: 사용자 요청: "너무 거래가 없네 -- 익절1.5% 손절1.5%로 가자
@@ -166,6 +189,8 @@ class ORB(Strategy):
         self.stop_pct = stop_pct
         self.early_stop_pct = early_stop_pct
         self.early_stop_until = parse_clock(early_stop_until, "early_stop_until")
+        self.hot_move_pct = hot_move_pct
+        self.hot_stop_pct = hot_stop_pct
         self.midday_stop_pct = midday_stop_pct
         self.midday_lock_pct = midday_lock_pct
         self.midday_window_start = parse_clock(midday_window_start, "midday_window_start")
@@ -217,8 +242,18 @@ class ORB(Strategy):
             (position.entry_time_of_day() or bar_time) if position is not None else bar_time
         )
         is_midday = self.midday_window_start <= reference_time < self.midday_window_end
+        # 추격매수 시점의 가격(포지션이 있으면 진입가로 고정, 없으면 이번 봉
+        # 가격)이 당일 시가 대비 hot_move_pct 이상이면 "이미 급등 중인 종목을
+        # 추격"하는 상황 -- 추세가 살아있는 동안만 hot_stop_pct를 쓴다.
+        session_open = _session_open_price(window)
+        reference_price = position.entry_price if position is not None else price
+        hot_entry = (
+            session_open is not None and session_open > 0
+            and (reference_price - session_open) / session_open >= self.hot_move_pct
+        )
         effective_stop_pct = (
-            self.midday_stop_pct if is_midday
+            self.hot_stop_pct if (hot_entry and trend_intact)
+            else self.midday_stop_pct if is_midday
             else self.early_stop_pct if (bar_time < self.early_stop_until or trend_intact)
             else self.stop_pct
         )

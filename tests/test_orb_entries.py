@@ -144,3 +144,42 @@ def test_disabled_bb_filter_allows_the_same_extended_breakout_through():
     window = _quiet_then_breakout_window(10_400.0)
     signal = strategy.evaluate(window, None)
     assert signal.action is Action.ENTER_LONG, signal.reason
+
+
+# ---------------------------------------------------------------------------
+# Range-chase filter (2026-09-03, user request): 자이에스앤디 started rising
+# around 10,300 but the entry didn't land until 11,000 (a -1.5% loss followed
+# at 10,840) -- "말이안되". The same day 067290 entered 11.7% past its own
+# opening-range high and also lost. Unlike max_bb_extension_pct (measured
+# against the Bollinger band), this measures the breakout bar directly
+# against the opening range's own high -- a range-quiet stock's band tracks
+# the range high closely, but a stock whose volatility has already picked up
+# since the range formed can have a band wide enough that max_bb_extension_pct
+# alone would not catch a chase like this.
+# ---------------------------------------------------------------------------
+
+
+def test_range_chase_filter_is_on_by_default():
+    assert ORB(symbol="TEST").max_range_chase_pct == 0.07
+
+
+def test_range_chase_filter_allows_a_breakout_within_the_default_band():
+    strategy = _orb()  # use_bb_filter=False by default in this file's helper
+    window = _quiet_then_breakout_window(10_010 * 1.05)  # +5% past range high
+    signal = strategy.evaluate(window, None)
+    assert signal.action is Action.ENTER_LONG, signal.reason
+
+
+def test_range_chase_filter_blocks_a_breakout_far_past_the_range_high():
+    strategy = _orb()
+    window = _quiet_then_breakout_window(10_010 * 1.10)  # +10% past range high
+    signal = strategy.evaluate(window, None)
+    assert signal.action is Action.HOLD
+    assert "과도 추격" in signal.reason
+
+
+def test_range_chase_filter_threshold_is_configurable():
+    strategy = _orb(max_range_chase_pct=0.20)
+    window = _quiet_then_breakout_window(10_010 * 1.10)  # +10%, under a 20% cap
+    signal = strategy.evaluate(window, None)
+    assert signal.action is Action.ENTER_LONG, signal.reason

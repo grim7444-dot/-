@@ -113,6 +113,16 @@ class ORB(Strategy):
         bb_period: int = 20,
         bb_mult: float = 2.0,
         max_bb_extension_pct: float = 0.03,
+        #: 레인지 고점 자체 대비 이미 너무 멀리 뻗은 돌파봉은 진입 보류
+        #: (2026-09-03, 사용자 요청: 자이에스앤디가 10,300원대에서 오르기
+        #: 시작했는데 11,000원에 진입해 10,840원에 손절 -- "말이안되"; 같은
+        #: 날 067290도 레인지 고점 3,260원 대비 +11.7% 뻗은 자리(3,640원)에
+        #: 진입해 손절). max_bb_extension_pct(볼린저밴드 대비)와 별개로,
+        #: 오프닝 레인지 자체를 기준으로 삼는다는 점이 다르다 -- 레인지가
+        #: 조용한 종목에서 볼린저 상단이 레인지 고점과 거의 겹쳐 있으면 두
+        #: 필터가 사실상 같은 걸 재는 셈이지만, 레인지 이후 변동성이 커진
+        #: 종목은 밴드가 이미 넓어져 있어 볼린저 필터만으로는 못 거른다.
+        max_range_chase_pct: float = 0.07,
         #: 고정 손절 폭.
         stop_pct: float = 0.017,
         #: 정상 stop_pct보다 넓은 손절폭 -- 두 경우에 쓴다 (2026-08-28, 사용자
@@ -186,6 +196,7 @@ class ORB(Strategy):
         self.bb_period = bb_period
         self.bb_mult = bb_mult
         self.max_bb_extension_pct = max_bb_extension_pct
+        self.max_range_chase_pct = max_range_chase_pct
         self.stop_pct = stop_pct
         self.early_stop_pct = early_stop_pct
         self.early_stop_until = parse_clock(early_stop_until, "early_stop_until")
@@ -349,6 +360,15 @@ class ORB(Strategy):
 
         if price <= range_high:
             return self._hold(window, f"레인지 고점 {range_high:,.0f} 미돌파 (레인지 저점 {range_low:,.0f})")
+
+        if range_high > 0:
+            range_extension_pct = (price - range_high) / range_high
+            if range_extension_pct > self.max_range_chase_pct:
+                return self._hold(
+                    window,
+                    f"레인지 고점({range_high:,.0f}) 대비 {range_extension_pct:.1%} "
+                    f"과도 추격 (기준 {self.max_range_chase_pct:.0%})",
+                )
 
         # 볼린저밴드 과도확장: 상단 돌파 자체는 정상 돌파 신호라 막지 않는다
         # -- 이 돌파봉 직전까지의(shift(1)) 밴드 대비 이미 너무 멀리 벗어난,

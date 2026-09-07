@@ -872,6 +872,112 @@ def test_fast_exit_check_seconds_zero_disables_the_rechecks(tmp_path, monkeypatc
 
 
 # ---------------------------------------------------------------------------
+# 11c. a held position's hard stop and day-trade force exit survive stale
+# bars (2026-09-04 live incident: 079650's bars went stale and it was never
+# force-exited at the planned 15:15 close, sitting open and unmanaged over
+# the entire following weekend until Monday's stall exit finally caught it)
+# ---------------------------------------------------------------------------
+
+
+class _FakeOrderbookBroker:
+    def __init__(self, best_bid: float | None):
+        self._best_bid = best_bid
+
+    def get_orderbook(self, code):
+        if self._best_bid is None:
+            return None
+        return SimpleNamespace(best_bid=self._best_bid)
+
+
+def _stale_check_engine(tmp_path, *, best_bid, force_exit_at=None):
+    from main import TradingEngine
+    from market.session_rules import SessionRules
+
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.rt = SimpleNamespace(
+        portfolio=Portfolio(**_paths(tmp_path), mode_label="DRY-RUN"),
+        broker=_FakeOrderbookBroker(best_bid),
+        name_of=lambda code: code,
+    )
+    engine._session_rules = {"005930": SessionRules(force_exit_at=force_exit_at)}
+    engine._tg_notifier = SimpleNamespace(alert_stop_hit=lambda *a, **k: None)
+    return engine
+
+
+def test_stale_bars_hard_stop_still_fires_on_a_live_quote(tmp_path, monkeypatch):
+    engine = _stale_check_engine(tmp_path, best_bid=9_700.0)  # below the 2% stop
+    _open_long(engine, "005930", 10_000.0)  # stop_price = 9,800
+    position = engine.rt.portfolio.get("005930")
+
+    calls = []
+    monkeypatch.setattr(engine, "_submit_exit", lambda *a, **k: calls.append((a, k)))
+
+    engine._stale_bars_safety_check(
+        "005930", position, {}, "KOSPI", [], True, "", "005930 삼성전자",
+    )
+
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[2] == 9_700.0  # exits at the live quote, not a stale bar close
+    assert "stop hit" in args[3]
+    assert kwargs["urgent"] is True
+
+
+def test_stale_bars_force_exit_still_fires_past_the_deadline(tmp_path, monkeypatch):
+    from datetime import time as dtime
+
+    # force_exit_at in the past relative to any time of day this test runs at,
+    # so exit_due() is True unconditionally -- no need to mock the clock.
+    engine = _stale_check_engine(tmp_path, best_bid=10_100.0, force_exit_at=dtime(0, 0))
+    _open_long(engine, "005930", 10_000.0)  # live quote is above the stop -- not a stop-out
+    position = engine.rt.portfolio.get("005930")
+
+    calls = []
+    monkeypatch.setattr(engine, "_submit_exit", lambda *a, **k: calls.append((a, k)))
+
+    engine._stale_bars_safety_check(
+        "005930", position, {}, "KOSPI", [], True, "", "005930 삼성전자",
+    )
+
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[2] == 10_100.0
+    assert "day-trade flat-out" in args[3]
+    assert kwargs["urgent"] is True
+
+
+def test_stale_bars_with_no_force_exit_and_no_stop_hit_does_nothing(tmp_path, monkeypatch):
+    engine = _stale_check_engine(tmp_path, best_bid=10_100.0)  # no force_exit_at configured
+    _open_long(engine, "005930", 10_000.0)
+    position = engine.rt.portfolio.get("005930")
+
+    monkeypatch.setattr(
+        engine, "_submit_exit", lambda *a, **k: pytest.fail("should not exit")
+    )
+
+    engine._stale_bars_safety_check(
+        "005930", position, {}, "KOSPI", [], True, "", "005930 삼성전자",
+    )
+
+
+def test_stale_bars_with_no_live_quote_skips_safely(tmp_path, monkeypatch):
+    """Fail-open, same as _live_sell_quote's own contract -- no quote, no guess."""
+    from datetime import time as dtime
+
+    engine = _stale_check_engine(tmp_path, best_bid=None, force_exit_at=dtime(0, 0))
+    _open_long(engine, "005930", 10_000.0)
+    position = engine.rt.portfolio.get("005930")
+
+    monkeypatch.setattr(
+        engine, "_submit_exit", lambda *a, **k: pytest.fail("should not exit")
+    )
+
+    engine._stale_bars_safety_check(
+        "005930", position, {}, "KOSPI", [], True, "", "005930 삼성전자",
+    )
+
+
+# ---------------------------------------------------------------------------
 # 12. observation reads real data and cannot order
 # ---------------------------------------------------------------------------
 

@@ -1505,16 +1505,29 @@ class TradingEngine:
         # past. Skipping loses a cycle; acting on them can sell at a level the
         # stock left behind.
         if not rt.market_data.is_current(bars, barset.timeframe):
-            held = " A POSITION IS OPEN and is not being managed this cycle." if (
-                rt.portfolio.get(code) is not None
-            ) else ""
+            stale_position = rt.portfolio.get(code)
             logger.error(
                 "%s: bars end at %s and are not current [%s] - skipping.%s",
                 label,
                 str(bars.index[-1])[:16],
                 barset.source,
-                held,
+                " A POSITION IS OPEN and is not being managed this cycle." if (
+                    stale_position is not None
+                ) else "",
             )
+            if stale_position is not None:
+                # 2026-09-04 live incident: 079650's bars went stale and the
+                # hard stop and day-trade force exit below -- both of which
+                # only need a current price and the wall clock, not a fresh
+                # bar -- never got their turn because this function returned
+                # before reaching them. The position rode out unmanaged past
+                # its planned 15:15 close and sat open, unprotected, over the
+                # entire following weekend. Neither check can wait for bars
+                # to recover, so both run here against the freshest quote.
+                self._stale_bars_safety_check(
+                    code, stale_position, asset_cfg, market, open_orders,
+                    session_ok, session_reason, label,
+                )
             return
 
         price = float(bars["close"].iloc[-1])
@@ -2001,6 +2014,63 @@ class TradingEngine:
         if orderbook is None or orderbook.best_bid <= 0:
             return None
         return float(orderbook.best_bid)
+
+    def _stale_bars_safety_check(
+        self,
+        code: str,
+        position: Position,
+        asset_cfg: Mapping[str, Any],
+        market,
+        open_orders: Sequence[str],
+        session_ok: bool,
+        session_reason: str,
+        label: str,
+    ) -> None:
+        """The hard stop and day-trade force exit for a held position whose
+        bars have gone stale (see the caller in _process_code).
+
+        Both only need a current price and the wall clock, not a fresh bar,
+        so both run here against the freshest available quote rather than
+        waiting for the bar feed to recover -- which, on 2026-09-04, never
+        happened before the day's 15:15 force-exit deadline, leaving 079650
+        open and unmanaged over the entire following weekend.
+        """
+        rt = self.rt
+        live_price = self._live_sell_quote(code)
+        if live_price is None:
+            logger.error(
+                "%s: no live quote available either - hard stop and force "
+                "exit cannot be checked this cycle", label,
+            )
+            return
+
+        stop = position.effective_stop()
+        if (position.is_long and live_price <= stop) or (
+            position.is_short and live_price >= stop
+        ):
+            logger.warning(
+                "%s: STOP HIT at %s (stop %s) [실시간 호가, 봉 데이터 지연] - closing",
+                label, f"{live_price:,.0f}", f"{stop:,.0f}",
+            )
+            self._tg_notifier.alert_stop_hit(code, rt.name_of(code), live_price, stop)
+            self._submit_exit(
+                code, position, live_price, "stop hit (봉 데이터 지연, 실시간 호가로 확인)",
+                open_orders, asset_cfg, session_ok, session_reason,
+                market=market, urgent=True,
+            )
+            return
+
+        now = datetime.now(KST)
+        rules = self.session_rules(code)
+        due, why = rules.exit_due(now, position.entry_date())
+        if due:
+            logger.warning(
+                "%s: TIME EXIT - %s [봉 데이터 지연, 실시간 호가로 확인]", label, why,
+            )
+            self._submit_exit(
+                code, position, live_price, why, open_orders, asset_cfg,
+                session_ok, session_reason, market=market, urgent=True,
+            )
 
     def _live_protective_breach(
         self, code: str, position: Position, meta: Mapping[str, Any],

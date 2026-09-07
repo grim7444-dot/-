@@ -103,6 +103,11 @@ class Position:
     #: profit-lock trail and is sold the next morning instead. See
     #: _late_exit_reason's neighbor in main.py for the matching cycle logic.
     near_limit_hold: bool = False
+    #: Set once the one allowed pyramid add-on has landed (2026-09-07, user
+    #: request: "불타기") -- see TradingEngine._maybe_pyramid_add. Caps this
+    #: at a single add per position regardless of how much longer it stays
+    #: armed with its trend intact.
+    pyramided: bool = False
 
     @property
     def is_long(self) -> bool:

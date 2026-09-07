@@ -270,7 +270,10 @@ class PullbackBounce(Strategy):
                     window,
                     f"무장(+{self.arm_pct:.0%}), {effective_lock_pct:.0%} 도달 대기 "
                     f"(현재 {gain:+.2%})",
-                    meta={"protective_price": stop_price, "protective_kind": "stop"},
+                    meta={
+                        "protective_price": stop_price, "protective_kind": "stop",
+                        "trend_intact": trend_intact,
+                    },
                 )
             return self._hold(
                 window, f"미무장, 보유 중 ({gain:+.2%}, {self.arm_pct:.0%} 도달 시 무장)",

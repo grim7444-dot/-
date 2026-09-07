@@ -1698,6 +1698,11 @@ class TradingEngine:
                         code, position, live_price, reason, open_orders, asset_cfg,
                         session_ok, session_reason, market=market, urgent=urgent,
                     )
+                elif rt.risk.pyramid_enabled and signal.meta.get("trend_intact") is True:
+                    self._maybe_pyramid_add(
+                        code, position, signal, price, bars, account, session_ok,
+                        session_reason, open_orders, asset_cfg, market, label,
+                    )
             return
 
         if signal.action is Action.EXIT:
@@ -2246,6 +2251,15 @@ class TradingEngine:
             return
 
         capacity = rt.risk.capacity(account.equity)
+        # 불타기 (2026-09-07, 사용자 요청): arm_pct가 있는 전략(ORB/Pullback)은
+        # 초기 진입에 정상 리스크의 일부만 태우고, 무장 + 추세 유지가 확인되면
+        # _maybe_pyramid_add가 나머지를 채운다 -- 대부분 무장까지도 못 가는
+        # 진입에 처음부터 전체 예산을 거는 대신, 실제로 맞은 거래에만 예산을
+        # 더 싣는 방식.
+        pyramid_capable = rt.risk.pyramid_enabled and bool(getattr(strategy, "arm_pct", None))
+        risk_pct_override = (
+            rt.risk.risk_pct * rt.risk.pyramid_initial_fraction if pyramid_capable else None
+        )
         sizing = rt.risk.size(
             code=code,
             equity=account.equity,
@@ -2254,6 +2268,7 @@ class TradingEngine:
             asset_cfg=asset_cfg,
             available_cash=account.cash,
             risk_budget=capacity.remaining_risk,
+            risk_pct_override=risk_pct_override,
         )
         if not sizing.ok:
             # Rule 4: a non-positive stop distance means no order at all.
@@ -2327,6 +2342,122 @@ class TradingEngine:
             )
         else:
             logger.info("%s: order simulated only (dry run) - nothing sent", label)
+
+    def _maybe_pyramid_add(
+        self,
+        code: str,
+        position: Position,
+        signal,
+        price: float,
+        bars,
+        account,
+        session_ok: bool,
+        session_reason: str,
+        open_orders: Sequence[str],
+        asset_cfg: Mapping[str, Any],
+        market: str,
+        label: str,
+    ) -> None:
+        """One additional buy once a position has armed with its trend still
+        intact (2026-09-07, user request: "불타기").
+
+        The initial entry for an arm_pct-capable strategy is sized at only
+        pyramid_initial_fraction of the normal per-trade risk (see
+        _submit_entry) -- this fills in whatever risk budget that left
+        unused, against the strategy's own current protective stop rather
+        than the original ATR distance, since that stop is what actually
+        bounds the add-on shares' risk from here. Capped at one add per
+        position via position.pyramided.
+        """
+        rt = self.rt
+        if position.pyramided:
+            return
+        protective_price = signal.meta.get("protective_price")
+        if protective_price is None:
+            return
+        add_stop_distance = price - protective_price if position.is_long else protective_price - price
+        if add_stop_distance <= 0:
+            return
+        already_risked = position.qty * position.stop_distance
+        add_risk_budget = account.equity * rt.risk.risk_pct - already_risked
+        if add_risk_budget <= 0:
+            return
+        # The portfolio-wide 6% cap (rule 7) applies here too -- open_risk
+        # already includes this position's already_risked, so capping at
+        # what's left keeps the add-on from pushing the book over the cap.
+        capacity = rt.risk.capacity(account.equity)
+        add_risk_budget = min(add_risk_budget, capacity.remaining_risk)
+        if add_risk_budget <= 0:
+            return
+
+        sizing = rt.risk.pyramid_add_size(
+            equity=account.equity,
+            add_risk_budget=add_risk_budget,
+            stop_distance=add_stop_distance,
+            price=price,
+            asset_cfg=asset_cfg,
+            available_cash=account.cash,
+        )
+        if not sizing.ok:
+            logger.info("%s: pyramid add skipped - %s", label, sizing.reason)
+            return
+
+        at_limit, limit_reason = self._price_limit_state(bars, market, price)
+        ctx = TradeContext(
+            code=code,
+            side=position.side,
+            qty=sizing.qty,
+            price=price,
+            tradable=rt.broker.get_stock_info(code).tradable,
+            session_ok=session_ok,
+            session_reason=session_reason,
+            min_qty=float(asset_cfg.get("min_qty", 1)),
+            open_order_codes=open_orders,
+            existing_position=position,
+            available_cash=account.cash,
+            is_pyramid_add=True,
+            at_price_limit=at_limit,
+            price_limit_reason=limit_reason,
+        )
+        checks = rt.risk.pre_trade_checks(ctx)
+        if not checks.passed:
+            logger.info("%s: pyramid add blocked - %s", label, checks.describe())
+            return
+
+        result = rt.broker.submit_order(
+            code=code, side=position.side, qty=sizing.qty, price=None,
+            stop_price=protective_price, note="pyramid add (무장+추세유지)",
+        )
+        if not result.submitted:
+            logger.info("%s: pyramid add simulated only (dry run) - nothing sent", label)
+            return
+
+        old_qty, old_entry = position.qty, position.entry_price
+        total_qty = old_qty + sizing.qty
+        blended_entry = (old_entry * old_qty + price * sizing.qty) / total_qty
+        new_stop_price = (
+            max(position.stop_price, protective_price) if position.is_long
+            else min(position.stop_price, protective_price)
+        )
+        position.qty = total_qty
+        position.entry_price = blended_entry
+        position.stop_price = new_stop_price
+        position.stop_distance = (
+            blended_entry - new_stop_price if position.is_long
+            else new_stop_price - blended_entry
+        )
+        position.pyramided = True
+        rt.portfolio.update_position(position)
+        logger.warning(
+            "%s: PYRAMID ADD +%d @ %s (평단 %s -> %s, 총 %d주, 신규 손절 %s)",
+            label, int(sizing.qty), f"{price:,.0f}", f"{old_entry:,.0f}",
+            f"{blended_entry:,.0f}", int(total_qty), f"{new_stop_price:,.0f}",
+        )
+        self._tg_notifier.send(
+            f"\U0001f525 {rt.name_of(code)}({code}) 불타기 +{int(sizing.qty)}주 @ "
+            f"{price:,.0f} -- 평단 {old_entry:,.0f} -> {blended_entry:,.0f}, "
+            f"총 {int(total_qty)}주"
+        )
 
     # -- loops -------------------------------------------------------------
 

@@ -32,6 +32,15 @@ risk:
   max_symbol_losses_per_day: 2
   # Rule 4: every trade risks exactly this fraction of *current* equity.
   per_trade_pct: 0.01
+  # 불타기 (2026-09-07, 사용자 요청): "상승곡선에서 불타기 후 조금만 먹더라도
+  # 수익을 꾸준하게". arm_pct가 있는 전략(ORB/PullbackBounce)의 초기 진입은
+  # per_trade_pct의 이 비율만 먼저 태우고, 무장(arm_pct 도달) + 추세 유지가
+  # 확인되면 나머지를 한 번 채워 넣는다 (TradingEngine._maybe_pyramid_add).
+  # 무장까지 못 가는 진입이 대부분이라, 처음부터 전체 예산을 거는 대신
+  # 실제로 맞은 거래에 예산을 더 싣는 방식 -- 종목당 총 리스크 한도
+  # (per_trade_pct) 자체는 그대로 유지된다.
+  pyramid_enabled: true
+  pyramid_initial_fraction: 0.5
   # Portfolio-wide caps. 1% x 8 stocks would put 8% at risk at once; these
   # hold total exposure to 6% across at most 6 open positions.
   max_total_risk_pct: 0.06

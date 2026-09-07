@@ -148,6 +148,42 @@ def test_exhausted_risk_budget_skips():
 
 
 # --------------------------------------------------------------------------
+# 불타기 (2026-09-07) - reduced initial sizing + a pyramid add-on
+# --------------------------------------------------------------------------
+
+
+def test_risk_pct_override_shrinks_the_initial_entry(portfolio, config):
+    manager = RiskManager(config, portfolio)
+    full = manager.size(code="009830", equity=EQUITY, atr=500.0, price=20_000.0)
+    halved = manager.size(
+        code="009830", equity=EQUITY, atr=500.0, price=20_000.0,
+        risk_pct_override=manager.risk_pct * 0.5,
+    )
+    assert halved.risk_amount == pytest.approx(full.risk_amount * 0.5)
+    assert halved.qty_exact == pytest.approx(full.qty_exact * 0.5)
+
+
+def test_pyramid_add_size_is_capped_at_the_leftover_risk_budget(portfolio, config):
+    manager = RiskManager(config, portfolio)
+    # Initial leg already risked half the normal 1% budget (EQUITY * 0.005).
+    add_budget = EQUITY * manager.risk_pct - EQUITY * 0.005
+    sizing = manager.pyramid_add_size(
+        equity=EQUITY, add_risk_budget=add_budget, stop_distance=200.0, price=21_000.0,
+    )
+    assert sizing.ok
+    assert sizing.risk_amount == pytest.approx(add_budget)
+    assert sizing.qty * 200.0 == pytest.approx(add_budget, rel=1e-2)
+
+
+def test_pyramid_add_size_skips_when_the_budget_is_exhausted(portfolio, config):
+    manager = RiskManager(config, portfolio)
+    sizing = manager.pyramid_add_size(
+        equity=EQUITY, add_risk_budget=0.0, stop_distance=200.0, price=21_000.0,
+    )
+    assert sizing.skipped is True
+
+
+# --------------------------------------------------------------------------
 # Hard stops on every trade
 # --------------------------------------------------------------------------
 
@@ -451,6 +487,15 @@ def test_duplicate_position_in_the_same_direction_is_rejected():
     result = pre_trade_checks(base_ctx(existing_position=_pos("009830")))
     assert result.passed is False
     assert result.checks["no_duplicate"] is False
+
+
+def test_pyramid_add_is_exempt_from_the_duplicate_position_check():
+    """A deliberate add-on lands on top of the position it's adding to."""
+    result = pre_trade_checks(
+        base_ctx(existing_position=_pos("009830"), is_pyramid_add=True)
+    )
+    assert result.passed is True
+    assert result.checks["no_duplicate"] is True
 
 
 def test_insufficient_cash_is_rejected():

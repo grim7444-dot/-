@@ -413,3 +413,34 @@ def test_a_morning_entry_is_only_armed_not_locked_at_the_same_1_6pct_peak(make_s
     signal = strategy.evaluate(_window(peak), position)
     assert signal.action is Action.HOLD
     assert "무장" in signal.reason
+
+
+# ---------------------------------------------------------------------------
+# 불타기 (2026-09-07, user request): the armed HOLD reports trend_intact in
+# its meta so TradingEngine._maybe_pyramid_add can gate the one-time add-on
+# on it without recomputing the trend EMA itself.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("make_strategy", MIDDAY_STRATEGIES)
+def test_armed_hold_reports_trend_intact_true(make_strategy):
+    strategy = make_strategy()
+    peak = ENTRY * 1.016
+    position = _position_entered_at(ENTRY, peak, MORNING_ENTRY)
+    window = _window_trend_intact(35, flat_level=9_700.0, last_close=peak)
+    signal = strategy.evaluate(window, position)
+    assert signal.action is Action.HOLD
+    assert "무장" in signal.reason
+    assert signal.meta["trend_intact"] is True
+
+
+@pytest.mark.parametrize("make_strategy", MIDDAY_STRATEGIES)
+def test_armed_hold_reports_trend_intact_false_once_the_trend_breaks(make_strategy):
+    strategy = make_strategy()
+    peak = ENTRY * 1.016
+    position = _position_entered_at(ENTRY, peak, MORNING_ENTRY)
+    window = _window_trend_intact(35, flat_level=ENTRY * 1.05, last_close=peak)
+    signal = strategy.evaluate(window, position)
+    assert signal.action is Action.HOLD
+    assert "무장" in signal.reason
+    assert signal.meta["trend_intact"] is False

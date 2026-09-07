@@ -332,6 +332,11 @@ class TradeContext:
     existing_position: Position | None = None
     available_cash: float = 0.0
     is_exit: bool = False
+    #: True for a deliberate, capped pyramid add-on (see RiskManager.
+    #: pyramid_add_size) -- the one case an order is meant to land on top of
+    #: an existing same-side position rather than being rejected as a
+    #: duplicate.
+    is_pyramid_add: bool = False
     #: True when the price is pinned at the daily limit, where fills do not happen.
     at_price_limit: bool = False
     price_limit_reason: str = ""
@@ -373,6 +378,7 @@ def pre_trade_checks(ctx: TradeContext) -> CheckResult:
     duplicate_order = ctx.code in open_codes
     duplicate_position = (
         not ctx.is_exit
+        and not ctx.is_pyramid_add
         and ctx.existing_position is not None
         and ctx.existing_position.side == ctx.side
     )
@@ -433,6 +439,16 @@ class RiskManager:
         self.theme_filter_enabled = bool(
             (risk_cfg.get("theme_filter") or {}).get("enabled", True)
         )
+        # 2026-09-07 (user request): "불타기" -- for strategies with an armed
+        # tier (arm_pct), the initial entry only commits pyramid_initial_fraction
+        # of the normal per-trade risk budget; the rest is added once the
+        # position has actually armed and its trend is still intact (see
+        # TradingEngine._maybe_pyramid_add), instead of committing the full
+        # budget up front to every entry, most of which never even arm.
+        self.pyramid_enabled: bool = bool(risk_cfg.get("pyramid_enabled", False))
+        self.pyramid_initial_fraction: float = float(
+            risk_cfg.get("pyramid_initial_fraction", 0.5)
+        )
 
     # -- sizing ------------------------------------------------------------
 
@@ -445,13 +461,14 @@ class RiskManager:
         asset_cfg: Mapping[str, Any] | None = None,
         available_cash: float | None = None,
         risk_budget: float | None = None,
+        risk_pct_override: float | None = None,
     ) -> SizingResult:
         asset_cfg = asset_cfg or {}
         return position_size(
             equity=equity,
             atr=atr,
             price=price,
-            risk_pct=self.risk_pct,
+            risk_pct=self.risk_pct if risk_pct_override is None else risk_pct_override,
             hard_stop_atr_mult=self.hard_stop_atr_mult,
             fractional=False,  # KRX equities trade in whole shares
             min_qty=float(asset_cfg.get("min_qty", 1)),
@@ -459,6 +476,42 @@ class RiskManager:
             available_cash=available_cash,
             max_position_notional_pct=self.max_position_notional_pct,
             risk_budget=risk_budget,
+        )
+
+    def pyramid_add_size(
+        self,
+        equity: float,
+        add_risk_budget: float,
+        stop_distance: float,
+        price: float,
+        asset_cfg: Mapping[str, Any] | None = None,
+        available_cash: float | None = None,
+    ) -> SizingResult:
+        """Size a pyramid add-on against whatever risk budget the initial
+        entry left unused (see pyramid_initial_fraction), using the
+        strategy's own current protective stop distance rather than ATR --
+        by the time a position has armed, that stop is tighter than the ATR
+        the original entry was sized against, and it is the distance the
+        add-on shares would actually lose if stopped out from here.
+
+        risk_pct=1.0 with add_risk_budget as risk_budget makes
+        position_size cap risk_amount at exactly add_risk_budget -- the same
+        rounding, cash-cap and notional-cap logic as a normal entry, without
+        duplicating it.
+        """
+        asset_cfg = asset_cfg or {}
+        return position_size(
+            equity=equity,
+            atr=stop_distance,
+            price=price,
+            risk_pct=1.0,
+            hard_stop_atr_mult=1.0,
+            fractional=False,
+            min_qty=float(asset_cfg.get("min_qty", 1)),
+            qty_precision=0,
+            available_cash=available_cash,
+            max_position_notional_pct=self.max_position_notional_pct,
+            risk_budget=add_risk_budget,
         )
 
     def max_loss_per_trade(self, equity: float) -> float:

@@ -978,6 +978,216 @@ def test_stale_bars_with_no_live_quote_skips_safely(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 11d. pyramid add-on ("불타기", 2026-09-07): one additional buy once a
+# position has armed with its trend intact, filling in whatever risk budget
+# the (reduced) initial entry left unused.
+# ---------------------------------------------------------------------------
+
+
+class _FakePyramidBroker:
+    def __init__(self, submitted: bool = True, tradable: bool = True):
+        self.submitted = submitted
+        self.tradable = tradable
+        self.orders: list[dict] = []
+
+    def get_stock_info(self, code):
+        return SimpleNamespace(tradable=self.tradable)
+
+    def submit_order(self, **kwargs):
+        from broker import OrderResult
+
+        self.orders.append(kwargs)
+        return OrderResult(
+            code=kwargs["code"], side=kwargs["side"], qty=kwargs["qty"],
+            submitted=self.submitted, order_id="1" if self.submitted else "",
+        )
+
+
+def _pyramid_engine(tmp_path, config, *, submitted: bool = True):
+    from main import TradingEngine
+    from risk.manager import RiskManager
+
+    portfolio = Portfolio(**_paths(tmp_path), mode_label="DRY-RUN")
+    broker = _FakePyramidBroker(submitted=submitted)
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.rt = SimpleNamespace(
+        portfolio=portfolio,
+        risk=RiskManager(config, portfolio),
+        broker=broker,
+        name_of=lambda code: code,
+    )
+    engine._tg_notifier = SimpleNamespace(send=lambda msg: None)
+    return engine, broker
+
+
+def _armed_position(qty: float, entry: float, stop: float) -> "Position":
+    from portfolio import LONG, Position
+
+    return Position(
+        symbol="005930", side=LONG, qty=qty, entry_price=entry,
+        stop_price=stop, stop_distance=entry - stop,
+    )
+
+
+def test_pyramid_add_merges_qty_and_tightens_the_stop(tmp_path, config):
+    import pandas as pd
+
+    engine, broker = _pyramid_engine(tmp_path, config)
+    equity = 10_000_000.0
+    account = SimpleNamespace(equity=equity, cash=100_000_000.0)
+    risk_pct = engine.rt.risk.risk_pct
+
+    old_qty, old_entry, old_stop = 25.0, 10_000.0, 9_800.0
+    engine.rt.portfolio.open_position(_armed_position(old_qty, old_entry, old_stop))
+    position = engine.rt.portfolio.get("005930")
+
+    price, protective_price = 10_200.0, 10_100.0
+    signal = SimpleNamespace(meta={"protective_price": protective_price})
+
+    engine._maybe_pyramid_add(
+        "005930", position, signal, price, pd.DataFrame(), account,
+        True, "", [], {}, "KOSPI", "005930 삼성전자",
+    )
+
+    assert len(broker.orders) == 1
+    add_qty = broker.orders[0]["qty"]
+    # Same sizing call _maybe_pyramid_add itself makes, rather than
+    # re-deriving the (capped) formula by hand here.
+    expected_budget = equity * risk_pct - old_qty * (old_entry - old_stop)
+    expected = engine.rt.risk.pyramid_add_size(
+        equity=equity, add_risk_budget=expected_budget,
+        stop_distance=price - protective_price, price=price,
+        available_cash=account.cash,
+    )
+    assert add_qty == expected.qty
+    assert add_qty > 0
+
+    updated = engine.rt.portfolio.get("005930")
+    assert updated.pyramided is True
+    assert updated.qty == old_qty + add_qty
+    expected_entry = (old_entry * old_qty + price * add_qty) / (old_qty + add_qty)
+    assert updated.entry_price == pytest.approx(expected_entry)
+    assert updated.stop_price == max(old_stop, protective_price)  # never loosens
+
+
+def test_pyramid_add_is_capped_by_the_portfolio_wide_risk_budget(tmp_path, config):
+    """rule 7's 6% total-risk cap applies to the add-on too, not just entries."""
+    import pandas as pd
+
+    tight_config = {
+        **config, "risk": {**config["risk"], "max_total_risk_pct": 0.0055},
+    }
+    engine, broker = _pyramid_engine(tmp_path, tight_config)
+    equity = 10_000_000.0
+    account = SimpleNamespace(equity=equity, cash=100_000_000.0)
+
+    old_qty, old_entry, old_stop = 25.0, 10_000.0, 9_800.0  # already_risked = 5,000
+    engine.rt.portfolio.open_position(_armed_position(old_qty, old_entry, old_stop))
+    position = engine.rt.portfolio.get("005930")
+
+    price, protective_price = 10_200.0, 10_100.0  # stop_distance = 100
+    signal = SimpleNamespace(meta={"protective_price": protective_price})
+
+    engine._maybe_pyramid_add(
+        "005930", position, signal, price, pd.DataFrame(), account,
+        True, "", [], {}, "KOSPI", "005930 삼성전자",
+    )
+
+    # max_risk = 10,000,000 * 0.0055 = 55,000; open_risk (this position) =
+    # 5,000; remaining = 50,000 -- well under the per-trade budget (95,000)
+    # this same setup produced in the unconstrained test above.
+    assert len(broker.orders) == 1
+    add_qty = broker.orders[0]["qty"]
+    assert add_qty == 500  # floor(50,000 / 100)
+
+
+def test_pyramid_add_is_capped_at_one_per_position(tmp_path, config):
+    import pandas as pd
+
+    engine, broker = _pyramid_engine(tmp_path, config)
+    account = SimpleNamespace(equity=10_000_000.0, cash=100_000_000.0)
+    engine.rt.portfolio.open_position(_armed_position(25.0, 10_000.0, 9_800.0))
+    position = engine.rt.portfolio.get("005930")
+    signal = SimpleNamespace(meta={"protective_price": 10_100.0})
+
+    engine._maybe_pyramid_add(
+        "005930", position, signal, 10_200.0, pd.DataFrame(), account,
+        True, "", [], {}, "KOSPI", "005930 삼성전자",
+    )
+    assert len(broker.orders) == 1
+
+    # Same (now-pyramided) position object, second cycle -- must not add again.
+    engine._maybe_pyramid_add(
+        "005930", position, signal, 10_300.0, pd.DataFrame(), account,
+        True, "", [], {}, "KOSPI", "005930 삼성전자",
+    )
+    assert len(broker.orders) == 1
+
+
+def test_pyramid_add_skips_once_the_risk_budget_is_exhausted(tmp_path, config):
+    import pandas as pd
+
+    engine, broker = _pyramid_engine(tmp_path, config)
+    equity = 10_000_000.0
+    account = SimpleNamespace(equity=equity, cash=100_000_000.0)
+    risk_pct = engine.rt.risk.risk_pct
+    # Sized so qty * stop_distance already equals the full per-trade budget.
+    old_stop_distance = 200.0
+    old_qty = (equity * risk_pct) / old_stop_distance
+    engine.rt.portfolio.open_position(
+        _armed_position(old_qty, 10_000.0, 10_000.0 - old_stop_distance)
+    )
+    position = engine.rt.portfolio.get("005930")
+    signal = SimpleNamespace(meta={"protective_price": 10_100.0})
+
+    engine._maybe_pyramid_add(
+        "005930", position, signal, 10_200.0, pd.DataFrame(), account,
+        True, "", [], {}, "KOSPI", "005930 삼성전자",
+    )
+
+    assert broker.orders == []
+    assert engine.rt.portfolio.get("005930").pyramided is False
+
+
+def test_pyramid_add_does_nothing_without_a_protective_price(tmp_path, config):
+    import pandas as pd
+
+    engine, broker = _pyramid_engine(tmp_path, config)
+    account = SimpleNamespace(equity=10_000_000.0, cash=100_000_000.0)
+    engine.rt.portfolio.open_position(_armed_position(25.0, 10_000.0, 9_800.0))
+    position = engine.rt.portfolio.get("005930")
+    signal = SimpleNamespace(meta={})
+
+    engine._maybe_pyramid_add(
+        "005930", position, signal, 10_200.0, pd.DataFrame(), account,
+        True, "", [], {}, "KOSPI", "005930 삼성전자",
+    )
+
+    assert broker.orders == []
+
+
+def test_a_dry_run_order_does_not_mutate_the_position(tmp_path, config):
+    """dry-run: broker sees the attempt, but nothing changes until it fills."""
+    import pandas as pd
+
+    engine, broker = _pyramid_engine(tmp_path, config, submitted=False)
+    account = SimpleNamespace(equity=10_000_000.0, cash=100_000_000.0)
+    engine.rt.portfolio.open_position(_armed_position(25.0, 10_000.0, 9_800.0))
+    position = engine.rt.portfolio.get("005930")
+    signal = SimpleNamespace(meta={"protective_price": 10_100.0})
+
+    engine._maybe_pyramid_add(
+        "005930", position, signal, 10_200.0, pd.DataFrame(), account,
+        True, "", [], {}, "KOSPI", "005930 삼성전자",
+    )
+
+    assert len(broker.orders) == 1
+    updated = engine.rt.portfolio.get("005930")
+    assert updated.pyramided is False
+    assert updated.qty == 25.0
+
+
+# ---------------------------------------------------------------------------
 # 12. observation reads real data and cannot order
 # ---------------------------------------------------------------------------
 

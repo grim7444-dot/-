@@ -773,6 +773,105 @@ def test_a_daily_stock_with_a_position_is_due_every_tick(workdir):
 
 
 # ---------------------------------------------------------------------------
+# 11b. an armed position is rechecked faster than the ordinary due cycle
+# (2026-09-07, user report: a fast move gave back more than peak_trail_pct
+# implied because price moved faster than a full due-codes cycle could react)
+# ---------------------------------------------------------------------------
+
+
+def _fast_check_engine(tmp_path, *, arm_pct: float = 0.012, strategy=None):
+    """A TradingEngine with a real Portfolio but no broker/data dependencies --
+    _hot_held_codes and _sleep_with_fast_exit_checks only touch rt.portfolio
+    and rt.strategies, so the rest of Runtime is unnecessary here.
+    """
+    from main import TradingEngine
+
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.rt = SimpleNamespace(
+        portfolio=Portfolio(**_paths(tmp_path), mode_label="DRY-RUN"),
+        strategies={"005930": strategy or SimpleNamespace(arm_pct=arm_pct)},
+    )
+    return engine
+
+
+def _open_long(engine, code: str, entry: float, highest_price: float | None = None):
+    from portfolio import LONG, Position
+
+    engine.rt.portfolio.open_position(
+        Position(
+            symbol=code,
+            side=LONG,
+            qty=1,
+            entry_price=entry,
+            stop_price=entry * 0.98,
+            stop_distance=entry * 0.02,
+            highest_price=highest_price if highest_price is not None else entry,
+        )
+    )
+
+
+def test_a_position_below_arm_pct_is_not_hot(tmp_path):
+    engine = _fast_check_engine(tmp_path, arm_pct=0.012)
+    entry = 10_000.0
+    _open_long(engine, "005930", entry, highest_price=entry * 1.006)  # +0.6%, under arm_pct
+    assert engine._hot_held_codes() == []
+
+
+def test_a_position_past_arm_pct_is_hot(tmp_path):
+    engine = _fast_check_engine(tmp_path, arm_pct=0.012)
+    entry = 10_000.0
+    _open_long(engine, "005930", entry, highest_price=entry * 1.02)  # +2%, past arm_pct
+    assert engine._hot_held_codes() == ["005930"]
+
+
+def test_a_strategy_without_arm_pct_is_never_hot(tmp_path):
+    """Scalping has no arm_pct/peak-trail tier -- rechecking it faster buys nothing."""
+    engine = _fast_check_engine(tmp_path, strategy=SimpleNamespace())
+    entry = 10_000.0
+    _open_long(engine, "005930", entry, highest_price=entry * 1.10)
+    assert engine._hot_held_codes() == []
+
+
+def test_sleeping_out_a_tick_rechecks_only_hot_codes(tmp_path, monkeypatch):
+    """3s tick, 1s fast-check -> two extra run_cycle calls, hot codes only."""
+    import main
+
+    engine = _fast_check_engine(tmp_path, arm_pct=0.012)
+    entry = 10_000.0
+    _open_long(engine, "005930", entry, highest_price=entry * 1.02)
+
+    engine.tick_seconds = 3
+    engine.fast_exit_check_seconds = 1
+    monkeypatch.setattr(main.time, "sleep", lambda seconds: None)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(engine, "run_cycle", lambda codes: calls.append(list(codes)))
+
+    engine._sleep_with_fast_exit_checks()
+
+    assert calls == [["005930"], ["005930"]]
+
+
+def test_fast_exit_check_seconds_zero_disables_the_rechecks(tmp_path, monkeypatch):
+    import main
+
+    engine = _fast_check_engine(tmp_path, arm_pct=0.012)
+    entry = 10_000.0
+    _open_long(engine, "005930", entry, highest_price=entry * 1.02)
+
+    engine.tick_seconds = 3
+    engine.fast_exit_check_seconds = 0
+    slept: list[float] = []
+    monkeypatch.setattr(main.time, "sleep", lambda seconds: slept.append(seconds))
+    monkeypatch.setattr(
+        engine, "run_cycle", lambda codes: pytest.fail("should not be called")
+    )
+
+    engine._sleep_with_fast_exit_checks()
+
+    assert slept == [3]
+
+
+# ---------------------------------------------------------------------------
 # 12. observation reads real data and cannot order
 # ---------------------------------------------------------------------------
 

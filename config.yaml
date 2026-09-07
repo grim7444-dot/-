@@ -706,6 +706,15 @@ schedule:
     1Day: 86400
   # How long to sleep when KRX is closed before re-checking.
   closed_market_sleep_seconds: 300
+  # 2026-09-07 (user request): 382900/465770 gave back more of a fast move
+  # than peak_trail_pct implied (e.g. +3.10% -> +1.93% in 34s) because the
+  # price moved faster than a single tick's due-codes cycle could react --
+  # with several stocks due each tick, a held position's own turn can come
+  # tick_seconds *plus* however long the rest of that cycle took. Once a
+  # held position clears its strategy's arm_pct (see TradingEngine.
+  # _hot_held_codes), it is rechecked on this cadence instead, interleaved
+  # into the sleep between full cycles. More API calls; set to 0 to disable.
+  fast_exit_check_seconds: 5
 
 backtest:
   default_months: 6

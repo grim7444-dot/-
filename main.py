@@ -723,6 +723,7 @@ class TradingEngine:
         self.intervals: dict[str, int] = dict(schedule.get("intervals") or {})
         self.tick_seconds = int(schedule.get("tick_seconds", 30))
         self.closed_sleep = int(schedule.get("closed_market_sleep_seconds", 300))
+        self.fast_exit_check_seconds = int(schedule.get("fast_exit_check_seconds", 5))
         self._last_ran: dict[str, float] = {}
         # Re-entry cooldown: code -> monotonic time of last exit. Prevents
         # immediately chasing back into the same level a position was just
@@ -1368,6 +1369,29 @@ class TradingEngine:
 
     def mark_ran(self, code: str, now: float) -> None:
         self._last_ran[code] = now
+
+    def _hot_held_codes(self) -> list[str]:
+        """Held positions already past their strategy's arm_pct.
+
+        2026-09-07 (user report): a fast move can give back more profit than
+        peak_trail_pct implies because price moves faster than the ordinary
+        due-codes cycle can react (see fast_exit_check_seconds in
+        config.yaml). Only positions that have actually armed -- i.e. where
+        that trail is live -- need the tighter cadence; a position still
+        below arm_pct isn't being trailed yet, so rechecking it faster buys
+        nothing.
+        """
+        hot: list[str] = []
+        for code, pos in self.rt.portfolio.positions().items():
+            if pos.highest_price is None or pos.entry_price <= 0:
+                continue
+            arm_pct = getattr(self.rt.strategies.get(code), "arm_pct", None)
+            if not arm_pct:
+                continue
+            peak_gain = (pos.highest_price - pos.entry_price) / pos.entry_price
+            if peak_gain >= arm_pct:
+                hot.append(code)
+        return hot
 
     # -- one cycle ---------------------------------------------------------
 
@@ -2240,6 +2264,29 @@ class TradingEngine:
         self.run_cycle()
         self.rt.portfolio.record_day(self.rt.portfolio.state.last_equity)
 
+    def _sleep_with_fast_exit_checks(self) -> None:
+        """Sleep out tick_seconds, but recheck armed positions more often.
+
+        2026-09-07 (user request): rather than waiting out the full tick and
+        whatever the next due-codes cycle takes, an armed position (see
+        _hot_held_codes) gets an extra look every fast_exit_check_seconds
+        during the wait -- e.g. a stop tightened by a trend break is caught
+        within seconds instead of up to a full cycle later.
+        """
+        if self.fast_exit_check_seconds <= 0:
+            time.sleep(self.tick_seconds)
+            return
+        remaining = float(self.tick_seconds)
+        while remaining > 0:
+            step = min(self.fast_exit_check_seconds, remaining)
+            time.sleep(step)
+            remaining -= step
+            if remaining <= 0:
+                break
+            hot = self._hot_held_codes()
+            if hot:
+                self.run_cycle(hot)
+
     def run_forever(self) -> None:
         logger.info(
             "entering continuous loop (tick=%ds); per-stock cadence: %s",
@@ -2309,7 +2356,7 @@ class TradingEngine:
                         "STOPPED state reached - exiting loop. Run `python main.py resume`."
                     )
                     return
-                time.sleep(self.tick_seconds)
+                self._sleep_with_fast_exit_checks()
         except KeyboardInterrupt:
             logger.info("interrupted by user - shutting down cleanly")
             self.rt.portfolio.record_day(self.rt.portfolio.state.last_equity)

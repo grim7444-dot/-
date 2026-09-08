@@ -2104,6 +2104,58 @@ def test_cooldown_does_nothing_with_no_recorded_exit():
 
 
 # ---------------------------------------------------------------------------
+# 18c. re-entry after a profit exit is still blocked if it's chasing a
+# meaningfully higher price (2026-09-08, user request: 원익홀딩스 등이 익절
+# 직후 더 높은 가격에 재진입해 손절하는 패턴이 반복됐다-- 진짜
+# continuation은 판 가격 근처에서 다시 신호가 나야 정상이다)
+# ---------------------------------------------------------------------------
+
+
+def test_profit_reentry_is_blocked_once_it_chases_past_the_threshold():
+    from main import _reentry_cooldown_reason
+
+    reason = _reentry_cooldown_reason(
+        now=1_000.0, last_exit_time=999.0, last_exit_was_profit=True, cooldown_seconds=900.0,
+        last_exit_price=10_000.0, current_price=10_150.0,  # +1.5%, past the 1% default
+        max_reentry_chase_pct=0.01,
+    )
+    assert reason is not None
+    assert "추격매수" in reason
+
+
+def test_profit_reentry_is_allowed_near_the_exit_price():
+    from main import _reentry_cooldown_reason
+
+    reason = _reentry_cooldown_reason(
+        now=1_000.0, last_exit_time=999.0, last_exit_was_profit=True, cooldown_seconds=900.0,
+        last_exit_price=10_000.0, current_price=10_050.0,  # +0.5%, under the 1% default
+        max_reentry_chase_pct=0.01,
+    )
+    assert reason is None
+
+
+def test_profit_reentry_chase_threshold_is_configurable():
+    from main import _reentry_cooldown_reason
+
+    reason = _reentry_cooldown_reason(
+        now=1_000.0, last_exit_time=999.0, last_exit_was_profit=True, cooldown_seconds=900.0,
+        last_exit_price=10_000.0, current_price=10_150.0,  # +1.5%, under a 2% cap
+        max_reentry_chase_pct=0.02,
+    )
+    assert reason is None
+
+
+def test_profit_reentry_without_price_data_is_unaffected():
+    """Backward compatible: no price info -> the old unconditional skip."""
+    from main import _reentry_cooldown_reason
+
+    reason = _reentry_cooldown_reason(
+        now=1_000.0, last_exit_time=999.0, last_exit_was_profit=True, cooldown_seconds=900.0,
+    )
+    assert reason is None
+
+
+# ---------------------------------------------------------------------------
 # 19. orderbook confirmation flipped to ask-side dominance (2026-08-27, user
 #    request): 매도잔량이 매수잔량보다 훨씬 많아야 상승 신호로 본다
 # ---------------------------------------------------------------------------

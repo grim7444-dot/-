@@ -171,6 +171,7 @@ def _exec_engine(
     engine.rt = rt
     engine._last_exit_time = {}
     engine._last_exit_was_profit = {}
+    engine._last_exit_price = {}
     engine._tg_notifier = _FakeExecNotifier()
     engine._use_limit_orders = use_limit_orders
     engine._limit_buffer_ticks = limit_buffer_ticks
@@ -298,6 +299,21 @@ def test_submit_exit_marks_a_stop_loss_exit_as_not_a_profit_exit(portfolio, conf
     )
 
     assert engine._last_exit_was_profit["005930"] is False
+
+
+def test_submit_exit_records_the_exit_price(portfolio, config):
+    """Feeds the profit-reentry chase guard (2026-09-08, see
+    _reentry_cooldown_reason section 18c in test_incident_regressions.py)."""
+    broker = _FakeExecBroker(orderbook=None)
+    engine = _exec_engine(portfolio, config, broker)
+    position = _open_exec_position(portfolio)
+
+    engine._submit_exit(
+        "005930", position, 10_250.0, "고점 +3.00%에서 반락 -- +2.50% 확정 익절", [], {}, True, "",
+        market=KOSPI, urgent=False,
+    )
+
+    assert engine._last_exit_price["005930"] == 10_250.0
 
 
 # ---------------------------------------------------------------------------

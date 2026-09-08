@@ -667,6 +667,9 @@ def _reentry_cooldown_reason(
     last_exit_time: float | None,
     last_exit_was_profit: bool,
     cooldown_seconds: float,
+    last_exit_price: float | None = None,
+    current_price: float | None = None,
+    max_reentry_chase_pct: float = 0.01,
 ) -> str | None:
     """Reason to refuse a fresh entry into a stock just exited, or None to allow one.
 
@@ -676,11 +679,34 @@ def _reentry_cooldown_reason(
     means the strategy's own entry filters (volume, trend, bar strength)
     already vetted this level once today; if they fire again, that is a
     genuine continuation, not "chasing the same resistance", so a profit
-    exit skips the cooldown entirely. A stop-out or a forced/defensive exit
-    still waits out the full cooldown -- re-entering right after being
-    proven wrong is exactly the case this was built to prevent.
+    exit skips the *time* cooldown entirely. A stop-out or a forced/
+    defensive exit still waits out the full cooldown -- re-entering right
+    after being proven wrong is exactly the case this was built to prevent.
+
+    User-reported (2026-09-08): that skip backfired -- 원익홀딩스 and others
+    got sold at a small profit, then bought straight back at a meaningfully
+    higher price minutes later and stopped out. A genuine continuation
+    re-enters near where it was just sold; a signal that only fires well
+    above the exit price is chasing the very rally that was just cashed
+    out of. So a profit exit still skips the time cooldown, but is blocked
+    if the current price has already run more than max_reentry_chase_pct
+    past the exit price -- the entry filters that fired again are
+    themselves evidence of a level worth re-buying, not of how far above it
+    is still safe to pay.
     """
-    if last_exit_time is None or last_exit_was_profit:
+    if last_exit_time is None:
+        return None
+    if last_exit_was_profit:
+        if (
+            last_exit_price is not None and current_price is not None
+            and last_exit_price > 0
+        ):
+            chase_pct = (current_price - last_exit_price) / last_exit_price
+            if chase_pct > max_reentry_chase_pct:
+                return (
+                    f"익절가({last_exit_price:,.0f}) 대비 {chase_pct:.1%} 추격매수 방지 "
+                    f"(기준 {max_reentry_chase_pct:.0%})"
+                )
         return None
     elapsed = now - last_exit_time
     if elapsed >= cooldown_seconds:
@@ -743,9 +769,17 @@ class TradingEngine:
         # the full cooldown -- re-entering right after being proven wrong is
         # exactly the case this was built to prevent.
         self._last_exit_was_profit: dict[str, bool] = {}
+        # code -> the price it was last exited at. 2026-09-08 (user-reported):
+        # the profit-exit cooldown skip above let the bot buy straight back
+        # into a stock at a meaningfully higher price than it was just sold
+        # at, and stop out on the reversal. See _reentry_cooldown_reason.
+        self._last_exit_price: dict[str, float] = {}
         self._entry_cooldown_seconds: float = float(
             (rt.config.get("risk") or {}).get("entry_cooldown_minutes", 15)
         ) * 60
+        self._max_reentry_chase_pct: float = float(
+            (rt.config.get("risk") or {}).get("max_reentry_chase_pct", 0.01)
+        )
         # 같은 종목 당일 연속 손절 회수 제한 (2026-08-31, 사용자 요청) --
         # Portfolio.record_symbol_result가 state.json에 종목별로 누적하고,
         # 하루가 바뀌면 mark_equity()에서 함께 초기화된다.
@@ -1821,6 +1855,7 @@ class TradingEngine:
         if result.submitted:
             rt.portfolio.close_position(code, exit_price=price, exit_reason=reason)
             self._last_exit_time[code] = time.monotonic()
+            self._last_exit_price[code] = price
             is_profit = "익절" in reason
             self._last_exit_was_profit[code] = is_profit
             rt.portfolio.record_symbol_result(code, is_profit)
@@ -2207,6 +2242,9 @@ class TradingEngine:
             self._last_exit_time.get(code),
             self._last_exit_was_profit.get(code, False),
             self._entry_cooldown_seconds,
+            last_exit_price=self._last_exit_price.get(code),
+            current_price=price,
+            max_reentry_chase_pct=self._max_reentry_chase_pct,
         )
         if cooldown_reason is not None:
             logger.info("%s: entry skipped - %s", label, cooldown_reason)

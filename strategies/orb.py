@@ -312,7 +312,21 @@ class ORB(Strategy):
                 bar_dt = pd.Timestamp(window.index[-1])
                 if bar_dt.tzinfo is None:
                     bar_dt = bar_dt.tz_localize(entry_dt.tzinfo)
-                minutes_since_entry = (bar_dt - entry_dt).total_seconds() / 60.0
+                # Bar timestamps mark bar-open, while entry_time is wall-clock
+                # "now" at order submission -- so a fresh entry almost always
+                # has bar_dt slightly BEFORE entry_dt (negative elapsed), even
+                # though the position was in fact just opened. Treat the bar
+                # as "as of" its own close (bar_dt + one bar's span) rather
+                # than its open when measuring elapsed time, which absorbs
+                # that normal same-bar skew. This is still bounded -- an
+                # entry_time that is implausibly far past the window (as in
+                # a stale/mismatched window) stays outside the grace band.
+                bar_span = (
+                    window.index[-1] - window.index[-2]
+                    if len(window.index) >= 2 else pd.Timedelta(0)
+                )
+                as_of = bar_dt + bar_span
+                minutes_since_entry = (as_of - entry_dt).total_seconds() / 60.0
                 if 0 <= minutes_since_entry < self.entry_grace_minutes:
                     effective_stop_pct = max(effective_stop_pct, self.entry_grace_stop_pct)
 

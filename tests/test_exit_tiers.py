@@ -398,6 +398,27 @@ def test_entry_grace_expires_after_entry_grace_minutes(make_strategy):
     assert "손절" in signal.reason
 
 
+@pytest.mark.parametrize("make_strategy", GRACE_STRATEGIES)
+def test_entry_grace_applies_even_when_the_bar_has_not_caught_up_to_entry_time(make_strategy):
+    """Regression (2026-09-10 real-money incident): bars are timestamped at
+    bar-open, while entry_time is wall-clock "now" at order submission -- so
+    a freshly opened/adopted position almost always has entry_time AFTER the
+    latest bar's own timestamp (negative elapsed minutes). A naive `0 <=
+    minutes_since_entry` guard rejected that as "not yet entered" and
+    silently skipped the grace window at the exact moment it exists to
+    protect -- a live position was stopped out at -1.61% within 7 seconds of
+    being adopted, tighter than the intended 3% grace. entry_time here sits
+    30s AFTER the bar's own timestamp to reproduce that."""
+    strategy = make_strategy()
+    entry = 10_000.0
+    drop = (strategy.stop_pct + strategy.entry_grace_stop_pct) / 2
+    window = _window_trend_intact(35, flat_level=entry, last_close=entry * (1 - drop))
+    entry_time = (GRACE_LAST_BAR + pd.Timedelta(seconds=30)).isoformat()
+    position = _position_with_entry_time(entry, entry_time)
+    signal = strategy.evaluate(window, position)
+    assert signal.action is Action.HOLD, signal.reason
+
+
 def test_entry_grace_threshold_is_configurable():
     strategy = ORB(
         symbol="TEST", timeframe="1Min", trend_ema=5,

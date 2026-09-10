@@ -200,6 +200,12 @@ class ORB(Strategy):
         #: 다른 티어가 이미 더 넓다면 그대로 유지 (max로 합성).
         entry_grace_minutes: float = 5.0,
         entry_grace_stop_pct: float = 0.03,
+        #: 그날 코스피/코스닥 지수가 하락 중이면(evaluate의 market_down)
+        #: effective_lock_pct를 이 값까지 낮춰 더 작은 수익도 확정 짓는다
+        #: (2026-09-10, 사용자 요청: "장이 안좋을때는 1%수익이라도 낼줄
+        #: 알아야지"). 평소 lock_pct(1.8%)까지 기다리다 반락에 본전/손실로
+        #: 끝나는 걸 막는 목적 -- 지수가 좋은 날은 그대로 기존 목표 유지.
+        bad_market_lock_pct: float = 0.01,
         max_cost_share: float = 0.35,
         round_trip_cost_pct: float = 0.0038,
         atr_period: int = 14,
@@ -241,6 +247,7 @@ class ORB(Strategy):
         self.big_win_trail_pct = big_win_trail_pct
         self.entry_grace_minutes = entry_grace_minutes
         self.entry_grace_stop_pct = entry_grace_stop_pct
+        self.bad_market_lock_pct = bad_market_lock_pct
         self.max_cost_share = max_cost_share
         self.round_trip_cost_pct = round_trip_cost_pct
 
@@ -259,7 +266,10 @@ class ORB(Strategy):
         per_session = self._SESSION_BARS.get(self.timeframe, 130)
         return max(self.warmup, per_session) + 2 * per_session
 
-    def evaluate(self, window: pd.DataFrame, position: Position | None = None) -> Signal:
+    def evaluate(
+        self, window: pd.DataFrame, position: Position | None = None,
+        market_down: bool = False,
+    ) -> Signal:
         if len(window) < self.warmup:
             return self._hold(window, "warming up")
 
@@ -299,6 +309,8 @@ class ORB(Strategy):
             else self.stop_pct
         )
         effective_lock_pct = self.midday_lock_pct if is_midday else self.lock_pct
+        if market_down:
+            effective_lock_pct = min(effective_lock_pct, self.bad_market_lock_pct)
 
         # --- manage an open position -- identical tiering to PullbackBounce ---
         if position is not None:

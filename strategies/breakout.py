@@ -52,7 +52,10 @@ class Breakout(Strategy):
     def warmup(self) -> int:
         return max(self.period, self.atr_period) + 2
 
-    def evaluate(self, window: pd.DataFrame, position: Position | None = None) -> Signal:
+    def evaluate(
+        self, window: pd.DataFrame, position: Position | None = None,
+        market_down: bool = False,
+    ) -> Signal:
         if len(window) < self.warmup:
             return self._hold(window, "warming up")
 

@@ -1469,9 +1469,24 @@ class TradingEngine:
         capacity = rt.risk.capacity(account.equity)
         logger.info("portfolio capacity: %s", capacity.describe())
 
+        # Fetched once per cycle, not per stock -- a strategy's own market
+        # (KOSPI/KOSDAQ) selects which of these it reads. None (unavailable)
+        # is passed through as "unknown", never coerced to "down", so a
+        # pykrx hiccup can only ever leave the normal profit target in place
+        # (2026-09-10, 사용자 요청: "장이 안좋을때는 1%수익이라도 낼줄 알아야지").
+        index_change: dict[str, float | None] = {}
+        for mkt in (KOSPI, KOSDAQ):
+            try:
+                index_change[mkt] = rt.market_data.get_index_change_pct(mkt)
+            except Exception as exc:
+                logger.warning("index change fetch failed for %s: %s", mkt, exc)
+                index_change[mkt] = None
+
         for code in codes if codes is not None else list(rt.strategies):
             try:
-                self._process_code(code, account, session_ok, session_reason, open_orders)
+                self._process_code(
+                    code, account, session_ok, session_reason, open_orders, index_change,
+                )
             except BrokerError as exc:
                 logger.error("%s: broker error, skipping: %s", code, exc)
             except Exception as exc:  # never let one stock kill the loop
@@ -1484,12 +1499,15 @@ class TradingEngine:
         session_ok: bool,
         session_reason: str,
         open_orders: Sequence[str],
+        index_change: dict[str, float | None] | None = None,
     ) -> None:
         rt = self.rt
         asset_cfg = rt.universe.get(code, {})
         market = rt.market_of(code)
         strategy = rt.strategies[code]
         label = f"{code} {rt.name_of(code)}".strip()
+        chg = (index_change or {}).get(market)
+        market_down = chg is not None and chg < 0
 
         timeframe = str(asset_cfg.get("timeframe", "1Day"))
         # get_bars() grants intraday bars a 2-bar-interval grace period before
@@ -1712,7 +1730,7 @@ class TradingEngine:
         ):
             self._apply_entry_boost(strategy)
 
-        signal = strategy.evaluate(bars, position)
+        signal = strategy.evaluate(bars, position, market_down=market_down)
         logger.info(
             "%s [%s] %s - %s (close=%s)",
             label,

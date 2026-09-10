@@ -158,7 +158,10 @@ class Scalping(Strategy):
         """Smallest ATR, as a fraction of price, worth trading at these costs."""
         return self.round_trip_cost_pct / max(self.max_cost_share, 0.01)
 
-    def evaluate(self, window: pd.DataFrame, position: Position | None = None) -> Signal:
+    def evaluate(
+        self, window: pd.DataFrame, position: Position | None = None,
+        market_down: bool = False,
+    ) -> Signal:
         if len(window) < self.warmup:
             return self._hold(window, "warming up")
 

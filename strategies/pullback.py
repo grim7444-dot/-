@@ -99,6 +99,10 @@ class PullbackBounce(Strategy):
         #: strategies/orb.py의 같은 이름 파라미터 주석 참고.
         entry_grace_minutes: float = 5.0,
         entry_grace_stop_pct: float = 0.03,
+        #: 지수 하락일에 effective_lock_pct를 낮춘다 (2026-09-10, 사용자 요청)
+        #: -- ORB와 동일한 근거, 상세는 strategies/orb.py의 같은 이름 파라미터
+        #: 주석 참고.
+        bad_market_lock_pct: float = 0.01,
         #: 비용 대비 손절폭 상한 (round_trip_cost_pct / stop_pct 가 이 값을 넘으면
         #: 진입 자체를 막는다 -- 손절폭이 너무 좁아 수수료·세금만 내는 상황 방지).
         max_cost_share: float = 0.35,
@@ -162,6 +166,7 @@ class PullbackBounce(Strategy):
         self.big_win_trail_pct = big_win_trail_pct
         self.entry_grace_minutes = entry_grace_minutes
         self.entry_grace_stop_pct = entry_grace_stop_pct
+        self.bad_market_lock_pct = bad_market_lock_pct
         self.max_cost_share = max_cost_share
         self.round_trip_cost_pct = round_trip_cost_pct
         self.use_rsi_filter = use_rsi_filter
@@ -196,7 +201,10 @@ class PullbackBounce(Strategy):
     def window_bars(self) -> int:
         return self.warmup + 30
 
-    def evaluate(self, window: pd.DataFrame, position: Position | None = None) -> Signal:
+    def evaluate(
+        self, window: pd.DataFrame, position: Position | None = None,
+        market_down: bool = False,
+    ) -> Signal:
         if len(window) < self.warmup:
             return self._hold(window, "warming up")
 
@@ -227,6 +235,8 @@ class PullbackBounce(Strategy):
             else self.stop_pct
         )
         effective_lock_pct = self.midday_lock_pct if is_midday else self.lock_pct
+        if market_down:
+            effective_lock_pct = min(effective_lock_pct, self.bad_market_lock_pct)
 
         # --- manage an open position ---------------------------------------
         if position is not None:

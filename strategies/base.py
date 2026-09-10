@@ -151,8 +151,17 @@ class Strategy:
 
     # -- interface ---------------------------------------------------------
 
-    def evaluate(self, window: pd.DataFrame, position: Position | None = None) -> Signal:
-        """Return the signal for the last bar of *window*."""
+    def evaluate(
+        self, window: pd.DataFrame, position: Position | None = None,
+        market_down: bool = False,
+    ) -> Signal:
+        """Return the signal for the last bar of *window*.
+
+        ``market_down`` flags that the stock's own index (KOSPI/KOSDAQ) is
+        down for the day; strategies that support it use it to take smaller
+        profits rather than holding out for a target the day is unlikely to
+        deliver. Strategies without the concept simply ignore it.
+        """
         raise NotImplementedError
 
     def update_trailing_stop(

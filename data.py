@@ -66,6 +66,10 @@ _SYNTHETIC_SIGMA = {
 _KOSPI_LABELS = {KOSPI, "0", "1", "KRX", "STK", "코스피", "유가증권", "유가"}
 _KOSDAQ_LABELS = {KOSDAQ, "10", "KSQ", "코스닥"}
 
+#: pykrx index tickers for the two composite indices, used to soften
+#: profit-taking targets on a down day (2026-09-10 user request).
+INDEX_TICKERS = {KOSPI: "1001", KOSDAQ: "2001"}
+
 
 class IntradayProvider(Protocol):
     """Anything that can serve minute bars - in practice, the broker."""
@@ -537,6 +541,57 @@ class MarketData:
             code,
         )
         return None
+
+    def get_index_change_pct(self, market: str, use_cache: bool = True) -> float | None:
+        """Today's KOSPI/KOSDAQ composite change vs. the previous close.
+
+        None means "unknown" (no network, pykrx missing, no data yet) and
+        must never be read by a caller as "market is down" -- a pykrx hiccup
+        should leave the normal, higher profit target in place, not the
+        softened one.
+        """
+        ticker = INDEX_TICKERS.get(market)
+        if ticker is None:
+            return None
+        cache_code = f"_index_{market}"
+        end = datetime.now(KST)
+        start = end - timedelta(days=10)
+        if use_cache:
+            cached = read_cache(self.cache_dir, cache_code, "1Day")
+            if (
+                cached is not None and len(cached) >= 2
+                and self.is_current(cached, "1Day", end)
+            ):
+                return self._index_change(cached)
+        if not self.allow_network:
+            return None
+        try:
+            stock = _import_pykrx_stock()
+            frame = stock.get_index_ohlcv(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), ticker)
+        except Exception as exc:
+            logger.warning("index fetch failed for %s: %s", market, exc)
+            return None
+        frame = _normalise(
+            frame.rename(
+                columns={
+                    "시가": "open", "고가": "high", "저가": "low",
+                    "종가": "close", "거래량": "volume",
+                }
+            )
+            if frame is not None else None
+        )
+        if frame is None or len(frame) < 2:
+            return None
+        if use_cache:
+            write_cache(self.cache_dir, cache_code, "1Day", frame)
+        return self._index_change(frame)
+
+    @staticmethod
+    def _index_change(frame: pd.DataFrame) -> float | None:
+        prev, last = float(frame["close"].iloc[-2]), float(frame["close"].iloc[-1])
+        if not prev:
+            return None
+        return (last - prev) / prev
 
 
 def _import_pykrx_stock():

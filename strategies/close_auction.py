@@ -85,7 +85,10 @@ class CloseAuction(Strategy):
         obv_bars = self.obv_lookback + 1 if self.use_obv_filter else 0
         return max(self.trend_ema, self.volume_period, self.atr_period, obv_bars) + 2
 
-    def evaluate(self, window: pd.DataFrame, position: Position | None = None) -> Signal:
+    def evaluate(
+        self, window: pd.DataFrame, position: Position | None = None,
+        market_down: bool = False,
+    ) -> Signal:
         if len(window) < self.warmup:
             return self._hold(window, "warming up")
 

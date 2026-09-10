@@ -94,6 +94,11 @@ class PullbackBounce(Strategy):
         #: 촘촘히 지킨다.
         big_win_pct: float = 0.04,
         big_win_trail_pct: float = 0.015,
+        #: 진입 직후 entry_grace_minutes 동안은 손절폭을 최소 entry_grace_stop_pct
+        #: 까지 넓혀준다 (2026-09-10, 사용자 요청) -- ORB와 동일한 근거, 상세는
+        #: strategies/orb.py의 같은 이름 파라미터 주석 참고.
+        entry_grace_minutes: float = 5.0,
+        entry_grace_stop_pct: float = 0.03,
         #: 비용 대비 손절폭 상한 (round_trip_cost_pct / stop_pct 가 이 값을 넘으면
         #: 진입 자체를 막는다 -- 손절폭이 너무 좁아 수수료·세금만 내는 상황 방지).
         max_cost_share: float = 0.35,
@@ -155,6 +160,8 @@ class PullbackBounce(Strategy):
         self.peak_trail_pct = peak_trail_pct
         self.big_win_pct = big_win_pct
         self.big_win_trail_pct = big_win_trail_pct
+        self.entry_grace_minutes = entry_grace_minutes
+        self.entry_grace_stop_pct = entry_grace_stop_pct
         self.max_cost_share = max_cost_share
         self.round_trip_cost_pct = round_trip_cost_pct
         self.use_rsi_filter = use_rsi_filter
@@ -228,6 +235,15 @@ class PullbackBounce(Strategy):
             gain = (price - entry) / entry if entry else 0.0
             peak = position.highest_price or price
             peak_gain = (peak - entry) / entry if entry else 0.0
+
+            entry_dt = position.entry_datetime()
+            if entry_dt is not None:
+                bar_dt = pd.Timestamp(window.index[-1])
+                if bar_dt.tzinfo is None:
+                    bar_dt = bar_dt.tz_localize(entry_dt.tzinfo)
+                minutes_since_entry = (bar_dt - entry_dt).total_seconds() / 60.0
+                if 0 <= minutes_since_entry < self.entry_grace_minutes:
+                    effective_stop_pct = max(effective_stop_pct, self.entry_grace_stop_pct)
 
             stop_price = entry * (1 - effective_stop_pct)
             if price <= stop_price:

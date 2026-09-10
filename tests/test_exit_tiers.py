@@ -319,6 +319,99 @@ def test_an_entry_below_hot_move_pct_never_gets_the_wider_band():
     assert "1.3%" in signal.reason
 
 
+# ---------------------------------------------------------------------------
+# entry_grace_minutes/entry_grace_stop_pct: a wider stop for the first few
+# minutes after entry itself (2026-09-10, user request: "처음매수를 하고
+# 손절타이밍을 조금 길게 가는게 어떨까" -> "5분 3%로 해줘"). Independent of
+# time-of-day (early_stop_pct) or trend (trend_intact) -- both controlled
+# away here via _window_trend_intact so grace is the only variable.
+# ---------------------------------------------------------------------------
+
+
+def _position_with_entry_time(entry_price: float, entry_time: str) -> Position:
+    return Position(
+        symbol="TEST", side=LONG, qty=1,
+        entry_price=entry_price, stop_price=entry_price * 0.98, stop_distance=entry_price * 0.02,
+        highest_price=entry_price, entry_time=entry_time,
+    )
+
+
+#: n_bars=35 on 1-min bars starting 09:00 -> last bar 09:34, past the
+#: default early_stop_until (09:30) -- same convention as the hot-mover and
+#: early_stop_pct tests above.
+GRACE_LAST_BAR = pd.Timestamp("2025-01-02 09:34:00", tz="Asia/Seoul")
+
+#: PullbackBounce's default RSI/MACD/resistance/BB filters need more than 35
+#: bars to warm up -- disabled here for the same reason as
+#: EARLY_STOP_STRATEGIES above (irrelevant to position management anyway).
+GRACE_STRATEGIES = [
+    pytest.param(lambda: ORB(symbol="TEST", timeframe="1Min", trend_ema=5), id="orb"),
+    pytest.param(
+        lambda: PullbackBounce(
+            symbol="TEST", timeframe="1Min", trend_ema=5, swing_lookback=5,
+            use_rsi_filter=False, use_macd_filter=False,
+            use_resistance_filter=False, use_bb_filter=False,
+        ),
+        id="pullback_bounce",
+    ),
+]
+
+
+@pytest.mark.parametrize("make_strategy", GRACE_STRATEGIES)
+def test_entry_grace_protects_a_drop_the_normal_stop_would_have_caught(make_strategy):
+    strategy = make_strategy()
+    entry = 10_000.0
+    # Between the normal stop_pct and the wider grace stop -- would EXIT
+    # without grace, must HOLD with it.
+    drop = (strategy.stop_pct + strategy.entry_grace_stop_pct) / 2
+    window = _window_trend_intact(35, flat_level=entry, last_close=entry * (1 - drop))
+    entry_time = (GRACE_LAST_BAR - pd.Timedelta(minutes=1)).isoformat()
+    position = _position_with_entry_time(entry, entry_time)
+    signal = strategy.evaluate(window, position)
+    assert signal.action is Action.HOLD, signal.reason
+
+
+@pytest.mark.parametrize("make_strategy", GRACE_STRATEGIES)
+def test_entry_grace_stop_itself_still_exits(make_strategy):
+    strategy = make_strategy()
+    entry = 10_000.0
+    window = _window_trend_intact(
+        35, flat_level=entry, last_close=entry * (1 - strategy.entry_grace_stop_pct - 0.005),
+    )
+    entry_time = (GRACE_LAST_BAR - pd.Timedelta(minutes=1)).isoformat()
+    position = _position_with_entry_time(entry, entry_time)
+    signal = strategy.evaluate(window, position)
+    assert signal.action is Action.EXIT
+    assert "손절" in signal.reason
+
+
+@pytest.mark.parametrize("make_strategy", GRACE_STRATEGIES)
+def test_entry_grace_expires_after_entry_grace_minutes(make_strategy):
+    strategy = make_strategy()
+    entry = 10_000.0
+    drop = (strategy.stop_pct + strategy.entry_grace_stop_pct) / 2
+    window = _window_trend_intact(35, flat_level=entry, last_close=entry * (1 - drop))
+    entry_time = (GRACE_LAST_BAR - pd.Timedelta(minutes=strategy.entry_grace_minutes + 1)).isoformat()
+    position = _position_with_entry_time(entry, entry_time)
+    signal = strategy.evaluate(window, position)
+    assert signal.action is Action.EXIT
+    assert "손절" in signal.reason
+
+
+def test_entry_grace_threshold_is_configurable():
+    strategy = ORB(
+        symbol="TEST", timeframe="1Min", trend_ema=5,
+        entry_grace_minutes=10.0, entry_grace_stop_pct=0.05,
+    )
+    entry = 10_000.0
+    # -4%: past the default 3% grace and normal stop, within the custom 5%.
+    window = _window_trend_intact(35, flat_level=entry, last_close=entry * 0.96)
+    entry_time = (GRACE_LAST_BAR - pd.Timedelta(minutes=5)).isoformat()
+    position = _position_with_entry_time(entry, entry_time)
+    signal = strategy.evaluate(window, position)
+    assert signal.action is Action.HOLD, signal.reason
+
+
 MIDDAY_STRATEGIES = [
     pytest.param(
         lambda: ORB(

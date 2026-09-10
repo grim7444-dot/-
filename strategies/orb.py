@@ -191,6 +191,15 @@ class ORB(Strategy):
         #: 촘촘히 지킨다.
         big_win_pct: float = 0.04,
         big_win_trail_pct: float = 0.015,
+        #: 진입 직후 entry_grace_minutes 동안은 손절폭을 최소 entry_grace_stop_pct
+        #: 까지 넓혀준다 (2026-09-10, 사용자 요청: "처음매수를 하고 손절타이밍을
+        #: 조금 길게 가는게 어떨까"). 오후 진입처럼 추세가 아직 애매해 다른
+        #: 티어가 전혀 안 걸리는 경우, 진입 직후부터 곧바로 좁은 stop_pct가
+        #: 걸려 정상적인 초반 흔들림에도 털리는 문제 -- 시간대(early_stop_pct)나
+        #: 추세(trend_intact)가 아니라 "방금 샀다"는 사실 자체로 여유를 준다.
+        #: 다른 티어가 이미 더 넓다면 그대로 유지 (max로 합성).
+        entry_grace_minutes: float = 5.0,
+        entry_grace_stop_pct: float = 0.03,
         max_cost_share: float = 0.35,
         round_trip_cost_pct: float = 0.0038,
         atr_period: int = 14,
@@ -230,6 +239,8 @@ class ORB(Strategy):
         self.peak_trail_pct = peak_trail_pct
         self.big_win_pct = big_win_pct
         self.big_win_trail_pct = big_win_trail_pct
+        self.entry_grace_minutes = entry_grace_minutes
+        self.entry_grace_stop_pct = entry_grace_stop_pct
         self.max_cost_share = max_cost_share
         self.round_trip_cost_pct = round_trip_cost_pct
 
@@ -295,6 +306,15 @@ class ORB(Strategy):
             gain = (price - entry) / entry if entry else 0.0
             peak = position.highest_price or price
             peak_gain = (peak - entry) / entry if entry else 0.0
+
+            entry_dt = position.entry_datetime()
+            if entry_dt is not None:
+                bar_dt = pd.Timestamp(window.index[-1])
+                if bar_dt.tzinfo is None:
+                    bar_dt = bar_dt.tz_localize(entry_dt.tzinfo)
+                minutes_since_entry = (bar_dt - entry_dt).total_seconds() / 60.0
+                if 0 <= minutes_since_entry < self.entry_grace_minutes:
+                    effective_stop_pct = max(effective_stop_pct, self.entry_grace_stop_pct)
 
             stop_price = entry * (1 - effective_stop_pct)
             if price <= stop_price:

@@ -101,8 +101,8 @@ class PullbackBounce(Strategy):
         entry_grace_stop_pct: float = 0.03,
         #: 지수 하락일에 effective_lock_pct를 낮춘다 (2026-09-10, 사용자 요청)
         #: -- ORB와 동일한 근거, 상세는 strategies/orb.py의 같은 이름 파라미터
-        #: 주석 참고.
-        bad_market_lock_pct: float = 0.01,
+        #: 주석 참고. 1%->1.5% 조정 근거도 동일.
+        bad_market_lock_pct: float = 0.015,
         #: 비용 대비 손절폭 상한 (round_trip_cost_pct / stop_pct 가 이 값을 넘으면
         #: 진입 자체를 막는다 -- 손절폭이 너무 좁아 수수료·세금만 내는 상황 방지).
         max_cost_share: float = 0.35,

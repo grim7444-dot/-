@@ -438,8 +438,10 @@ def test_entry_grace_threshold_is_configurable():
 # (KOSPI/KOSDAQ) is down, lock in a smaller profit instead of holding out for
 # the normal lock_pct (2026-09-10, user request: "장이 안좋을때는 1%수익이라도
 # 낼줄 알아야지"). Uses GRACE_STRATEGIES' defaults (lock_pct 1.8%,
-# bad_market_lock_pct 1%) with a peak gain (1.4%) between the two, so the
-# flag alone decides whether this locks in profit or stays merely "armed".
+# bad_market_lock_pct 1.5% -- raised from the initial 1% on 2026-09-11 after
+# a live trade (069540) locked in +0.88% off a +1.38% peak and the user said
+# it sold too fast) with a peak gain (1.6%) between the two, so the flag
+# alone decides whether this locks in profit or stays merely "armed".
 # ---------------------------------------------------------------------------
 
 
@@ -447,7 +449,7 @@ def test_entry_grace_threshold_is_configurable():
 def test_market_down_locks_in_a_profit_the_normal_lock_pct_would_have_missed(make_strategy):
     strategy = make_strategy()
     entry = 10_000.0
-    peak = entry * 1.014  # past bad_market_lock_pct (1%), short of lock_pct (1.8%)
+    peak = entry * 1.016  # past bad_market_lock_pct (1.5%), short of lock_pct (1.8%)
     floor = max(
         entry * (1 + strategy.bad_market_lock_pct), peak * (1.0 - strategy.peak_trail_pct)
     )
@@ -460,11 +462,11 @@ def test_market_down_locks_in_a_profit_the_normal_lock_pct_would_have_missed(mak
 @pytest.mark.parametrize("make_strategy", GRACE_STRATEGIES)
 def test_a_market_up_day_keeps_the_normal_wider_lock_pct_at_the_same_price(make_strategy):
     """Same peak and price as above, but market_down defaults to False --
-    1.4% has not reached the normal 1.8% lock yet, so this must only be
+    1.6% has not reached the normal 1.8% lock yet, so this must only be
     "armed" (protecting the stop, not a profit floor), never an early exit."""
     strategy = make_strategy()
     entry = 10_000.0
-    peak = entry * 1.014
+    peak = entry * 1.016
     floor = max(
         entry * (1 + strategy.bad_market_lock_pct), peak * (1.0 - strategy.peak_trail_pct)
     )

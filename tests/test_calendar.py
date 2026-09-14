@@ -102,11 +102,25 @@ def test_unparseable_holiday_entries_are_ignored():
         (at(2025, 1, 2, 15, 20), SessionPhase.CLOSING_AUCTION),
         (at(2025, 1, 2, 15, 29), SessionPhase.CLOSING_AUCTION),
         (at(2025, 1, 2, 15, 30), SessionPhase.CLOSED),
-        (at(2025, 1, 2, 18, 0), SessionPhase.CLOSED),
+        (at(2025, 1, 2, 15, 59), SessionPhase.CLOSED),
+        (at(2026, 9, 14, 16, 0), SessionPhase.AFTER_MARKET),
+        (at(2026, 9, 14, 18, 0), SessionPhase.AFTER_MARKET),
+        (at(2026, 9, 14, 19, 59), SessionPhase.AFTER_MARKET),
+        (at(2026, 9, 14, 20, 0), SessionPhase.CLOSED),
+        (at(2025, 1, 2, 21, 0), SessionPhase.CLOSED),
     ],
 )
 def test_session_phase_boundaries(calendar, moment, expected):
     assert calendar.phase(moment) is expected
+
+
+def test_after_market_did_not_exist_before_it_launched(calendar):
+    """Regression guard: gating only on time-of-day would misclassify this
+    same clock time on any earlier date as tradable, which is exactly what
+    tests/test_incident_regressions.py's kill-switch test (anchored to a
+    real 2026-08-18 18:15 incident, before the after-market existed) checks
+    does not happen."""
+    assert calendar.phase(at(2026, 8, 18, 18, 15)) is SessionPhase.CLOSED
 
 
 def test_weekend_is_closed_all_day(calendar):
@@ -121,12 +135,33 @@ def test_is_open_is_continuous_trading_only(calendar):
     assert calendar.is_open(at(2025, 1, 2, 11, 0)) is True
     assert calendar.is_open(at(2025, 1, 2, 8, 45)) is False
     assert calendar.is_open(at(2025, 1, 2, 15, 25)) is False
+    # The after-market is a distinct, later phase -- is_open() stays narrow
+    # to continuous trading (it feeds the daily-bar staleness check, which
+    # cares whether today's regular session happened, not the after-market).
+    assert calendar.is_open(at(2025, 1, 2, 18, 0)) is False
 
 
-def test_in_session_includes_the_auctions(calendar):
+def test_in_session_includes_the_auctions_and_after_market(calendar):
     assert calendar.in_session(at(2025, 1, 2, 8, 45)) is True
     assert calendar.in_session(at(2025, 1, 2, 15, 25)) is True
-    assert calendar.in_session(at(2025, 1, 2, 18, 0)) is False
+    assert calendar.in_session(at(2026, 9, 14, 18, 0)) is True
+    assert calendar.in_session(at(2025, 1, 2, 21, 0)) is False
+
+
+# --------------------------------------------------------------------------
+# After-market (NXT/KRX, live from 2026-09-14): 16:00-20:00, continuous
+# real-time trading same as the regular session.
+# --------------------------------------------------------------------------
+
+
+def test_after_market_accepts_orders_like_continuous_trading(calendar):
+    allowed, reason = calendar.can_place_market_order(at(2026, 9, 14, 18, 0))
+    assert allowed is True
+    assert reason == ""
+
+
+def test_after_market_is_tradable(calendar):
+    assert calendar.phase(at(2026, 9, 14, 18, 0)).tradable is True
 
 
 # --------------------------------------------------------------------------
@@ -145,7 +180,8 @@ def test_market_orders_allowed_during_continuous_trading(calendar):
     [
         (at(2025, 1, 2, 8, 45), "opening call auction"),
         (at(2025, 1, 2, 15, 25), "closing call auction"),
-        (at(2025, 1, 2, 18, 0), "market closed"),
+        (at(2025, 1, 2, 15, 45), "market closed"),
+        (at(2025, 1, 2, 21, 0), "market closed"),
         (at(2025, 1, 4, 11, 0), "market closed"),
     ],
 )

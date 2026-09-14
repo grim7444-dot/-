@@ -30,7 +30,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar
 
 import pandas as pd
 
-from market.calendar import KST
+from market.calendar import AFTER_MARKET_END, AFTER_MARKET_START, KST
 from market.rules import KOSPI
 from portfolio import LONG, SHORT
 from settings import Credentials, ModeDecision, mask_text
@@ -963,8 +963,14 @@ class KiwoomBroker(BrokerBase):
                 f"universe ({', '.join(sorted(self.allowed_codes))})"
             )
         api_id_key = "buy" if side == LONG else "sell"
+        # KRX's own matching engine closes at 15:30; the 16:00-20:00
+        # after-market (live from 2026-09-14) runs on NXT instead, so an
+        # order placed in that window must route there or KRX will refuse it
+        # outright (a safe failure -- a rejected order, not a misrouted one).
+        now_time = datetime.now(KST).time()
+        venue = "NXT" if AFTER_MARKET_START <= now_time < AFTER_MARKET_END else "KRX"
         body = {
-            "dmst_stex_tp": "KRX",
+            "dmst_stex_tp": venue,
             "stk_cd": code,
             "ord_qty": str(int(qty)),
             "ord_uv": "" if price is None else str(int(price)),
@@ -1039,10 +1045,12 @@ class KiwoomBroker(BrokerBase):
 
     def cancel_all_orders(self) -> int:
         count = 0
+        now_time = datetime.now(KST).time()
+        venue = "NXT" if AFTER_MARKET_START <= now_time < AFTER_MARKET_END else "KRX"
         for code in self.open_order_codes():
             try:
                 self._call(
-                    "order", "cancel", {"dmst_stex_tp": "KRX", "stk_cd": code}, f"cancel({code})"
+                    "order", "cancel", {"dmst_stex_tp": venue, "stk_cd": code}, f"cancel({code})"
                 )
                 count += 1
             except BrokerError as exc:

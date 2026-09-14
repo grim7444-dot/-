@@ -7,6 +7,7 @@ session has *phases*, and one of them matters for order safety:
     08:30-09:00   opening call auction   (주문 접수, 단일가 결정)
     09:00-15:30   continuous trading     (정규장)
     15:20-15:30   closing call auction   (종가 단일가)
+    16:00-20:00   after-market           (NXT/KRX 애프터마켓, 2026-09-14~)
 
 During a call auction there is no continuous order book, so a market order's
 execution price is not predictable. The bot refuses to send market orders in
@@ -38,6 +39,18 @@ OPENING_AUCTION_START = time(8, 30)
 REGULAR_OPEN = time(9, 0)
 CLOSING_AUCTION_START = time(15, 20)
 REGULAR_CLOSE = time(15, 30)
+#: NXT/KRX joint "애프터마켓" (afternoon/evening extension), live from
+#: 2026-09-14 -- continuous real-time trading, same as the regular session,
+#: for most KOSPI/KOSDAQ names (ETF/ETN excluded, handled at the universe
+#: level, not here). 15:30-16:00 is a separate, pre-existing after-hours
+#: closing-price session this bot does not trade -- left as CLOSED.
+AFTER_MARKET_START = time(16, 0)
+AFTER_MARKET_END = time(20, 0)
+#: The after-market did not exist before this date -- gating on time-of-day
+#: alone would misclassify any earlier 16:00-20:00 moment (a historical
+#: incident replay, a backtest over old data) as tradable when the market was
+#: in fact fully closed then.
+AFTER_MARKET_LAUNCH_DATE = date(2026, 9, 14)
 
 
 class SessionPhase(str, Enum):
@@ -46,11 +59,12 @@ class SessionPhase(str, Enum):
     OPENING_AUCTION = "OPENING_AUCTION"
     CONTINUOUS = "CONTINUOUS"
     CLOSING_AUCTION = "CLOSING_AUCTION"
+    AFTER_MARKET = "AFTER_MARKET"
 
     @property
     def tradable(self) -> bool:
-        """Only continuous trading accepts a market order safely."""
-        return self is SessionPhase.CONTINUOUS
+        """Continuous trading and the NXT/KRX after-market both accept orders."""
+        return self in (SessionPhase.CONTINUOUS, SessionPhase.AFTER_MARKET)
 
 
 @dataclass
@@ -134,6 +148,11 @@ class KrxCalendar:
             return SessionPhase.CLOSING_AUCTION
         if REGULAR_OPEN <= clock < CLOSING_AUCTION_START:
             return SessionPhase.CONTINUOUS
+        if (
+            local.date() >= AFTER_MARKET_LAUNCH_DATE
+            and AFTER_MARKET_START <= clock < AFTER_MARKET_END
+        ):
+            return SessionPhase.AFTER_MARKET
         return SessionPhase.CLOSED
 
     def is_nxt_premarket(self, moment: datetime | None = None) -> bool:
@@ -151,6 +170,8 @@ class KrxCalendar:
         """Market orders are only safe during continuous trading."""
         phase = self.phase(moment)
         if phase is SessionPhase.CONTINUOUS:
+            return True, ""
+        if phase is SessionPhase.AFTER_MARKET:
             return True, ""
         if phase is SessionPhase.NXT_PREMARKET:
             return False, "NXT pre-market (08:00-08:30): bias scan only, no orders"

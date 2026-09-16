@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from strategies.base import Action, Signal, Strategy
+from strategies.bounce import BounceReversal
 from strategies.breakout import Breakout
 from strategies.close_auction import CloseAuction
 from strategies.mean_reversion import MeanReversion
@@ -30,12 +31,14 @@ STRATEGY_CLASSES: dict[str, type[Strategy]] = {
     "close_auction": CloseAuction,
     "pullback_bounce": PullbackBounce,
     "orb": ORB,
+    "bounce": BounceReversal,
 }
 
 __all__ = [
     "Action",
     "Signal",
     "Strategy",
+    "BounceReversal",
     "Breakout",
     "CloseAuction",
     "MeanReversion",

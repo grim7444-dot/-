@@ -393,6 +393,76 @@ def _late_exit_reason(
     return None
 
 
+def _closing_tightened_stop(
+    stop: float,
+    position: Position,
+    rules: SessionRules,
+    now: datetime,
+    risk_cfg: Mapping[str, Any],
+) -> float:
+    """Narrow the protective stop as force_exit_at approaches.
+
+    2026-09-16 (user request, after reviewing trades.csv): 003350 lost
+    -12.25% on 2026-09-14 when a normal-width stop only triggered right at
+    the closing auction, and the exit itself then got blocked until the
+    next morning's open -- by which point the price had drifted further
+    away, turning a ~1.5-2% intended stop into a -12.25% loss. A position
+    still running its full stop width in the closing minutes carries that
+    same risk: a sharp move there leaves no time to catch it early, and any
+    exit blocked by the closing auction (or, now, a stock the after-market
+    refuses) is stuck until the next session. Tightening the stop here does
+    not prevent that outright, but it makes the trigger fire sooner and
+    closer to a normal-sized loss instead of deep into a fast, late move.
+    Never widens the stop -- only the tighter of the two ever applies.
+    """
+    if position is None or rules.hold_overnight or rules.force_exit_at is None:
+        return stop
+    force_exit_dt = datetime.combine(now.date(), rules.force_exit_at, tzinfo=KST)
+    minutes_left = (force_exit_dt - now).total_seconds() / 60.0
+    window = float(risk_cfg.get("close_tighten_minutes", 15))
+    if not (0 <= minutes_left <= window):
+        return stop
+    entry = position.entry_price
+    if not entry:
+        return stop
+    tight_pct = float(risk_cfg.get("close_tighten_stop_pct", 0.01))
+    if position.is_long:
+        return max(stop, entry * (1 - tight_pct))
+    return min(stop, entry * (1 + tight_pct))
+
+
+def _stop_blowout_note(
+    position: Position, fill_price: float, stop: float, reason: str
+) -> str | None:
+    """Flag an exit that landed far past the stop it was supposed to cap.
+
+    2026-09-16 (user request): reviewing 184 trades found the account's
+    entire net drawdown explained by just three outlier losses (-6.02%,
+    -7.64%, -12.25%) against stops meant to cap loss at 1.3-2% -- buried in
+    trades.csv and invisible until asked for by hand. A stop hit that
+    actually filled at more than double its intended distance from entry is
+    exactly that pattern (a gap, thin liquidity, or a blocked exit that only
+    got filled later at a worse price) and is worth a loud, immediate log
+    line rather than being found weeks later.
+    """
+    if "stop" not in reason and "손절" not in reason:
+        return None
+    entry = position.entry_price
+    if not entry or not stop:
+        return None
+    intended = abs(stop - entry)
+    if intended <= 0:
+        return None
+    actual = abs(fill_price - entry)
+    if actual <= intended * 2:
+        return None
+    return (
+        f"stop blowout: filled {actual / entry:.2%} from entry, "
+        f"more than 2x the intended {intended / entry:.2%} stop "
+        f"(entry {entry:,.0f} -> stop {stop:,.0f} -> fill {fill_price:,.0f})"
+    )
+
+
 def _stall_exit_reason(
     position: Position,
     price: float,
@@ -1584,6 +1654,7 @@ class TradingEngine:
 
         price = float(bars["close"].iloc[-1])
         position = rt.portfolio.get(code)
+        now = datetime.now(KST)
 
         # Kiwoom has no bracket order, so the loop enforces the hard stop itself.
         if position is not None:
@@ -1604,7 +1675,11 @@ class TradingEngine:
                 rt.portfolio.update_position(position)
                 logger.info("%s: trailing stop moved to %s", label, f"{new_trail:,.0f}")
 
+            rules = self.session_rules(code)
             stop = position.effective_stop()
+            stop = _closing_tightened_stop(
+                stop, position, rules, now, rt.config.get("risk") or {}
+            )
             # 실시간 호가로 보강 (2026-08-31, 사용자 요청): 봉은 1분마다만
             # 마감되므로, 한 봉 안에서 손절가를 이미 뚫었어도 그 봉이 닫힐
             # 때까지는 못 잡는다. 롱 포지션은 매수 최우선호가(호가창의
@@ -1622,6 +1697,9 @@ class TradingEngine:
                     f"{check_price:,.0f}", f"{stop:,.0f}",
                     " [실시간 호가]" if check_price != price else "",
                 )
+                blowout = _stop_blowout_note(position, check_price, stop, "stop hit")
+                if blowout is not None:
+                    logger.warning("%s: %s", label, blowout)
                 self._tg_notifier.alert_stop_hit(
                     code, rt.name_of(code), check_price, stop
                 )
@@ -1630,8 +1708,6 @@ class TradingEngine:
                     session_ok, session_reason, market=market, urgent=True,
                 )
                 return
-
-        now = datetime.now(KST)
 
         # 상한가 후보 홀드 (2026-08-27, 사용자 요청): 진입가 대비 26% 이상
         # 오르면 당일에는 팔지 않고 다음날 아침에 매도한다. See
@@ -2102,7 +2178,12 @@ class TradingEngine:
             )
             return
 
+        now = datetime.now(KST)
+        rules = self.session_rules(code)
         stop = position.effective_stop()
+        stop = _closing_tightened_stop(
+            stop, position, rules, now, rt.config.get("risk") or {}
+        )
         if (position.is_long and live_price <= stop) or (
             position.is_short and live_price >= stop
         ):
@@ -2110,6 +2191,9 @@ class TradingEngine:
                 "%s: STOP HIT at %s (stop %s) [실시간 호가, 봉 데이터 지연] - closing",
                 label, f"{live_price:,.0f}", f"{stop:,.0f}",
             )
+            blowout = _stop_blowout_note(position, live_price, stop, "stop hit")
+            if blowout is not None:
+                logger.warning("%s: %s", label, blowout)
             self._tg_notifier.alert_stop_hit(code, rt.name_of(code), live_price, stop)
             self._submit_exit(
                 code, position, live_price, "stop hit (봉 데이터 지연, 실시간 호가로 확인)",
@@ -2118,8 +2202,6 @@ class TradingEngine:
             )
             return
 
-        now = datetime.now(KST)
-        rules = self.session_rules(code)
         due, why = rules.exit_due(now, position.entry_date())
         if due:
             logger.warning(

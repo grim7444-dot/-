@@ -898,6 +898,7 @@ def _stale_check_engine(tmp_path, *, best_bid, force_exit_at=None):
         portfolio=Portfolio(**_paths(tmp_path), mode_label="DRY-RUN"),
         broker=_FakeOrderbookBroker(best_bid),
         name_of=lambda code: code,
+        config={},
     )
     engine._session_rules = {"005930": SessionRules(force_exit_at=force_exit_at)}
     engine._tg_notifier = SimpleNamespace(alert_stop_hit=lambda *a, **k: None)
@@ -2665,3 +2666,104 @@ def test_close_auction_default_strength_is_loosened_to_55_percent():
     from strategies.close_auction import CloseAuction
 
     assert CloseAuction(symbol="TEST").close_strength == 0.55
+
+
+# --------------------------------------------------------------------------
+# 27. closing-minutes stop tightening and the stop-blowout log line
+# (2026-09-16, user request after reviewing 184 trades in trades.csv): the
+# account's entire net drawdown traced back to just 3 outlier losses
+# (-6.02%, -7.64%, -12.25%) against stops meant to cap loss at 1.3-2%. The
+# worst of the three (003350, 2026-09-14) only hit its stop right at the
+# closing auction, where the exit got blocked and did not fill until the
+# next morning at a materially worse price.
+# --------------------------------------------------------------------------
+
+
+def _tighten_position(entry_price: float, stop_price: float) -> "Position":
+    from portfolio import LONG, Position
+
+    return Position(
+        symbol="005930", side=LONG, qty=1,
+        entry_price=entry_price, stop_price=stop_price,
+        stop_distance=entry_price - stop_price,
+    )
+
+
+def test_stop_tightens_inside_the_closing_window():
+    from main import _closing_tightened_stop
+
+    # Normal stop is 2% below entry (9,800); the 15-minute closing window
+    # narrows that to 1% (9,900) by default.
+    position = _tighten_position(entry_price=10_000.0, stop_price=9_800.0)
+    now = datetime(2026, 9, 14, 14, 58, tzinfo=KST)  # 12 minutes before 15:10
+    tightened = _closing_tightened_stop(9_800.0, position, _late_exit_rules(), now, {})
+    assert tightened == pytest.approx(9_900.0)
+
+
+def test_stop_is_untouched_outside_the_closing_window():
+    from main import _closing_tightened_stop
+
+    position = _tighten_position(entry_price=10_000.0, stop_price=9_800.0)
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=KST)  # well before the window
+    tightened = _closing_tightened_stop(9_800.0, position, _late_exit_rules(), now, {})
+    assert tightened == 9_800.0
+
+
+def test_tightening_never_loosens_an_already_tighter_stop():
+    """A profit-locked floor above entry must never be pulled back down to
+    the (lower) closing-window level -- only the tighter of the two ever
+    applies."""
+    from main import _closing_tightened_stop
+
+    position = _tighten_position(entry_price=10_000.0, stop_price=10_150.0)  # locked profit
+    now = datetime(2026, 9, 14, 14, 58, tzinfo=KST)
+    tightened = _closing_tightened_stop(10_150.0, position, _late_exit_rules(), now, {})
+    assert tightened == 10_150.0
+
+
+def test_tightening_is_configurable():
+    from main import _closing_tightened_stop
+
+    position = _tighten_position(entry_price=10_000.0, stop_price=9_800.0)
+    now = datetime(2026, 9, 14, 14, 58, tzinfo=KST)
+    tightened = _closing_tightened_stop(
+        9_800.0, position, _late_exit_rules(),
+        now, {"close_tighten_minutes": 30, "close_tighten_stop_pct": 0.005},
+    )
+    assert tightened == pytest.approx(9_950.0)
+
+
+def test_tightening_exempts_close_auction_overnight_holds():
+    from main import _closing_tightened_stop
+
+    position = _tighten_position(entry_price=10_000.0, stop_price=9_800.0)
+    now = datetime(2026, 9, 14, 8, 58, tzinfo=KST)  # 7 minutes before 09:05
+    rules = _late_exit_rules(force_exit_at=time(9, 5), hold_overnight=True)
+    tightened = _closing_tightened_stop(9_800.0, position, rules, now, {})
+    assert tightened == 9_800.0
+
+
+def test_stop_blowout_flags_a_fill_far_past_the_intended_stop():
+    from main import _stop_blowout_note
+
+    # 003350-shaped: intended stop 1.5% away, actual fill 12.25% away.
+    position = _tighten_position(entry_price=16_730.0, stop_price=16_479.0)  # -1.5%
+    note = _stop_blowout_note(position, fill_price=14_680.0, stop=16_479.0, reason="stop hit")
+    assert note is not None
+    assert "blowout" in note
+
+
+def test_stop_blowout_says_nothing_for_a_normal_sized_stop():
+    from main import _stop_blowout_note
+
+    position = _tighten_position(entry_price=10_000.0, stop_price=9_800.0)  # -2%
+    note = _stop_blowout_note(position, fill_price=9_790.0, stop=9_800.0, reason="stop hit")
+    assert note is None
+
+
+def test_stop_blowout_ignores_non_stop_exits():
+    from main import _stop_blowout_note
+
+    position = _tighten_position(entry_price=10_000.0, stop_price=9_800.0)
+    note = _stop_blowout_note(position, fill_price=8_000.0, stop=9_800.0, reason="확정 익절")
+    assert note is None

@@ -14,8 +14,10 @@ setlocal
 cd /d "%~dp0"
 
 set "TARGET=%~dp0start_bot_scheduled.bat"
+set "WORKDIR=%~dp0"
 set "STARTUP_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
 set "SHORTCUT=%STARTUP_DIR%\trading-bot.lnk"
+set "PS1=%TEMP%\install_trading_bot_shortcut.ps1"
 
 if not exist "%TARGET%" (
     echo.
@@ -26,15 +28,22 @@ if not exist "%TARGET%" (
     exit /b 1
 )
 
-powershell -NoProfile -Command ^
-    "$s = (New-Object -ComObject WScript.Shell).CreateShortcut('%SHORTCUT%');" ^
-    "$s.TargetPath = '%TARGET%';" ^
-    "$s.WorkingDirectory = '%~dp0';" ^
-    "$s.WindowStyle = 7;" ^
-    "$s.Description = 'KRX trading bot - auto-start on login';" ^
-    "$s.Save()"
+REM Write a small PowerShell script to a temp file instead of using a
+REM multi-line "powershell -Command ^" block -- the caret line-continuation
+REM is fragile (a stray trailing space after ^ silently breaks it with no
+REM error, which is why the window was closing instantly with nothing shown).
+echo $s = (New-Object -ComObject WScript.Shell).CreateShortcut('%SHORTCUT%') > "%PS1%"
+echo $s.TargetPath = '%TARGET%' >> "%PS1%"
+echo $s.WorkingDirectory = '%WORKDIR%' >> "%PS1%"
+echo $s.WindowStyle = 7 >> "%PS1%"
+echo $s.Description = 'KRX trading bot - auto-start on login' >> "%PS1%"
+echo $s.Save() >> "%PS1%"
 
-if errorlevel 1 (
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%"
+set "PS_RESULT=%errorlevel%"
+del "%PS1%" >nul 2>&1
+
+if not "%PS_RESULT%"=="0" (
     echo.
     echo   Shortcut creation FAILED. Send this window's output over.
     echo.

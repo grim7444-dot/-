@@ -2767,3 +2767,147 @@ def test_stop_blowout_ignores_non_stop_exits():
     position = _tighten_position(entry_price=10_000.0, stop_price=9_800.0)
     note = _stop_blowout_note(position, fill_price=8_000.0, stop=9_800.0, reason="확정 익절")
     assert note is None
+
+
+# ---------------------------------------------------------------------------
+# 28. opening-price 1/3 partial take-profit for an overnight hold (2026-09-16,
+# from a shared 종가매매 lecture, user request): "시초가 수익에 1/3 매도, 9시
+# 5분 이내 전량 매도" -- Portfolio.reduce_position() keeps the rest of the
+# position open and records only the sold qty's own pnl, and
+# main._morning_partial_exit_reason() decides when that should fire.
+# ---------------------------------------------------------------------------
+
+
+def test_reduce_position_keeps_the_remainder_open(tmp_path):
+    from portfolio import LONG, Position
+
+    pf = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    pf.open_position(Position(
+        symbol="460930", side=LONG, qty=30, entry_price=10_000.0,
+        stop_price=9_800.0, stop_distance=200.0, strategy="close_auction",
+    ))
+
+    trade = pf.reduce_position("460930", qty=10, exit_price=10_500.0, exit_reason="시초가 +5.00% -- 1/3 매도")
+
+    assert trade is not None
+    assert trade.qty == 10
+    assert trade.pnl == pytest.approx((10_500.0 - 10_000.0) * 10)
+    remaining = pf.get("460930")
+    assert remaining is not None
+    assert remaining.qty == 20  # position stays open with the rest
+
+
+def test_reduce_position_records_pnl_on_the_sold_qty_only(tmp_path):
+    """The remaining 2/3 is not yet realized -- its pnl must not leak into
+    this trade record just because it shares the same entry price."""
+    from portfolio import LONG, Position
+
+    pf = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    pf.open_position(Position(
+        symbol="460930", side=LONG, qty=9, entry_price=10_000.0,
+        stop_price=9_800.0, stop_distance=200.0, strategy="close_auction",
+    ))
+
+    trade = pf.reduce_position("460930", qty=3, exit_price=10_500.0, exit_reason="partial")
+
+    assert trade.pnl == pytest.approx(1_500.0)  # 500 * 3, not 500 * 9
+
+
+def test_reduce_position_selling_the_whole_qty_closes_it_outright(tmp_path):
+    from portfolio import LONG, Position
+
+    pf = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    pf.open_position(Position(
+        symbol="460930", side=LONG, qty=10, entry_price=10_000.0,
+        stop_price=9_800.0, stop_distance=200.0, strategy="close_auction",
+    ))
+
+    trade = pf.reduce_position("460930", qty=10, exit_price=10_500.0, exit_reason="all of it")
+
+    assert trade is not None
+    assert pf.get("460930") is None  # nothing left open
+
+
+def _partial_position(entry_price: float, qty: float = 9.0) -> "Position":
+    from portfolio import LONG, Position
+
+    return Position(
+        symbol="460930", side=LONG, qty=qty,
+        entry_price=entry_price, stop_price=entry_price * 0.98,
+        stop_distance=entry_price * 0.02, strategy="close_auction",
+        entry_time="2026-09-15 15:20:00+09:00",
+    )
+
+
+def _overnight_rules(force_exit_at=time(9, 5)):
+    from market.session_rules import SessionRules
+
+    return SessionRules(force_exit_at=force_exit_at, hold_overnight=True)
+
+
+def test_morning_partial_exit_fires_at_the_open_when_profitable():
+    from main import _morning_partial_exit_reason
+
+    position = _partial_position(entry_price=10_000.0)
+    now = datetime(2026, 9, 16, 9, 1, tzinfo=KST)  # inside 09:00-09:05
+    reason = _morning_partial_exit_reason(position, 10_300.0, now, _overnight_rules())
+    assert reason is not None
+    assert "1/3" in reason
+
+
+def test_morning_partial_exit_does_nothing_before_the_open():
+    from main import _morning_partial_exit_reason
+
+    position = _partial_position(entry_price=10_000.0)
+    now = datetime(2026, 9, 16, 8, 59, tzinfo=KST)
+    assert _morning_partial_exit_reason(position, 10_300.0, now, _overnight_rules()) is None
+
+
+def test_morning_partial_exit_does_nothing_at_or_after_force_exit_at():
+    """09:05 itself and later belongs to the normal full exit_due path."""
+    from main import _morning_partial_exit_reason
+
+    position = _partial_position(entry_price=10_000.0)
+    now = datetime(2026, 9, 16, 9, 5, tzinfo=KST)
+    assert _morning_partial_exit_reason(position, 10_300.0, now, _overnight_rules()) is None
+
+
+def test_morning_partial_exit_does_nothing_at_a_loss():
+    from main import _morning_partial_exit_reason
+
+    position = _partial_position(entry_price=10_000.0)
+    now = datetime(2026, 9, 16, 9, 1, tzinfo=KST)
+    assert _morning_partial_exit_reason(position, 9_700.0, now, _overnight_rules()) is None
+
+
+def test_morning_partial_exit_does_nothing_once_already_done():
+    from main import _morning_partial_exit_reason
+
+    position = _partial_position(entry_price=10_000.0)
+    position.morning_partial_done = True
+    now = datetime(2026, 9, 16, 9, 1, tzinfo=KST)
+    assert _morning_partial_exit_reason(position, 10_300.0, now, _overnight_rules()) is None
+
+
+def test_morning_partial_exit_does_nothing_the_same_session_as_entry():
+    """entry_date() same as today -- this position was not actually held
+    overnight yet (e.g. adopted or entered later that same clock day in a
+    test), so there is no "morning after" to take a partial at."""
+    from main import _morning_partial_exit_reason
+
+    position = _partial_position(entry_price=10_000.0)
+    position.entry_time = "2026-09-16 09:00:30+09:00"  # today, not yesterday
+    now = datetime(2026, 9, 16, 9, 1, tzinfo=KST)
+    assert _morning_partial_exit_reason(position, 10_300.0, now, _overnight_rules()) is None
+
+
+def test_morning_partial_exit_ignores_a_day_trade_rules_object():
+    """hold_overnight=False (an ORB/pullback day trade) must never fire this
+    -- there is no "morning after" concept for those at all."""
+    from main import _morning_partial_exit_reason
+    from market.session_rules import SessionRules
+
+    position = _partial_position(entry_price=10_000.0)
+    now = datetime(2026, 9, 16, 9, 1, tzinfo=KST)
+    day_trade_rules = SessionRules(force_exit_at=time(15, 15), hold_overnight=False)
+    assert _morning_partial_exit_reason(position, 10_300.0, now, day_trade_rules) is None

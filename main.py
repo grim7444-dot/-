@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import os
 import sys
 import time
@@ -34,7 +35,7 @@ from data import MarketData, months_to_start, timeframe_delta, warmup_start
 from indicators import atr as atr_indicator
 from indicators import last_valid
 from indicators import rolling_mean_volume
-from market.calendar import KST, REGULAR_CLOSE, KrxCalendar
+from market.calendar import KST, REGULAR_CLOSE, REGULAR_OPEN, KrxCalendar
 from market.rules import KOSDAQ, KOSPI, KrxRules
 from market.session_rules import SessionRules, parse_clock
 from portfolio import LONG, SHORT, Portfolio, Position
@@ -461,6 +462,43 @@ def _stop_blowout_note(
         f"more than 2x the intended {intended / entry:.2%} stop "
         f"(entry {entry:,.0f} -> stop {stop:,.0f} -> fill {fill_price:,.0f})"
     )
+
+
+def _morning_partial_exit_reason(
+    position: Position, price: float, now: datetime, rules: SessionRules,
+) -> str | None:
+    """Take a partial profit at the open of an overnight hold's exit
+    session, or None to leave it for the planned force_exit_at.
+
+    2026-09-16 (from a shared 종가매매 lecture, user request): "시초가 수익에
+    1/3 매도, 9시 5분 이내 전량 매도" -- only relevant to hold_overnight
+    positions (close_auction), and only in the window between the regular
+    open and their own force_exit_at. Only fires once per position (see
+    Position.morning_partial_done) and only when the opening price is
+    actually a profit -- there is nothing to "take" otherwise, and the
+    normal force exit still handles a loss at force_exit_at either way.
+    """
+    if (
+        position is None
+        or not rules.hold_overnight
+        or rules.force_exit_at is None
+        or position.morning_partial_done
+    ):
+        return None
+    entry_day = position.entry_date()
+    local = now if now.tzinfo else now.replace(tzinfo=KST)
+    if entry_day is None or local.date() <= entry_day:
+        return None
+    clock = local.time()
+    if not (REGULAR_OPEN <= clock < rules.force_exit_at):
+        return None
+    entry = position.entry_price
+    if not entry:
+        return None
+    gain = (price - entry) / entry * position.direction
+    if gain <= 0:
+        return None
+    return f"시초가 +{gain:.2%} -- 1/3 매도"
 
 
 def _stall_exit_reason(
@@ -1759,6 +1797,29 @@ class TradingEngine:
         # trade is closed before the auction whatever the chart says, and an
         # overnight position is closed the next morning as planned.
         rules = self.session_rules(code)
+
+        # Opening-price partial take-profit for an overnight hold, before
+        # the planned full exit -- see _morning_partial_exit_reason.
+        if position is not None:
+            partial_reason = _morning_partial_exit_reason(position, price, now, rules)
+            if partial_reason is not None:
+                qty_to_sell = math.floor(position.qty / 3)
+                if qty_to_sell >= 1:
+                    logger.warning("%s: MORNING PARTIAL TAKE-PROFIT - %s", label, partial_reason)
+                    filled = self._submit_partial_exit(
+                        code, position, qty_to_sell, price, partial_reason,
+                        open_orders, asset_cfg, session_ok, session_reason, market=market,
+                    )
+                    if filled:
+                        position.morning_partial_done = True
+                        rt.portfolio.update_position(position)
+                        return
+                else:
+                    # Too small to split a third off -- nothing to take here,
+                    # the full force_exit_at exit will handle all of it.
+                    position.morning_partial_done = True
+                    rt.portfolio.update_position(position)
+
         if position is not None:
             due, why = rules.exit_due(now, position.entry_date())
             if due:
@@ -1963,6 +2024,67 @@ class TradingEngine:
             )
         else:
             logger.info("%s: exit simulated only - position left untouched in state", code)
+
+    def _submit_partial_exit(
+        self,
+        code: str,
+        position: Position,
+        qty: float,
+        price: float,
+        reason: str,
+        open_orders: Sequence[str],
+        asset_cfg: Mapping[str, Any],
+        session_ok: bool,
+        session_reason: str,
+        market: str = KOSPI,
+    ) -> bool:
+        """Sell part of an open position (Portfolio.reduce_position), leaving
+        the rest open -- see _morning_partial_exit_reason. Unlike
+        _submit_exit this never records a symbol result or starts the
+        re-entry cooldown: the position is not actually closing, so none of
+        that (meant for "this slot is now free, and might chase") applies.
+        Returns whether the sell actually filled, so the caller only marks
+        the one-shot done-flag on success and can retry next cycle otherwise.
+        """
+        rt = self.rt
+        ctx = TradeContext(
+            code=code,
+            side=SHORT if position.is_long else LONG,
+            qty=qty,
+            price=price,
+            tradable=rt.broker.get_stock_info(code).tradable,
+            session_ok=session_ok,
+            session_reason=session_reason,
+            min_qty=float(asset_cfg.get("min_qty", 1)),
+            open_order_codes=open_orders,
+            existing_position=position,
+            available_cash=0.0,
+            is_exit=True,
+        )
+        checks = rt.risk.pre_trade_checks(ctx)
+        if not checks.passed:
+            logger.warning("%s: partial exit blocked - %s", code, checks.describe())
+            return False
+        limit_price = None
+        if self._use_limit_orders:
+            orderbook = rt.broker.get_orderbook(code)
+            limit_price = _marketable_limit_price(
+                orderbook, ctx.side, market, rt.rules, self._limit_buffer_ticks
+            )
+        try:
+            result = rt.broker.submit_order(
+                code=code, side=ctx.side, qty=qty, price=limit_price,
+                is_exit=True, note=f"partial exit: {reason}",
+            )
+        except BrokerError as exc:
+            logger.error("%s: partial exit failed, will retry: %s", code, exc)
+            return False
+        if not result.submitted:
+            logger.info("%s: partial exit simulated only - position left untouched", code)
+            return False
+        rt.portfolio.reduce_position(code, qty, exit_price=price, exit_reason=reason)
+        logger.info("%s: partial exit filled, qty=%s (%s)", code, qty, reason)
+        return True
 
     def _reconcile_rejected_exit(self, code: str, reason: str, exc: Exception) -> None:
         """A sell was rejected -- confirm whether the broker actually holds

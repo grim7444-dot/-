@@ -108,6 +108,11 @@ class Position:
     #: at a single add per position regardless of how much longer it stays
     #: armed with its trend intact.
     pyramided: bool = False
+    #: Set once the opening-price partial exit has fired for an overnight
+    #: (close_auction) hold (2026-09-16, from a shared 종가매매 lecture: "시초가
+    #: 수익에 1/3 매도"). Caps that at once per position -- see
+    #: TradingEngine._morning_partial_exit_reason.
+    morning_partial_done: bool = False
 
     @property
     def is_long(self) -> bool:
@@ -479,6 +484,60 @@ class Portfolio:
         )
         self.trades.record(trade)
         self.state.positions.pop(symbol, None)
+        self.save()
+        return trade
+
+    def reduce_position(
+        self,
+        symbol: str,
+        qty: float,
+        exit_price: float,
+        fees: float = 0.0,
+        slippage: float = 0.0,
+        exit_reason: str = "",
+        when: datetime | None = None,
+    ) -> TradeRecord | None:
+        """Sell part of an open position, leaving the remainder open.
+
+        2026-09-16 (from a shared 종가매매 lecture): "시초가 수익에 1/3 매도" --
+        an overnight hold takes a partial profit at the open instead of
+        riding the whole position to the planned 09:05 exit. Records a
+        TradeRecord for exactly the qty sold (so trades.csv reflects that
+        fill's own entry/exit/pnl on its own qty, not the full position's),
+        and reduces qty on the position still open in state rather than
+        popping it. *qty* at or above the position's own qty has nothing
+        left to remain open, so it closes the position outright instead.
+        """
+        position = self.get(symbol)
+        if position is None or qty <= 0:
+            return None
+        if qty >= position.qty:
+            return self.close_position(
+                symbol, exit_price, fees=fees, slippage=slippage,
+                exit_reason=exit_reason, when=when,
+            )
+        gross = (exit_price - position.entry_price) * qty * position.direction
+        pnl = gross - fees - slippage
+        cost_basis = abs(position.entry_price * qty)
+        trade = TradeRecord(
+            timestamp=_iso(when or utcnow()),
+            symbol=symbol,
+            side=position.side,
+            entry_price=round(position.entry_price, 6),
+            exit_price=round(exit_price, 6),
+            pnl=round(pnl, 6),
+            qty=qty,
+            strategy=position.strategy,
+            entry_time=position.entry_time,
+            fees=round(fees, 6),
+            slippage=round(slippage, 6),
+            return_pct=round(pnl / cost_basis, 6) if cost_basis else 0.0,
+            exit_reason=exit_reason,
+            mode=self.mode_label,
+        )
+        self.trades.record(trade)
+        position.qty -= qty
+        self.state.positions[symbol] = position.to_dict()
         self.save()
         return trade
 

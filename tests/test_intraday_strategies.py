@@ -286,12 +286,18 @@ def test_close_auction_refuses_a_close_off_the_low():
 
 
 def test_close_auction_refuses_a_strong_close_in_a_downtrend():
+    """A real downtrend is, incidentally, also always far off its own
+    recent high -- the new recent_high filter (2026-09-16) would catch it
+    too, and for this test only the EMA rejection is the point, so it is
+    disabled here to isolate that condition."""
     closes = [200 - i for i in range(40)]
     highs = [c * 1.02 for c in closes]
     lows = [c * 0.98 for c in closes]
     highs[-1] = closes[-1] * 1.001
     volumes = [1000.0] * 39 + [3000.0]
-    signal = CloseAuction(symbol="460930").evaluate(_daily(closes, highs, lows, volumes))
+    signal = CloseAuction(symbol="460930", use_recent_high_filter=False).evaluate(
+        _daily(closes, highs, lows, volumes)
+    )
     assert signal.action is Action.HOLD
     assert "EMA" in signal.reason
 
@@ -374,6 +380,101 @@ def test_close_auction_obv_filter_off_ignores_accumulation_entirely():
     """The exact bars that got refused above must enter once the filter is off."""
     window = _choppy_tail_then_strong_close(down_day_volume=5000.0, up_day_volume=1000.0)
     signal = CloseAuction(symbol="TEST", use_obv_filter=False).evaluate(window)
+    assert signal.action is Action.ENTER_LONG
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-16 (shared 종가매매 lecture, user request): market_down skips entry
+# outright (no stop exists overnight, so a broad down day is not a day to
+# place this bet at all), and two chart-quality filters from the same notes
+# -- proximity to the stock's own recent high, and a short upper wick.
+# ---------------------------------------------------------------------------
+
+
+def test_close_auction_skips_entry_on_a_down_market_day():
+    closes = _rising()
+    highs = [c * 1.02 for c in closes]
+    lows = [c * 0.98 for c in closes]
+    highs[-1] = closes[-1] * 1.001
+    volumes = [1000.0] * (len(closes) - 1) + [3000.0]
+    signal = CloseAuction(symbol="460930").evaluate(
+        _daily(closes, highs, lows, volumes), market_down=True
+    )
+    assert signal.action is Action.HOLD
+    assert "지수 하락" in signal.reason
+
+
+def test_close_auction_refuses_a_close_far_off_its_own_recent_high():
+    """Otherwise a clean passing uptrend case, but one past bar's high was
+    a spike to 300 -- far above anything since. close_strength/EMA/volume
+    only ever look at today's own bar or the close column, so they all
+    still pass; the recent-high filter (which reads the high column, and
+    excludes today's own bar) is the only thing this isolates."""
+    closes = _rising()  # 100..139
+    highs = [c * 1.02 for c in closes]
+    lows = [c * 0.98 for c in closes]
+    highs[-1] = closes[-1] * 1.001  # today's own clean strong close
+    highs[10] = 300.0               # a past spike -- 전고점 far overhead
+    volumes = [1000.0] * (len(closes) - 1) + [3000.0]
+    signal = CloseAuction(symbol="460930", use_upper_wick_filter=False).evaluate(
+        _daily(closes, highs, lows, volumes)
+    )
+    assert signal.action is Action.HOLD
+    assert "전고점" in signal.reason
+
+
+def test_close_auction_recent_high_filter_off_ignores_the_distance():
+    closes = _rising()
+    highs = [c * 1.02 for c in closes]
+    lows = [c * 0.98 for c in closes]
+    highs[-1] = closes[-1] * 1.001
+    highs[10] = 300.0
+    volumes = [1000.0] * (len(closes) - 1) + [3000.0]
+    signal = CloseAuction(
+        symbol="460930", use_upper_wick_filter=False, use_recent_high_filter=False,
+    ).evaluate(_daily(closes, highs, lows, volumes))
+    assert signal.action is Action.ENTER_LONG
+
+
+def test_close_auction_a_genuine_new_high_never_fails_against_itself():
+    """Today's own bar making the highest high in the window (a real
+    breakout) must never be compared against itself and rejected."""
+    closes = _rising()
+    highs = [c * 1.02 for c in closes]
+    lows = [c * 0.98 for c in closes]
+    highs[-1] = closes[-1] * 1.001
+    volumes = [1000.0] * (len(closes) - 1) + [3000.0]
+    signal = CloseAuction(symbol="460930").evaluate(_daily(closes, highs, lows, volumes))
+    assert signal.action is Action.ENTER_LONG
+
+
+def test_close_auction_refuses_a_long_upper_wick():
+    """65% of range (140.5 high, 136.214 low, 139 close) clears
+    close_strength (55%) on its own, but its upper wick (35% of range) is
+    well past max_upper_wick_pct (15%) -- close_strength alone is a looser
+    bound on the same bar (see the module docstring), so this isolates the
+    tighter, separate wick check."""
+    closes = _rising()
+    highs = [c * 1.02 for c in closes]
+    lows = [c * 0.98 for c in closes]
+    highs[-1] = 140.5
+    lows[-1] = 136.214
+    volumes = [1000.0] * (len(closes) - 1) + [3000.0]
+    signal = CloseAuction(symbol="460930").evaluate(_daily(closes, highs, lows, volumes))
+    assert signal.action is Action.HOLD
+    assert "위꼬리" in signal.reason
+
+
+def test_close_auction_upper_wick_filter_off_ignores_the_wick():
+    closes = _rising()
+    highs = [c * 1.02 for c in closes]
+    lows = [c * 0.98 for c in closes]
+    highs[-1] = 140.5
+    lows[-1] = 136.214
+    volumes = [1000.0] * (len(closes) - 1) + [3000.0]
+    signal = CloseAuction(symbol="460930", use_upper_wick_filter=False).evaluate(
+        _daily(closes, highs, lows, volumes)
+    )
     assert signal.action is Action.ENTER_LONG
 
 

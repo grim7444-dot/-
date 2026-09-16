@@ -22,6 +22,25 @@ building over the last few days, not just showing up today. A single strong
 close can be one big buyer on one day; a rising multi-day OBV is harder to
 fake (2026-08-27, user request).
 
+Two more, added 2026-09-16 after studying a 종가매매 lecture (user-shared
+notes): a clean close still overhead in its own recent range, or one dragged
+up by a long wick, is a weaker version of the same trade --
+
+* price must be within ``max_high_distance_pct`` of its own
+  ``recent_high_period``-day high (전고점과 이격 좁은 종목) -- an "overhead
+  supply" stock a long way below its own recent high has that much more
+  resistance left to clear before a gap-up actually holds;
+* the upper wick must not exceed ``max_upper_wick_pct`` of today's range
+  (위꼬리 짧은 깔끔한 양봉) -- a close_strength pass already bounds this
+  loosely, but the lecture's own bar is tighter than that implies, so it is
+  checked on its own.
+
+And market_down (같은 이름의 파라미터, ORB/PullbackBounce와 공유) skips entry
+entirely rather than just softening the exit target here -- the lecture's
+own second rule is "시장이 좋지 않으면 하지마!! 매일 매매 X": an overnight
+hold has no stop between the close and the next open, so a broad down day is
+exactly the day that bet should not be placed at all.
+
 **The overnight gap is not covered by any stop.** Kiwoom holds no resting stop
 order, so the hard stop exists only while the bot process is running -- and
 between the close and the next open, it is not. A stock that gaps through the
@@ -58,6 +77,15 @@ class CloseAuction(Strategy):
         #: accumulation confirmation, on top of today's own strong close.
         use_obv_filter: bool = True,
         obv_lookback: int = 10,
+        #: 전고점과 이격 좁은 종목만 (2026-09-16). Price must sit within this
+        #: fraction of its own recent_high_period-day high.
+        use_recent_high_filter: bool = True,
+        recent_high_period: int = 60,
+        max_high_distance_pct: float = 0.15,
+        #: 위꼬리 짧은 깔끔한 양봉만 (2026-09-16). Upper wick capped at this
+        #: fraction of today's own range.
+        use_upper_wick_filter: bool = True,
+        max_upper_wick_pct: float = 0.15,
         atr_trail_mult: float = 2.0,
         atr_period: int = 14,
         hard_stop_atr_mult: float = 1.0,
@@ -77,11 +105,23 @@ class CloseAuction(Strategy):
         self.close_strength = close_strength
         self.use_obv_filter = use_obv_filter
         self.obv_lookback = obv_lookback
+        self.use_recent_high_filter = use_recent_high_filter
+        self.recent_high_period = recent_high_period
+        self.max_high_distance_pct = max_high_distance_pct
+        self.use_upper_wick_filter = use_upper_wick_filter
+        self.max_upper_wick_pct = max_upper_wick_pct
         self.atr_trail_mult = atr_trail_mult
         self.allow_short = allow_short
 
     @property
     def warmup(self) -> int:
+        # recent_high_period is deliberately not part of this: the filter
+        # reads window["high"].tail(recent_high_period), which degrades
+        # gracefully to "however many bars exist" rather than needing that
+        # many -- a newly-listed stock with a short history is exactly the
+        # case warmup exists to stay small for (see the warmup test's own
+        # docstring), and the recent high over its whole short life is still
+        # a meaningful number, not a missing one.
         obv_bars = self.obv_lookback + 1 if self.use_obv_filter else 0
         return max(self.trend_ema, self.volume_period, self.atr_period, obv_bars) + 2
 
@@ -104,6 +144,9 @@ class CloseAuction(Strategy):
         if position is not None:
             return self._hold(window, "holding until the planned morning exit")
 
+        if market_down:
+            return self._hold(window, "지수 하락일 -- 오버나잇 종가매매 진입 보류")
+
         if atr_value <= 0:
             return self._hold(window, "ATR unavailable")
 
@@ -117,6 +160,30 @@ class CloseAuction(Strategy):
                 f"closing at {strength:.0%} of today's range, "
                 f"needs {self.close_strength:.0%}",
             )
+
+        if self.use_upper_wick_filter:
+            upper_wick_pct = (high - price) / day_range
+            if upper_wick_pct > self.max_upper_wick_pct:
+                return self._hold(
+                    window,
+                    f"위꼬리 {upper_wick_pct:.0%} -- 기준 {self.max_upper_wick_pct:.0%} 초과",
+                )
+
+        if self.use_recent_high_filter:
+            # Excludes today's own bar -- 전고점 means the high set *before*
+            # today, so a genuine breakout to a new high (today's bar being
+            # the highest one in the window) must never be measured against
+            # itself and always pass.
+            prior_highs = window["high"].iloc[:-1].tail(self.recent_high_period)
+            recent_high = float(prior_highs.max()) if len(prior_highs) else 0.0
+            if recent_high > 0:
+                high_distance_pct = (recent_high - price) / recent_high
+                if high_distance_pct > self.max_high_distance_pct:
+                    return self._hold(
+                        window,
+                        f"{self.recent_high_period}일 전고점({recent_high:,.0f}) 대비 "
+                        f"-{high_distance_pct:.1%} -- 기준 {self.max_high_distance_pct:.0%} 초과",
+                    )
 
         trend = ema(window["close"], self.trend_ema).iloc[-1]
         if pd.isna(trend):

@@ -220,19 +220,26 @@ def _cover_open_positions(
                 "re-enabling so exits keep firing", code,
             )
         else:
-            from screener import _PULLBACK_CFG_TEMPLATE, _SCALPING_CFG_TEMPLATE, _ticker_name
-            # Match the template to what the position was actually opened
-            # with -- pullback_bounce and ORB take different param names
-            # (swing_lookback/pullback_bars vs range_minutes/volume_mult),
-            # so defaulting to the ORB template regardless of position.strategy
-            # would hand a recovered pullback_bounce position ORB's params,
-            # silently falling back to PullbackBounce's class defaults for
-            # every field ORB doesn't share -- including its tuned stop/lock.
-            template = (
-                _PULLBACK_CFG_TEMPLATE
-                if position.strategy == _PULLBACK_CFG_TEMPLATE["strategy"]
-                else _SCALPING_CFG_TEMPLATE
+            from screener import (
+                _BOUNCE_CFG_TEMPLATE,
+                _PULLBACK_CFG_TEMPLATE,
+                _SCALPING_CFG_TEMPLATE,
+                _ticker_name,
             )
+            # Match the template to what the position was actually opened
+            # with -- pullback_bounce/bounce/ORB each take different param
+            # names (swing_lookback/pullback_bars vs range_minutes/
+            # volume_mult vs crash_pct/bounce_confirm_pct), so defaulting to
+            # the ORB template regardless of position.strategy would hand a
+            # recovered position the wrong strategy's params entirely,
+            # silently falling back to that class's own defaults for every
+            # field it doesn't share -- including its tuned stop/lock.
+            if position.strategy == _PULLBACK_CFG_TEMPLATE["strategy"]:
+                template = _PULLBACK_CFG_TEMPLATE
+            elif position.strategy == _BOUNCE_CFG_TEMPLATE["strategy"]:
+                template = _BOUNCE_CFG_TEMPLATE
+            else:
+                template = _SCALPING_CFG_TEMPLATE
             cfg = {
                 **template,
                 "name": _ticker_name(code),
@@ -274,6 +281,12 @@ def build_runtime(
             from screener import DailyScreener
             daily_screener = DailyScreener(config)
             found = daily_screener.scan()
+            # 급락 반등(bounce) 후보는 완전히 별도 스크리너다 -- scan()의
+            # require_uptrend와 정반대 조건이라 found가 비어도(오늘 모멘텀
+            # 종목이 없어도) 무관하게, 그리고 found가 있어도 항상 같이
+            # 돌린다. bounce_screener.enabled: false가 기본이라 명시적으로
+            # 켜기 전까진 그냥 빈 리스트를 반환한다.
+            bounce_found = daily_screener.scan_bounce_candidates()
             if found:
                 universe = dict(config.get("universe") or {})
                 for ticker, asset_cfg in found:
@@ -307,6 +320,15 @@ def build_runtime(
                         f"Falling back to {len(fallback)} static stock(s): "
                         f"{', '.join(fallback)}"
                     )
+            if bounce_found:
+                universe = dict(config.get("universe") or {})
+                for ticker, asset_cfg in bounce_found:
+                    universe[ticker] = asset_cfg
+                config = {**config, "universe": universe}
+                print(
+                    f"  Bounce screener added {len(bounce_found)} stock(s): "
+                    f"{', '.join(t for t, _ in bounce_found)}"
+                )
         except Exception as exc:
             logger.warning("screener failed, using static universe: %s", exc)
 
@@ -1284,7 +1306,8 @@ class TradingEngine:
         """
         rt = self.rt
         scr_cfg = rt.config.get("screener") or {}
-        if not scr_cfg.get("enabled"):
+        bounce_scr_cfg = rt.config.get("bounce_screener") or {}
+        if not scr_cfg.get("enabled") and not bounce_scr_cfg.get("enabled"):
             return
 
         logger.info("universe refresh: re-running screener")
@@ -1292,9 +1315,12 @@ class TradingEngine:
             from screener import DailyScreener
             from strategies import build_strategies as _build
 
-            # Pass the current config so existing universe is excluded.
+            # Pass the current config so existing universe is excluded. Both
+            # calls self-gate on their own enabled flag (scan()/
+            # scan_bounce_candidates() each return [] when off), so this
+            # always merges whichever of the two is actually turned on.
             daily_screener = DailyScreener(rt.config)
-            found = daily_screener.scan()
+            found = daily_screener.scan() + daily_screener.scan_bounce_candidates()
         except Exception as exc:
             logger.warning("universe refresh: screener failed: %s", exc)
             return

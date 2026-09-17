@@ -1458,6 +1458,9 @@ def test_refresh_dynamic_universe_uses_realtime_candidates_when_pykrx_scan_is_em
         def scan(self):
             return []
 
+        def scan_bounce_candidates(self):
+            return []
+
     monkeypatch.setattr(screener_module, "DailyScreener", _EmptyScanScreener)
 
     broker = _FakeRealtimeBroker(
@@ -1514,6 +1517,9 @@ def test_refresh_dynamic_universe_prefers_a_working_pykrx_scan_over_realtime(mon
 
         def scan(self):
             return [("005930", pykrx_pick_cfg)]
+
+        def scan_bounce_candidates(self):
+            return []
 
     monkeypatch.setattr(screener_module, "DailyScreener", _WorkingScreener)
 

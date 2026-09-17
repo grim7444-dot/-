@@ -142,6 +142,29 @@ _SCALPING_CFG_TEMPLATE: dict[str, Any] = {
     },
 }
 
+_BOUNCE_CFG_TEMPLATE: dict[str, Any] = {
+    "enabled": True,
+    # 반등매매(bounce) -- 이 템플릿을 쓰는 종목은 scan_bounce_candidates()가
+    # 매일 "오늘 crash_pct 이상 급락한 유동성 있는 종목"으로 찾아 채운다.
+    # 실제 진입 여부(반등 확인/거래량 스파이크/이평선/봉강도)는 등록 시점이
+    # 아니라 BounceReversal.evaluate()가 매 봉마다 판단하므로, 여기서는
+    # 후보 등록만 한다 -- 하루 종일 반등 확인이 안 나오면 그냥 무거래.
+    "strategy": "bounce",
+    "timeframe": "5Min",
+    "min_qty": 1,
+    "entry_window": ["09:05", "15:00"],
+    "force_exit_at": "15:15",
+    "params": {
+        "crash_pct": 0.07,
+        "bounce_confirm_pct": 0.015,
+        "volume_mult": 1.5,
+        "support_ema": 5,
+        "min_bar_strength": 0.5,
+        "stop_pct": 0.02,
+        "take_profit_pct": 0.04,
+    },
+}
+
 _PULLBACK_CFG_TEMPLATE: dict[str, Any] = {
     "enabled": True,
     # 눌림목 반등 -- 돌파를 기다리는 ORB와 달리 상승 추세 중 단기 눌림에서
@@ -251,6 +274,23 @@ def _fetch_history(ticker: str, fromdate: str, todate: str) -> "pd.DataFrame | N
         return None
 
 
+def _day_change_pct(ticker: str, fromdate: str, today: str) -> float | None:
+    """Today's close vs. the previous session's close, as a fraction (down = negative).
+
+    Used only as a fallback when the daily snapshot's own 등락률 column is
+    missing (see scan_bounce_candidates) -- one 2-day history fetch per
+    candidate, same call pattern as scan()'s own ATR check.
+    """
+    hist = _fetch_history(ticker, fromdate, today)
+    if hist is None or len(hist) < 2:
+        return None
+    prev_close = float(hist["close"].iloc[-2])
+    last_close = float(hist["close"].iloc[-1])
+    if prev_close <= 0:
+        return None
+    return (last_close - prev_close) / prev_close
+
+
 def _ticker_name(ticker: str) -> str:
     try:
         from pykrx import stock as krx
@@ -264,6 +304,7 @@ class DailyScreener:
     """Picks today's hot scalping candidates from KOSDAQ and/or KOSPI."""
 
     def __init__(self, config: dict[str, Any]) -> None:
+        self._config = config
         scr = config.get("screener") or {}
         self.enabled: bool = bool(scr.get("enabled", False))
         self.n_stocks: int = int(scr.get("n_stocks", 5))
@@ -400,6 +441,98 @@ class DailyScreener:
             logger.info(
                 "screener: %s %s [%s]  ATR %.1f%%  TV KRW%.0fM",
                 ticker, name, template["strategy"], atr_pct * 100, tv / 1_000_000,
+            )
+            results.append((ticker, cfg))
+
+        return results
+
+    def scan_bounce_candidates(self) -> list[tuple[str, dict[str, Any]]]:
+        """Find today's sharp-crash stocks for the bounce (반등매매) strategy.
+
+        The mirror image of scan(): scan() explicitly requires an uptrend and
+        throws away decliners (require_uptrend), which is exactly what
+        BounceReversal needs to find. This runs as a separate pass over the
+        same kind of daily snapshot, controlled by its own bounce_screener:
+        config block so tuning one screener never touches the other -- and
+        stays disabled by default (bounce_screener.enabled: false) since it
+        is a much newer, less-proven strategy than the uptrend one.
+        """
+        scr = self._config.get("bounce_screener") or {}
+        if not bool(scr.get("enabled", False)):
+            return []
+
+        n_stocks = int(scr.get("n_stocks", 3))
+        crash_pct = float(scr.get("crash_pct", 0.07))
+        min_price = int(scr.get("min_price", self.min_price))
+        max_price = int(scr.get("max_price", self.max_price))
+        min_trading_value = float(scr.get("min_trading_value_m", 300)) * 1_000_000
+        markets = list(scr.get("markets") or self.markets)
+
+        today = date.today().isoformat()
+        fromdate = (date.today() - timedelta(days=10)).isoformat()
+
+        # (ticker, name, market, drop_pct [negative], trading_value)
+        candidates: list[tuple[str, str, str, float, float]] = []
+
+        for market in markets:
+            snap = _get_market_snapshot(today, market)
+            if snap is None:
+                logger.warning("bounce screener: could not fetch %s snapshot for %s", market, today)
+                continue
+
+            col_map = {
+                "시가": "open", "고가": "high", "저가": "low", "종가": "close",
+                "거래량": "volume", "거래대금": "trading_value", "등락률": "change_pct",
+            }
+            snap = snap.rename(columns=col_map)
+            if "close" not in snap.columns:
+                continue
+
+            if "trading_value" in snap.columns:
+                snap = snap[snap["trading_value"] >= min_trading_value]
+            snap = snap[snap["close"] >= min_price]
+            if max_price > 0:
+                snap = snap[snap["close"] <= max_price]
+            snap = snap[~snap.index.astype(str).isin(self._existing)]
+
+            if "change_pct" in snap.columns:
+                crashed = snap[snap["change_pct"] <= -crash_pct * 100]
+                for ticker in crashed.index.astype(str):
+                    row = crashed.loc[ticker]
+                    tv = float(row["trading_value"]) if "trading_value" in crashed.columns else 0.0
+                    candidates.append((
+                        ticker, _ticker_name(ticker), market,
+                        float(row["change_pct"]) / 100.0, tv,
+                    ))
+            else:
+                # 등락률 column missing (pykrx schema change) -- fall back to a
+                # 2-day history fetch per candidate, same as scan()'s own ATR
+                # check, capped to the most liquid 60 so a schema change never
+                # turns this into an unbounded per-ticker network scan.
+                if "trading_value" in snap.columns:
+                    snap = snap.sort_values("trading_value", ascending=False)
+                for ticker in snap.head(60).index.astype(str):
+                    drop = _day_change_pct(ticker, fromdate, today)
+                    if drop is None or drop > -crash_pct:
+                        continue
+                    tv = float(snap.loc[ticker, "trading_value"]) if "trading_value" in snap.columns else 0.0
+                    candidates.append((ticker, _ticker_name(ticker), market, drop, tv))
+
+        candidates.sort(key=lambda x: x[3])  # most negative (biggest crash) first
+
+        results: list[tuple[str, dict[str, Any]]] = []
+        for ticker, name, market, drop_pct, tv in candidates[:n_stocks]:
+            cfg: dict[str, Any] = {
+                **_BOUNCE_CFG_TEMPLATE,
+                "name": name,
+                "market": market,
+                "params": dict(_BOUNCE_CFG_TEMPLATE["params"]),
+                "_screener": True,
+                "_bounce": True,
+            }
+            logger.info(
+                "bounce screener: %s %s  당일 %.1f%%  TV KRW%.0fM",
+                ticker, name, drop_pct * 100, tv / 1_000_000,
             )
             results.append((ticker, cfg))
 

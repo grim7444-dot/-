@@ -211,6 +211,16 @@ class ORB(Strategy):
         bad_market_lock_pct: float = 0.015,
         max_cost_share: float = 0.35,
         round_trip_cost_pct: float = 0.0038,
+        #: 돌파 확인 봉 (2026-09-17, 사용자 요청 -- trades.csv 194건 분석:
+        #: 손절 105건 중 40%가 진입 후 5분 이내에 손절, 승률은 33%에 불과.
+        #: 손절폭 자체는 설정대로 정상 작동하고 있었다 -- 문제는 레인지
+        #: 돌파 직후 바로 꺾이는 "가짜 돌파"가 너무 많다는 것. 종가가 레인지
+        #: 고점을 넘은 첫 봉에 바로 진입하는 대신, confirm_bars개 봉이
+        #: 연속으로 레인지 고점 위를 유지해야 진입을 허용한다 -- 진입가는
+        #: 그만큼 조금 나빠지지만, 돌파 직후 바로 되돌리는 가짜 신호는
+        #: 걸러진다. 0이면 기존처럼 즉시 진입(비활성). PullbackBounce의
+        #: 같은 이름 파라미터와 동일한 근거.
+        confirm_bars: int = 1,
         atr_period: int = 14,
         hard_stop_atr_mult: float = 1.0,
         **params,
@@ -253,6 +263,7 @@ class ORB(Strategy):
         self.bad_market_lock_pct = bad_market_lock_pct
         self.max_cost_share = max_cost_share
         self.round_trip_cost_pct = round_trip_cost_pct
+        self.confirm_bars = confirm_bars
 
     _SESSION_BARS = {
         "1Min": 390, "3Min": 130, "5Min": 78, "10Min": 39,
@@ -262,7 +273,7 @@ class ORB(Strategy):
     @property
     def warmup(self) -> int:
         bb_bars = self.bb_period if self.use_bb_filter else 0
-        return max(self.trend_ema, self.volume_lookback, bb_bars) + 2
+        return max(self.trend_ema, self.volume_lookback, bb_bars) + self.confirm_bars + 2
 
     @property
     def window_bars(self) -> int:
@@ -444,6 +455,15 @@ class ORB(Strategy):
 
         if price <= range_high:
             return self._hold(window, f"레인지 고점 {range_high:,.0f} 미돌파 (레인지 저점 {range_low:,.0f})")
+
+        if self.confirm_bars > 0:
+            recent_closes = window["close"].iloc[-(self.confirm_bars + 1):]
+            if len(recent_closes) <= self.confirm_bars or not (recent_closes > range_high).all():
+                return self._hold(
+                    window,
+                    f"돌파 확인 대기 -- 레인지 고점 {range_high:,.0f} 위로 "
+                    f"{self.confirm_bars}봉 연속 유지 필요 (가짜 돌파 필터)",
+                )
 
         if range_high > 0:
             range_extension_pct = (price - range_high) / range_high

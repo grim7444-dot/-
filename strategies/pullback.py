@@ -138,6 +138,17 @@ class PullbackBounce(Strategy):
         use_fib_filter: bool = True,
         fib_min: float = 0.382,
         fib_max: float = 0.5,
+        #: 돌파 확인 봉 (2026-09-17, 사용자 요청 -- trades.csv 194건 분석:
+        #: 손절 105건 중 40%가 진입 후 5분 이내에 손절, 승률은 33%에 불과.
+        #: 손절폭 자체(중앙값 -1.58%)는 설정대로 정상 작동하고 있었다 --
+        #: 문제는 반등 신호가 뜨자마자 바로 꺾이는 "가짜 반등"이 너무 많다는
+        #: 것. 반등 확인봉(종가 > 전봉고가) 하나만으로 바로 진입하는 대신,
+        #: confirm_bars개 봉이 연속으로 "직전 봉 고가 갱신"을 유지해야 진입
+        #: 허용한다 -- 반등이 한 봉짜리 반짝임인지 실제로 이어지는지를 한
+        #: 박자 늦게 확인하는 대가로, 진입가는 조금 더 나빠지지만(그만큼
+        #: 오른 뒤 진입) 즉시 되돌리는 가짜 신호는 걸러진다. 0이면 기존처럼
+        #: 즉시 진입(비활성).
+        confirm_bars: int = 1,
         atr_period: int = 14,
         hard_stop_atr_mult: float = 1.0,
         **params,
@@ -186,6 +197,7 @@ class PullbackBounce(Strategy):
         self.use_fib_filter = use_fib_filter
         self.fib_min = fib_min
         self.fib_max = fib_max
+        self.confirm_bars = confirm_bars
 
     @property
     def warmup(self) -> int:
@@ -194,7 +206,7 @@ class PullbackBounce(Strategy):
         bb_bars = self.bb_period if self.use_bb_filter else 0
         return (
             max(self.trend_ema, self.swing_lookback, macd_bars, rsi_bars, bb_bars)
-            + self.pullback_bars + 2
+            + self.pullback_bars + self.confirm_bars + 2
         )
 
     @property
@@ -367,6 +379,16 @@ class PullbackBounce(Strategy):
         prev_high = float(window["high"].iloc[-2])
         if price <= prev_high:
             return self._hold(window, f"반등 미확인 (종가={price:,.0f} <= 전봉고가 {prev_high:,.0f})")
+
+        if self.confirm_bars > 0:
+            closes = window["close"].iloc[-(self.confirm_bars + 1):]
+            prior_highs = window["high"].shift(1).iloc[-(self.confirm_bars + 1):]
+            if len(closes) <= self.confirm_bars or not (closes > prior_highs).all():
+                return self._hold(
+                    window,
+                    f"반등 확인 대기 -- {self.confirm_bars}봉 연속 전봉고가 갱신 필요 "
+                    f"(가짜 반등 필터)",
+                )
 
         if self.min_bar_strength > 0:
             strength = float(bar_strength(window).iloc[-1])

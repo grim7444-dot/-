@@ -61,6 +61,7 @@ def _strategy(**overrides) -> PullbackBounce:
         use_rsi_filter=False, use_macd_filter=False,
         use_resistance_filter=False, use_bb_filter=False,
         use_vwap_filter=False, use_fib_filter=False,
+        confirm_bars=0,  # isolates single-bar bounce behavior from confirm_bars
     )
     params.update(overrides)
     return PullbackBounce(**params)

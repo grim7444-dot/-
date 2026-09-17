@@ -26,6 +26,7 @@ def _orb(**overrides) -> ORB:
         use_bb_filter=False,  # isolates the VWAP filter under test in this file
         stop_pct=0.013, early_stop_pct=0.02, early_stop_until="09:30",
         arm_pct=0.012, lock_pct=0.025,
+        confirm_bars=0,  # isolates single-bar breakout behavior from confirm_bars
     )
     params.update(overrides)
     return ORB(**params)

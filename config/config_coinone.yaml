@@ -1,0 +1,33 @@
+# 코인원 자동매매 설정
+
+exchange:
+  name: coinone
+
+trading:
+  symbol: BTC/KRW         # 거래 페어 (코인원은 KRW 기준)
+  # symbol: ETH/KRW
+  # symbol: XRP/KRW
+  timeframe: 1h           # 1m 5m 10m 30m 1h 6h 1d
+  trade_amount: 50000     # 1회 거래 금액 (KRW, 최소 5000원)
+  max_positions: 3
+
+strategy:
+  name: ma_crossover      # ma_crossover | rsi | macd
+  params:
+    fast_period: 9
+    slow_period: 21
+    rsi_period: 14
+    rsi_oversold: 30
+    rsi_overbought: 70
+    macd_fast: 12
+    macd_slow: 26
+    macd_signal: 9
+
+risk:
+  stop_loss_pct: 2.0
+  take_profit_pct: 4.0
+  max_drawdown_pct: 10.0
+
+logging:
+  level: INFO
+  file: logs/coinone_bot.log

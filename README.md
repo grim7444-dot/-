@@ -1,1 +1,485 @@
-# -
+# KRX 9-Stock Trading Bot
+
+A paper-first trading bot for nine KRX-listed stocks, built on the **Kiwoom
+REST API** and Python 3.10+. Five are day traded on thirty-minute bars; four
+are bought into the close and sold the next morning.
+
+**Paper trading is the default and the fallback.** Live trading requires three
+independent confirmations; miss any one and the run is demoted to paper with
+the reason printed. See [Safety rules](#safety-rules).
+
+> **Not investment advice.** This is engineering scaffolding for studying a set
+> of rules. Backtest numbers are not a forecast, and the defaults have not been
+> tuned for profitability.
+
+---
+
+## Universe
+
+| Code | Name | Market | Timeframe | Strategy | Theme |
+|---|---|---|---|---|---|
+| 009830 | 한화솔루션 | KOSPI | 30 min | Day trade (단타) | power_energy |
+| 002990 | 금호건설 | KOSPI | 30 min | Day trade (단타) | construction |
+| 093370 | 후성 | KOSPI | 30 min | Day trade (단타) | battery_materials |
+| 006340 | 대원전선 | KOSPI | 30 min | Day trade (단타) | power_energy |
+| 073240 | 금호타이어 | KOSPI | 30 min | Day trade (단타) | auto_parts |
+| 460930 | 현대힘스 | KOSDAQ | daily | Close trade (종가매매) | shipbuilding |
+| 101730 | 위메이드맥스 | KOSDAQ | daily | Close trade (종가매매) | game |
+| 228340 | 동양파일 | KOSDAQ | daily | Close trade (종가매매) | construction |
+| 439960 | 코스모로보틱스 | KOSDAQ | daily | Close trade (종가매매) | robotics |
+
+The split is by measured volatility, not by sector. `profile --live` put the
+first five above 8% daily ATR; an intraday move that size clears the ~0.38%
+round trip of commission, transaction tax and slippage. The other four barely
+would, so for them the move worth having is the overnight one -- and their
+smaller daily range also means a smaller gap, which matters a great deal for a
+position nothing is watching.
+
+Names and market tags in `config.yaml` are a starting point — **verify them**
+with `python main.py profile`, which reads the official listing data. A wrong
+`market` tag mis-prices the transaction tax.
+
+### Day trading (단타)
+
+Thirty-minute bars. A close above the prior 10-bar high on 1.5x volume enters,
+but only while the price is above the session's own VWAP -- a break made below
+it is usually a bounce inside a decline. Exit is a 1.5 ATR trail, losing VWAP,
+or the flat-out time, whichever comes first.
+
+**The timeframe is a cost decision.** The hard stop is one ATR, so a trade
+risks ATR and pays the round trip to do it; what matters is that ratio.
+`profile --atr-sweep` measured it on these five stocks:
+
+| Bar | ATR | Costs as a share of what is risked |
+|---|---|---|
+| 3 min | 0.34% | **112%** |
+| 5 min | 0.53% | 72% |
+| 10 min | 0.91% | 42% |
+| 15 min | 1.20% | 32% |
+| 30 min | 1.93% | **20%** |
+| 60 min | 3.13% | 12% |
+
+A breakout system does not earn 0.42 R per trade, so anything faster than
+half-hourly loses to its own friction whatever the entry rule is. On
+three-minute bars the round trip is larger than the stop itself. Thirteen bars
+a session means signals are rare; that rarity is what the cost structure buys.
+
+Entries run 09:15-14:30. The opening minutes are skipped because the spread is
+widest there and no channel has formed yet; the afternoon cut-off leaves room
+before the flat-out.
+
+**Every day-trade position is closed at 15:10**, ten minutes before the closing
+auction. A position still open when the auction starts cannot be sold at a
+predictable price, and the next continuous session is the following morning --
+so surviving the close turns a day trade into an unhedged overnight hold.
+`SessionRules` refuses at construction to accept a flat-out time inside the
+auction, so this cannot be misconfigured quietly.
+
+`max_cost_share` enforces that ratio before every entry, and the log says
+which side of it a rejected stock fell on. These numbers are measured, not
+modelled: an earlier version estimated minute-bar ATR from daily ATR by the
+square root of time, overstated it threefold, and set a gate that refused
+every entry for a full session while the tests -- which asserted the same bad
+model -- passed.
+
+### Close trading (종가매매)
+
+Buy in the last continuous minutes (15:15-15:19) when the stock closes in the
+top 30% of its range, above its 20-day EMA, on 1.2x its usual volume. Sell the
+next morning at 09:05 unconditionally -- not on a signal, on the clock.
+
+**Nothing protects these positions overnight.** Kiwoom holds no resting stop
+order, so the hard stop exists only while the bot process runs, and between the
+close and the next open it does not. A stock that gaps through its stop opens
+the position at whatever the auction decides, and no amount of code changes
+that. It is the reason the quietest four names got this strategy rather than
+the liveliest.
+
+`hold_overnight` is what stops such a position being sold seconds after it is
+opened: 15:16 is past 09:05, and without knowing which session the position was
+opened in, the exit rule would fire immediately.
+
+### Mean reversion ships disabled
+
+It is implemented and tested, but not assigned to any stock. On an index, -1.5σ
+tends to revert; on an individual small cap it can be the start of a repricing,
+and unlike an index a single stock can be suspended, diluted or delisted. Turn
+it on per-stock in `config.yaml` if you want it.
+
+### 439960 코스모로보틱스 listed on 2026-05-11
+
+With roughly three months of history it cannot warm up a 200-period lookback,
+which is why it no longer runs a trend system. Close trading needs 20 days.
+`profile` reports bar counts against each strategy's warm-up requirement, and
+the bot holds rather than trading a half-computed indicator.
+
+---
+
+## Quick start
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+cp .env.example .env       # optional: works without it, on synthetic data
+python main.py profile     # verify names, liquidity, correlation
+python main.py backtest --months 6
+python main.py paper --dry-run
+```
+
+Nothing here needs credentials to run. Without a Kiwoom app key the bot falls
+back to a simulated broker that prints intended orders and sends nothing, and
+market data falls back to a deterministic synthetic generator (loudly flagged
+as `SYNTHETIC DATA` wherever it is used).
+
+---
+
+## Commands
+
+```bash
+python main.py profile                    # measure the universe, suggest strategies
+python main.py profile --atr-sweep --live # measure ATR by timeframe (cost check)
+python main.py profile --refresh-calendar # derive KRX holidays from pykrx
+python main.py backtest --months 6        # next-bar fills, costs included
+python main.py paper --dry-run            # one cycle, print orders, send nothing
+python main.py paper --once               # one cycle against the mock account
+python main.py live --dry-run --watch     # all-day observation, sends nothing
+python main.py live --once                # needs all three confirmations
+python main.py live                       # the real thing: banner, countdown, loop
+python main.py status                     # state, positions, drawdown, capacity
+python main.py stop --close-all           # cancel orders, flatten, persist STOPPED
+python main.py resume                     # clear STOPPED
+
+python report.py morning --dry-run        # pre-session briefing (Telegram preview)
+python report.py evening --dry-run        # end-of-day wrap
+```
+
+`report.py` is dry-run by default; pass `--send` to actually deliver.
+
+---
+
+## Safety rules
+
+| # | Rule | Implementation | Verified by |
+|---|---|---|---|
+| 1 | Paper is the default. With no environment at all, only `mockapi.kiwoom.com` is reachable | `settings.resolve_mode` | `test_live_requires_triple_confirm.py::test_empty_environment_is_paper` |
+| 2 | Live requires **all three**: `KIWOOM_PAPER=false`, `KIWOOM_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY`, an explicit live request on the command line | `settings.resolve_mode`, `settings.load_credentials` | the full 8-row truth table |
+| 3 | Live start prints a red banner, balance, worst-case loss per trade *and* per portfolio, then a 10-second countdown. Every log line carries the mode | `main.print_live_banner`, `settings.setup_logging` | manual; `mode=` on every line of `logs/bot.log` |
+| 4 | Risk per trade = 1% of **current** equity. Quantity = `(equity × 0.01) ÷ stop distance`. Stop distance ≤ 0 → skip the order | `risk/manager.py::position_size` | `test_risk.py` |
+| 5 | 10% drawdown from peak → block new orders, cancel working orders, flatten, persist `STOPPED`. The peak is per mode and the flatten only fires during continuous trading | `risk/manager.py::RiskManager.trip_kill_switch`, `portfolio.Portfolio.__init__` | `test_risk.py::test_kill_switch_stops_cancels_and_flattens`, `test_incident_regressions.py` |
+| 6 | `STOPPED` persists across restarts until a human runs `resume` | `portfolio.StateStore` + `state.json` | `test_risk.py::test_stopped_state_survives_a_restart` |
+| 7 | Before every order: tradability, session phase, minimum quantity, duplicate orders, available cash, **daily price limit** | `risk/manager.py::pre_trade_checks` | `test_risk.py` (one test per check) |
+| 8 | KRX session only — 09:00–15:30 KST, never during a call auction. Day trades are flat by 15:10; entry windows and forced exits are checked against the clock, not the chart | `market/calendar.py`, `market/session_rules.py` | `test_calendar.py`, `test_intraday_strategies.py` |
+| 9 | App keys come from `.env` only and never reach logs, exception messages or reports | `settings.Secret`, `SecretFilter`, `install_exception_masking` | canary test; secrets render as `***REDACTED***` |
+| 10 | Backtest fills start on the bar **after** the signal bar | `backtest.Backtester` | `test_no_lookahead.py` |
+| 11 | Commission, transaction tax and slippage live in `config.yaml` and print with every result | `market/rules.py::TradingCosts` | `test_krx_rules.py`, `test_no_lookahead.py` |
+| 12 | Telegram is dry-run by default; a missing token gives a preview, not an error | `report.send_telegram` | `python report.py morning --dry-run` |
+
+### The live-trading gate
+
+```
+KIWOOM_PAPER=false                              (environment)
+KIWOOM_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY     (environment, exact match)
+`live` sub-command, or --live on `paper`        (command line)
+```
+
+Only all three together open the live endpoint. The `live` sub-command *is* the
+explicit command-line request, so `python main.py live --once` satisfies the
+third condition — and with the environment variables absent it still demotes:
+
+```
+==============================================================================
+  LIVE TRADING WAS REQUESTED BUT DEMOTED TO PAPER
+    - KIWOOM_PAPER is not 'false' (effective value: 'true', default is 'true')
+    - KIWOOM_LIVE_CONFIRM is not set
+  Running against https://mockapi.kiwoom.com
+==============================================================================
+```
+
+`resolve_mode` is a pure function with no I/O, and it is the only place that can
+produce a live base URL. That is what makes the truth-table test exhaustive
+rather than indicative.
+
+**Kiwoom's split keys buy one more layer.** Kiwoom issues *separate* app keys
+for the mock and live environments, so `load_credentials` reads only the set
+matching the resolved mode. On a paper run the live key is never pulled out of
+the environment at all — a mis-assembled URL still cannot authenticate against
+a real account, because the credential is not in memory. `KiwoomBroker`
+additionally refuses to start if the credential set and the mode disagree.
+
+### Position sizing
+
+The hard stop sits exactly one ATR(14) from entry, and quantity is the risk
+budget divided by that distance:
+
+```
+stop_distance = ATR(14)
+quantity      = (equity × 1%) ÷ stop_distance      (whole shares, rounded down)
+```
+
+A 1-ATR adverse move therefore costs 1% of equity on every stock: a quiet name
+gets size, a violent one does not, and the money at risk never changes. Three
+caps can only ever *reduce* it: `max_position_notional_pct` (25%), available
+cash, and the remaining portfolio risk budget.
+
+### Portfolio caps
+
+Eight stocks at 1% each would put 8% at risk simultaneously — the US-market
+version of this bot ran five broad instruments, where that was not a concern.
+Here two caps apply:
+
+* **6% total open risk**, measured against each position's *effective* stop, so
+  a trailing stop that has ratcheted past entry frees its budget back up;
+* **6 open positions** at once.
+
+### Theme filter
+
+Two stocks in one theme are one thesis sized twice. Only one position per theme
+is allowed:
+
+* `construction` — 002990 금호건설, 228340 동양파일
+* `power_energy` — 006340 대원전선, 009830 한화솔루션
+
+Exits are never blocked. `profile` prints the return-correlation matrix so the
+groups can be checked against how the stocks actually move.
+
+### Long-only
+
+Retail short selling of KRX equities is not practically available, and futures
+are out of scope — which also rules out inverse ETFs, since those hold index
+futures internally. A short signal therefore **closes a position but never
+opens one**. `risk.long_only` in `config.yaml` controls it, and it propagates
+to every strategy through `allow_short`.
+
+---
+
+## KRX market rules
+
+Three things differ from a US venue, and each one silently breaks a
+US-shaped assumption:
+
+**Tick size.** KRX quotes on a price-dependent grid (1 / 5 / 10 / 50 / 100 /
+500 / 1000 KRW, with KOSDAQ topping out at 100). An off-grid order is rejected,
+so every stop is snapped to the grid — **rounding up** for a long stop, because
+rounding down would place it further away than the 1% budget allows.
+
+**Daily price limit (±30%).** At limit-up there are no sellers and at
+limit-down no buyers, so orders there would not fill. Both the live loop and
+the backtest skip rather than pretending they traded.
+
+**Asymmetric costs.** Buying pays commission; **selling pays commission plus
+transaction tax.** A round trip therefore costs materially more than the US
+model would suggest, which matters most for the 60-minute breakout strategies.
+Rates live in `config.yaml` — *verify them*, they have been cut in stages.
+
+**Session.** 09:00–15:30 KST continuous trading, with call auctions at
+08:30–09:00 and 15:20–15:30. Market orders are refused during auctions, where
+there is no continuous book and the execution price is unpredictable.
+
+**Holidays.** Korea's calendar has lunar holidays, substitute holidays and
+ad-hoc closures that cannot be derived from a rule. Supply them in
+`config.yaml` under `krx.holidays`, or generate the list:
+
+```bash
+python main.py profile --refresh-calendar   # needs pykrx + network
+```
+
+With no list configured the calendar falls back to weekends-only **and says
+so** rather than silently treating a holiday as a trading day.
+
+---
+
+## Market data
+
+Every request resolves in this order:
+
+1. **CSV cache** under `data/cache/`;
+2. **live source** — `pykrx` for daily bars, the **Kiwoom chart API** for
+   intraday bars (pykrx does not serve minute data);
+3. **synthetic generator** — deterministic, seeded per stock.
+
+Step 3 lets the whole pipeline run with no credentials and no network. Anything
+that consumed synthetic bars is stamped `SYNTHETIC DATA`.
+
+### Warm-up history is fetched separately
+
+A 200-day EMA needs about ten calendar months of history. Without care,
+`backtest --months 6` would spend its entire window warming up and trade
+nothing. `data.warmup_start` therefore extends the fetch backwards by each
+strategy's warm-up requirement, so the requested window is actually tradable.
+The backtest header shows both numbers:
+
+```
+009830 한화솔루션        354 bars  [synthetic]  warmup 202 -> 152 tradable
+460930 현대힘스         1001 bars  [synthetic]  warmup  22 -> 979 tradable
+```
+
+---
+
+## Backtesting
+
+Event-driven across all eight stocks on one shared equity curve, so the theme
+filter, the portfolio risk cap and the drawdown kill switch behave as they do
+live. Signals are evaluated on bar `i` and executed at the **open of bar
+`i+1`**, with slippage against the order.
+
+The no-look-ahead guarantee is structural:
+
+1. `Strategy.evaluate` receives `bars.iloc[:i+1]` — a future bar is unreachable;
+2. an actionable signal schedules a pending order at `i+1`, and every fill
+   records both indices;
+3. the engine asserts `fill_index == signal_index + 1` before returning, and
+   `fill_delay_bars = 0` is rejected at construction.
+
+`tests/test_no_lookahead.py` also rewrites the tail of a series and checks that
+no earlier signal or fill moves.
+
+The drawdown kill switch applies during backtests too: at 10% below peak,
+trading halts for the rest of the period and the summary says so.
+
+### The peak equity is per mode
+
+Equity figures from different modes are not comparable. A dry run reports the
+configured `starting_equity`; a real account reports what it is worth. Carrying
+one peak into the other turns an ordinary account balance into an apparent
+crash — on the first live run of this bot, a 10,000,000 KRW dry-run peak left
+in `state.json` made a 573,390 KRW live account read as a 94% drawdown and
+tripped the kill switch on the opening cycle.
+
+So `Portfolio` discards `peak_equity`, `last_equity` and the day-start anchors
+whenever the mode label in `state.json` differs from the current one. Positions
+and the `STOPPED` flag survive — only the numbers that cannot be compared are
+dropped, and the discard is logged with the peak it threw away.
+
+Two related guards close the same hole from the other side: `trip_kill_switch`
+checks the session before flattening (a market order outside continuous trading
+reaches no order book, so it logs a `CRITICAL` telling you the positions are
+still open instead of pretending it closed them), and `KiwoomBroker.submit_order`
+treats an empty `ord_no` or a non-zero `return_code` as a rejection rather than
+a submission.
+
+---
+
+## Continuous operation
+
+`python main.py paper` wakes every 30 seconds and checks each stock on its own
+cadence (hourly / daily, configurable). Each cycle:
+
+1. read the account (retried with jittered exponential backoff);
+2. update peak equity and evaluate the drawdown guard;
+3. bail out immediately if the state is `STOPPED`;
+4. skip everything outside continuous trading;
+5. per stock: ratchet the trailing stop, **check the hard stop**, evaluate the
+   signal, size against remaining portfolio risk, run pre-trade checks, submit.
+
+Step 5's stop check matters: **Kiwoom has no bracket order**, so the loop
+enforces the hard stop itself rather than leaving it resting at the broker.
+Kiwoom also throttles TR calls, so every request passes through a rate limiter
+before the retry wrapper.
+
+**The stop only exists while the process runs.** Closing the window removes it.
+There is nothing resting at the broker to catch a gap, so an unattended
+position is an unprotected one.
+
+### Observation mode
+
+```bash
+python main.py live --dry-run --watch
+```
+
+The full loop — same cadence, same signals, same sizing, same pre-trade checks
+— against the simulated broker, sending nothing. Use it to watch what the bot
+would have done for a few sessions before letting it act. `--dry-run` on its
+own runs a single cycle and exits, which is the smoke test; `--watch` is what
+turns it into an all-day run.
+
+A simulated broker reports `starting_equity`, not the account's real value, so
+these runs are recorded under a separate `-SIM` mode label and their equity
+history never mixes with a real run's.
+
+### One session, start to finish
+
+| When (KST) | Command | What it is for |
+|---|---|---|
+| 08:40 | `python main.py check --live` | connectivity, balance, holdings — read-only |
+| 08:45 | `python report.py morning --dry-run` | equity, drawdown, open positions, capacity |
+| 08:55 | `python main.py live` | banner, 10s countdown, then the loop |
+| during | watch the console, or `tail -f logs/bot.log` | every decision is logged with a reason |
+| 15:30 | `Ctrl+C` | clean shutdown, records the day |
+| 15:35 | `python report.py evening --dry-run` | fills, realized P&L, recent days |
+
+`python main.py status` is safe to run at any time from a second window.
+
+---
+
+## Tests
+
+```bash
+pytest -q
+```
+
+307 tests, no network and no credentials required. `tests/conftest.py` scrubs
+`KIWOOM_*` from the environment before every test, so a real `.env` can never
+turn a test run into a live-trading attempt, and the broker double raises if
+anything tries to submit an order.
+
+---
+
+## Files
+
+```
+main.py                   CLI, live banner, continuous loop
+config.yaml               universe, themes, risk limits, KRX rules, costs
+.env.example              credential template (mock and live keys kept apart)
+settings.py               .env loading, secret masking, resolve_mode  ← safety core
+data.py                   bars: cache → pykrx/Kiwoom → synthetic; warm-up windows
+indicators.py             SMA / EMA / stddev / ATR / rolling high-low
+broker.py                 BrokerBase, KiwoomBroker, DryRunBroker, rate limit + retry
+portfolio.py              positions, state.json, trades.csv, daily_pnl.csv
+backtest.py               next-bar-fill engine, KRX cost model, metrics
+universe_profile.py       volatility / liquidity / correlation, strategy suggestions
+report.py                 morning & evening reports, Telegram dry-run
+market/
+  calendar.py             session phases, business days, auction safety
+  rules.py                tick ladder, ±30% limits, asymmetric costs
+strategies/               base, trend_following, breakout, mean_reversion
+risk/manager.py           sizing, hard stops, kill switch, portfolio caps, checks
+tests/                    risk, triple-confirmation, no-lookahead, KRX rules, calendar
+```
+
+Runtime artefacts (git-ignored): `trades.csv`, `daily_pnl.csv`, `state.json`,
+`logs/bot.log`, `data/cache/`.
+
+### Output files
+
+`trades.csv` — one row per closed trade:
+
+```
+timestamp,symbol,side,entry_price,exit_price,pnl,qty,
+strategy,entry_time,fees,slippage,return_pct,exit_reason,mode
+```
+
+`daily_pnl.csv` — one row per day (repeated runs update that day's row):
+
+```
+date,starting_equity,ending_equity,realized_pnl,unrealized_pnl,
+trades,max_drawdown_pct,mode
+```
+
+---
+
+## Before trading real money
+
+Two categories of constant in this repo were written from documentation rather
+than from a live account, and both are config-overridable so you can correct
+them without touching code:
+
+* **Kiwoom endpoint paths and `api-id` codes** (`broker.py` defaults,
+  overridable under `kiwoom.endpoints` / `kiwoom.api_ids`) — check them against
+  <https://openapi.kiwoom.com/> and the
+  [official examples](https://github.com/Kiwoom-Securities/Kiwoom-REST-API);
+* **tick ladder and tax rates** (`config.yaml`) — check them against the
+  current KRX rulebook.
+
+Run the mock account long enough to see fills before changing any of the three
+live confirmations.

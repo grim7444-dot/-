@@ -1,0 +1,32 @@
+# 키움증권 자동매매 설정
+
+exchange:
+  name: kiwoom
+
+trading:
+  symbol: "005930"       # 삼성전자 (주식 6자리 코드)
+  # symbol: "101W9000"   # KOSPI200 선물 근월물 (선물 시)
+  timeframe: 1d          # 1m 3m 5m 10m 15m 30m 1h 1d
+  trade_amount: 1        # 매수 수량 (주 단위)
+  max_positions: 3
+
+strategy:
+  name: ma_crossover     # ma_crossover | rsi | macd
+  params:
+    fast_period: 5
+    slow_period: 20
+    rsi_period: 14
+    rsi_oversold: 30
+    rsi_overbought: 70
+    macd_fast: 12
+    macd_slow: 26
+    macd_signal: 9
+
+risk:
+  stop_loss_pct: 2.0
+  take_profit_pct: 4.0
+  max_drawdown_pct: 10.0
+
+logging:
+  level: INFO
+  file: logs/kiwoom_bot.log

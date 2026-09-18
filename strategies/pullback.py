@@ -48,6 +48,12 @@ class PullbackBounce(Strategy):
         timeframe: str = "3Min",
         #: 상승 추세 판정용 EMA 기간.
         trend_ema: int = 20,
+        #: EMA 추세 진입 필터에 허용하는 여유 (2026-09-18, 사용자 요청 --
+        #: "장이 좋은데 너무 매매를 안하네"). ORB의 같은 이름 파라미터와
+        #: 동일한 근거: 종가가 EMA 바로 몇 틱 아래에 계속 붙어있는 채로
+        #: 거부되는 경우가 실거래 로그에서 자주 보여, EMA * (1 -
+        #: trend_buffer_pct) 위면 통과시킨다. 0이면 기존처럼 엄격 적용.
+        trend_buffer_pct: float = 0.003,
         #: 직전 스윙 고점을 찾는 봉 수.
         swing_lookback: int = 10,
         #: 스윙 고점 이후 눌림목 저점을 찾는 최근 봉 수.
@@ -167,6 +173,7 @@ class PullbackBounce(Strategy):
             **params,
         )
         self.trend_ema = trend_ema
+        self.trend_buffer_pct = trend_buffer_pct
         self.swing_lookback = swing_lookback
         self.pullback_bars = pullback_bars
         self.pullback_min_pct = pullback_min_pct
@@ -350,7 +357,8 @@ class PullbackBounce(Strategy):
                     f"(상한 {self.max_cost_share:.0%})",
                 )
 
-        if price <= trend:
+        trend_floor = trend * (1 - self.trend_buffer_pct)
+        if price <= trend_floor:
             return self._hold(window, f"EMA{self.trend_ema} {trend:,.0f} 아래 -- 상승 추세 아님")
 
         swing_high = rolling_max(window["high"], self.swing_lookback).shift(1).iloc[-1]

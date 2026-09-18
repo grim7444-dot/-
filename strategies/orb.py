@@ -105,6 +105,15 @@ class ORB(Strategy):
         volume_mult: float = 1.5,
         #: 상위 추세 판정용 EMA.
         trend_ema: int = 21,
+        #: EMA 추세 진입 필터에 허용하는 여유 (2026-09-18, 사용자 요청 --
+        #: "장이 좋은데 너무 매매를 안하네"). 종가가 EMA 바로 몇 틱 아래
+        #: (0.1~0.9% 차이)에 계속 붙어있는 채로 계속 거부되는 경우가 실거래
+        #: 로그에서 자주 보였다 -- 짧은 EMA가 노이즈에 민감해 진짜 하락추세와
+        #: 잠깐의 눌림을 구별 못 하는 문제. EMA * (1 - trend_buffer_pct)
+        #: 위면 통과시켜서, 딱 붙어 막히는 경우만 살짝 풀어준다. 0이면 기존
+        #: 처럼 EMA를 엄격히 넘어야 함(비활성). 포지션 관리 중 trend_intact
+        #: 판정(early_stop_pct 등)에는 영향 없음 -- 진입 게이트에만 적용.
+        trend_buffer_pct: float = 0.003,
         min_bar_strength: float = 0.5,
         #: 세션 VWAP 위 확인 -- 기본 비활성 (2026-08-31, 사용자 요청: "돌파매매도
         #: 느리고" -- 레인지는 이미 뚫었는데 당일 누적 VWAP은 아직 못 넘은
@@ -236,6 +245,7 @@ class ORB(Strategy):
         self.volume_lookback = volume_lookback
         self.volume_mult = volume_mult
         self.trend_ema = trend_ema
+        self.trend_buffer_pct = trend_buffer_pct
         self.min_bar_strength = min_bar_strength
         self.use_vwap_filter = use_vwap_filter
         self.use_bb_filter = use_bb_filter
@@ -423,7 +433,8 @@ class ORB(Strategy):
 
         if trend_now is None:
             return self._hold(window, "trend EMA not established")
-        if price <= trend_now:
+        trend_floor = trend_now * (1 - self.trend_buffer_pct)
+        if price <= trend_floor:
             return self._hold(window, f"EMA{self.trend_ema} {trend_now:,.0f} 아래 -- 상승 추세 아님")
 
         # trend_ema는 짧은 이동평균이라, 당일 고점을 찍고 흘러내리는 초입에는

@@ -119,3 +119,23 @@ def test_both_filters_pass_together_on_the_qualifying_pattern():
     signal = strategy.evaluate(window, None)
     assert signal.action is Action.ENTER_LONG
     assert "VWAP" in signal.reason and "피보" in signal.reason
+
+
+def test_fib_max_default_is_the_standard_golden_zone():
+    """0.5 -> 0.618 (2026-09-18, user request: "너무 매매가 없다") -- widened
+    to the textbook 38.2%-61.8% golden retracement zone, not an arbitrary
+    loosening. Live log audit found this filter (after the EMA trend check)
+    was the next-biggest source of rejected entries."""
+    assert PullbackBounce(symbol="TEST").fib_max == 0.618
+
+
+#: Retraces to ~55.3% of the prior swing -- past the old 50% cap, inside
+#: the new 61.8% one (verified against rolling_min/rolling_max directly).
+_MID_PULLBACK = [10_370.0, 10_310.0]
+
+
+def test_wider_default_fib_max_allows_a_retracement_the_old_50pct_cap_blocked():
+    strategy = _strategy(use_fib_filter=True, fib_min=0.382, fib_max=0.618)
+    window = _bars(_WARM + _SWING_HIGH_BAR + _MID_PULLBACK + _BOUNCE, LIGHT_VOLUME)
+    signal = strategy.evaluate(window, None)
+    assert signal.action is Action.ENTER_LONG, signal.reason

@@ -113,6 +113,15 @@ class Position:
     #: 수익에 1/3 매도"). Caps that at once per position -- see
     #: TradingEngine._morning_partial_exit_reason.
     morning_partial_done: bool = False
+    #: ISO timestamp of the last "직접 매도 필요" notice sent for this position
+    #: under risk.manual_take_profit (2026-09-21, user request: "손절과 익절은
+    #: 내가 할테니까 종목만 선정하게 하는건 어떨까" -> stop-loss stays
+    #: automatic, every take-profit decision becomes a notify-only alert).
+    #: Empty means never notified yet. Rate-limits repeat notices to
+    #: risk.manual_take_profit_notify_minutes instead of firing every cycle
+    #: (as often as every schedule.fast_exit_check_seconds once armed) --
+    #: see TradingEngine._defer_profit_exit.
+    last_manual_exit_notice: str = ""
 
     @property
     def is_long(self) -> bool:

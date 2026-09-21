@@ -1795,6 +1795,9 @@ class TradingEngine:
                 )
             if position.near_limit_hold:
                 if exit_reason is not None:
+                    if self._manual_take_profit():
+                        self._defer_profit_exit(code, position, price, exit_reason, label)
+                        return
                     logger.warning("%s: NEAR-LIMIT MORNING EXIT - %s", label, exit_reason)
                     self._submit_exit(
                         code, position, price, exit_reason, open_orders, asset_cfg,
@@ -1812,6 +1815,9 @@ class TradingEngine:
         if position is not None:
             reason = _dip_recovery_reason(position, price, rt.config.get("risk") or {})
             if reason is not None:
+                if self._manual_take_profit():
+                    self._defer_profit_exit(code, position, price, reason, label)
+                    return
                 logger.warning("%s: DIP-RECOVERY TAKE-PROFIT - %s", label, reason)
                 self._submit_exit(
                     code, position, price, reason, open_orders, asset_cfg,
@@ -1829,6 +1835,9 @@ class TradingEngine:
         if position is not None:
             partial_reason = _morning_partial_exit_reason(position, price, now, rules)
             if partial_reason is not None:
+                if self._manual_take_profit():
+                    self._defer_profit_exit(code, position, price, partial_reason, label)
+                    return
                 qty_to_sell = math.floor(position.qty / 3)
                 if qty_to_sell >= 1:
                     logger.warning("%s: MORNING PARTIAL TAKE-PROFIT - %s", label, partial_reason)
@@ -1866,6 +1875,9 @@ class TradingEngine:
         if position is not None:
             reason = _late_exit_reason(position, price, now, rules, rt.config.get("risk") or {})
             if reason is not None:
+                if self._manual_take_profit():
+                    self._defer_profit_exit(code, position, price, reason, label)
+                    return
                 logger.warning("%s: LATE-SESSION TAKE-PROFIT - %s", label, reason)
                 self._submit_exit(
                     code, position, price, reason, open_orders, asset_cfg,
@@ -1881,6 +1893,9 @@ class TradingEngine:
                 position, price, now, rules, rt.config.get("risk") or {}
             )
             if stall_reason is not None:
+                if self._manual_take_profit():
+                    self._defer_profit_exit(code, position, price, stall_reason, label)
+                    return
                 logger.warning("%s: STALL EXIT - %s", label, stall_reason)
                 self._submit_exit(
                     code, position, price, stall_reason, open_orders, asset_cfg,
@@ -1908,6 +1923,9 @@ class TradingEngine:
                 live_breach = self._live_protective_breach(code, position, signal.meta)
                 if live_breach is not None:
                     reason, live_price, urgent = live_breach
+                    if self._manual_take_profit() and not urgent:
+                        self._defer_profit_exit(code, position, live_price, reason, label)
+                        return
                     logger.warning("%s: %s", label, reason)
                     self._submit_exit(
                         code, position, live_price, reason, open_orders, asset_cfg,
@@ -1925,11 +1943,17 @@ class TradingEngine:
             # lock_pct/peak_trail_pct take-profit under one Action -- only the
             # stop needs the urgent (wider) buffer, so it's the one told apart
             # by its own reason text (see the f"{stop_pct:.0%} 손절 ..."
-            # format both ORB and PullbackBounce use).
+            # format both ORB and PullbackBounce use). The same "손절" check
+            # also decides risk.manual_take_profit -- the stop half always
+            # sells, the take-profit half only notifies.
+            is_stop = "손절" in signal.reason
+            if position is not None and self._manual_take_profit() and not is_stop:
+                self._defer_profit_exit(code, position, price, signal.reason, label)
+                return
             self._submit_exit(
                 code, position, price, signal.reason, open_orders, asset_cfg,
                 session_ok, session_reason, market=market,
-                urgent="손절" in signal.reason,
+                urgent=is_stop,
             )
             return
 
@@ -1974,6 +1998,50 @@ class TradingEngine:
         if limits.blocks_sell(price):
             return True, f"limit-down at {price:,.0f}: no buyers, order would not fill"
         return False, ""
+
+    def _manual_take_profit(self) -> bool:
+        return bool((self.rt.config.get("risk") or {}).get("manual_take_profit", False))
+
+    def _defer_profit_exit(
+        self, code: str, position: Position, price: float, reason: str, label: str,
+    ) -> None:
+        """risk.manual_take_profit is on and *reason* is a take-profit exit,
+        not the hard stop -- notify instead of selling, and leave the
+        position exactly as it is.
+
+        Rate-limited to risk.manual_take_profit_notify_minutes (default 10)
+        per position, tracked on Position.last_manual_exit_notice -- without
+        it this would fire on every cycle (every fast_exit_check_seconds,
+        5s by default, once a position is armed) and flood Telegram.
+        """
+        rt = self.rt
+        entry = position.entry_price
+        gain = (price - entry) / entry if entry else 0.0
+        logger.warning(
+            "%s: MANUAL EXIT NEEDED (자동매도 보류, manual_take_profit) - %s (%+.2f%%)",
+            label, reason, gain * 100,
+        )
+        cooldown_minutes = int(
+            (rt.config.get("risk") or {}).get("manual_take_profit_notify_minutes", 10)
+        )
+        now = datetime.now(KST)
+        due = True
+        if position.last_manual_exit_notice:
+            try:
+                last = datetime.fromisoformat(position.last_manual_exit_notice)
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=KST)
+                due = (now - last) >= timedelta(minutes=cooldown_minutes)
+            except ValueError:
+                due = True
+        if not due:
+            return
+        position.last_manual_exit_notice = now.isoformat()
+        rt.portfolio.update_position(position)
+        self._tg_notifier.send(
+            f"\U0001f514 {rt.name_of(code)}({code}) 직접 매도 판단 필요\n"
+            f"사유: {reason}\n현재가: {price:,.0f} ({gain:+.2%})"
+        )
 
     def _submit_exit(
         self,

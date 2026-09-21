@@ -116,6 +116,21 @@ risk:
   # 로직은 그대로 계속 작동하니 오늘 수익은 계속 늘 수 있다. 0으로 두면
   # 비활성.
   daily_profit_lock_pct: 0.02
+  # 수동 익절 (2026-09-21, 사용자 요청: "손절과 익절은 내가 할테니까 종목만
+  # 선정하게 하는건 어떨까" -> 최종적으로 "완전 수동 -- 손절선 하나만 자동"
+  # 선택). true면 무장/확정선/고점트레일/눌림반등조기익절/시초가부분익절/
+  # 마감전조기익절/정체청산/상한가익일매도 등 "이익을 실현하는" 모든 청산이
+  # 실제 매도 대신 텔레그램 알림만 보내고 포지션은 그대로 유지한다 -- 직접
+  # 판단해서 팔아야 한다는 뜻. 하드 손절(ATR 기반 stop_price/trail_stop)과
+  # 전략 자체의 "X% 손절" 사유 청산은 이 설정과 무관하게 항상 자동으로
+  # 작동한다 -- 이게 유일하게 남는 안전장치. 당일청산(force_exit_at)/익일
+  # 오전 청산 같은 시간 기준 강제청산도 이익 여부와 무관한 세션 리스크
+  # 관리라 그대로 자동 유지된다. false(기본)면 기존과 동일하게 전부 자동.
+  manual_take_profit: false
+  # manual_take_profit이 켜져 있을 때, 같은 포지션에 대해 반복 알림을 보내는
+  # 최소 간격(분). armed된 포지션은 fast_exit_check_seconds(기본 5초)마다
+  # 재확인되므로, 이 간격이 없으면 텔레그램이 초 단위로 도배된다.
+  manual_take_profit_notify_minutes: 10
   # Retail short selling of KRX equities is not practically available, and
   # futures (including the futures inside inverse ETFs) are out of scope.
   # A short signal therefore closes a position but never opens one.

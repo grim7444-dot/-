@@ -85,6 +85,48 @@ def test_sizing_scales_with_current_equity():
 
 
 # --------------------------------------------------------------------------
+# max_stop_pct (2026-09-23, user request): a volatile screener pick's raw
+# ATR stop distance can land well past the ~1.3-2% the strategy's own
+# tiers suggest (046970: ~3%, live incident -- "왜 -3%가 넘는데도 매도를
+# 안한거지"). Capping it as a fraction of price keeps the dollar risk
+# (Rule 4) exactly the same -- only qty goes up to compensate.
+# --------------------------------------------------------------------------
+
+
+def test_max_stop_pct_caps_a_volatile_atr_stop():
+    uncapped = position_size(EQUITY, atr=1_000.0, price=20_000.0, fractional=True, min_qty=0.0)
+    capped = position_size(
+        EQUITY, atr=1_000.0, price=20_000.0, fractional=True, min_qty=0.0, max_stop_pct=0.02,
+    )
+    assert uncapped.stop_distance == pytest.approx(1_000.0)  # 5% raw
+    assert capped.stop_distance == pytest.approx(20_000.0 * 0.02)  # capped to 2%
+    assert capped.stop_distance < uncapped.stop_distance
+
+
+def test_max_stop_pct_keeps_the_same_dollar_risk():
+    capped = position_size(
+        EQUITY, atr=1_000.0, price=20_000.0, fractional=True, min_qty=0.0, max_stop_pct=0.02,
+    )
+    assert capped.qty_exact * capped.stop_distance == pytest.approx(EQUITY * RISK_PCT, rel=1e-12)
+
+
+def test_max_stop_pct_leaves_an_already_tight_stop_untouched():
+    result = position_size(
+        EQUITY, atr=100.0, price=20_000.0, fractional=True, min_qty=0.0, max_stop_pct=0.02,
+    )  # 0.5% raw, well under the 2% cap
+    assert result.stop_distance == pytest.approx(100.0)
+
+
+def test_max_stop_pct_none_or_zero_is_a_no_op():
+    baseline = position_size(EQUITY, atr=1_000.0, price=20_000.0, fractional=True, min_qty=0.0)
+    for cap in (None, 0, 0.0):
+        result = position_size(
+            EQUITY, atr=1_000.0, price=20_000.0, fractional=True, min_qty=0.0, max_stop_pct=cap,
+        )
+        assert result.stop_distance == pytest.approx(baseline.stop_distance)
+
+
+# --------------------------------------------------------------------------
 # Rule 4 - a non-positive stop distance skips the order
 # --------------------------------------------------------------------------
 
@@ -181,6 +223,34 @@ def test_pyramid_add_size_skips_when_the_budget_is_exhausted(portfolio, config):
         equity=EQUITY, add_risk_budget=0.0, stop_distance=200.0, price=21_000.0,
     )
     assert sizing.skipped is True
+
+
+# --------------------------------------------------------------------------
+# max_stop_pct wiring through RiskManager -- see the position_size-level
+# tests above for the sizing math itself.
+# --------------------------------------------------------------------------
+
+
+def test_risk_manager_reads_max_stop_pct_from_config(portfolio):
+    manager = RiskManager({"risk": {"max_stop_pct": 0.02}}, portfolio)
+    assert manager.max_stop_pct == pytest.approx(0.02)
+
+
+def test_risk_manager_defaults_max_stop_pct_to_disabled(portfolio):
+    manager = RiskManager({}, portfolio)
+    assert manager.max_stop_pct == 0.0
+
+
+def test_risk_manager_size_applies_the_configured_cap(portfolio):
+    manager = RiskManager({"risk": {"max_stop_pct": 0.02}}, portfolio)
+    result = manager.size(code="TEST", equity=EQUITY, atr=1_000.0, price=20_000.0)
+    assert result.stop_distance == pytest.approx(20_000.0 * 0.02)
+
+
+def test_risk_manager_size_is_uncapped_when_max_stop_pct_is_disabled(portfolio):
+    manager = RiskManager({}, portfolio)
+    result = manager.size(code="TEST", equity=EQUITY, atr=1_000.0, price=20_000.0)
+    assert result.stop_distance == pytest.approx(1_000.0)
 
 
 # --------------------------------------------------------------------------

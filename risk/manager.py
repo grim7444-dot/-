@@ -82,13 +82,29 @@ def position_size(
     available_cash: float | None = None,
     max_position_notional_pct: float | None = None,
     risk_budget: float | None = None,
+    max_stop_pct: float | None = None,
 ) -> SizingResult:
     """Size an order so a 1-ATR adverse move costs ``equity * risk_pct``.
 
     ``risk_budget`` optionally caps the money at risk below the per-trade
     amount - used when the portfolio-wide risk cap has partial room left.
+
+    ``max_stop_pct`` (2026-09-23, user request: "왜 -3%가 넘는데도 매도를
+    안한거지" -- 046970 on a volatile screener pick had a raw ATR stop
+    distance of ~3%, well past the ~1.3-2% the strategy's own tiers
+    suggest) caps the ATR-derived stop distance at that fraction of price
+    when set. The risk budget (money at risk) stays exactly the same --
+    only qty changes, going up to compensate for the tighter stop, so
+    Rule 4 ("every trade risks exactly risk_pct of equity") still holds.
+    A quiet stock's stop is untouched; only a genuinely volatile one whose
+    raw ATR distance would exceed the cap gets pulled in.
     """
     stop_distance = float(atr) * float(hard_stop_atr_mult)
+    if (
+        max_stop_pct is not None and max_stop_pct > 0
+        and math.isfinite(price) and price > 0
+    ):
+        stop_distance = min(stop_distance, float(price) * float(max_stop_pct))
     risk_amount = float(equity) * float(risk_pct)
     if risk_budget is not None:
         risk_amount = min(risk_amount, max(0.0, float(risk_budget)))
@@ -429,6 +445,11 @@ class RiskManager:
         self.max_drawdown_pct = float(risk_cfg.get("max_drawdown_pct", 0.10))
         self.atr_period = int(risk_cfg.get("atr_period", 14))
         self.hard_stop_atr_mult = float(risk_cfg.get("hard_stop_atr_mult", 1.0))
+        # ATR 손절 상한 (2026-09-23, 사용자 요청): 046970처럼 변동성 큰
+        # 종목은 ATR 기반 손절폭이 1.3~2%가 아니라 3%까지도 넓어질 수 있어,
+        # "손절이 왜 이렇게 늦게 걸리지"로 이어졌다. 0(기본)이면 비활성 --
+        # 기존처럼 ATR 그대로 사용.
+        self.max_stop_pct = float(risk_cfg.get("max_stop_pct", 0) or 0)
         self.max_position_notional_pct = risk_cfg.get("max_position_notional_pct")
         self.max_total_risk_pct = float(risk_cfg.get("max_total_risk_pct", 0.06))
         self.max_positions = int(risk_cfg.get("max_open_positions", 6))
@@ -476,6 +497,7 @@ class RiskManager:
             available_cash=available_cash,
             max_position_notional_pct=self.max_position_notional_pct,
             risk_budget=risk_budget,
+            max_stop_pct=self.max_stop_pct or None,
         )
 
     def pyramid_add_size(

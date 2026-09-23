@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from indicators import bar_strength, bollinger_bands, ema, rolling_mean_volume
+from indicators import bar_strength, bollinger_bands, ema, relative_volume, rolling_mean_volume
 from market.session_rules import parse_clock
 from portfolio import Position
 from strategies.base import Action, Signal, Strategy
@@ -103,6 +103,16 @@ class ORB(Strategy):
         #: 돌파 확인용 평균거래량 lookback 봉 수.
         volume_lookback: int = 10,
         volume_mult: float = 1.5,
+        #: 상대거래량(RVOL) 필터 (2026-09-23, 사용자 요청 -- 단타 기법 리서치
+        #: 결과 반영): volume_mult는 최근 volume_lookback봉 평균 대비라
+        #: 거래량이 원래 적은 시간대(점심시간대 등)엔 그 낮은 평균 자체가
+        #: 기준이 돼서 진짜 이례적인 거래량인지를 놓칠 수 있다. RVOL은 "지금
+        #: 이 시간대"를 과거 세션의 같은 시간대와 비교해 더 엄격하게 본다.
+        #: 이전 세션 데이터가 아직 없으면(당일 첫 세션 등) 통과시킨다
+        #: (advisory, fail-open) -- 기존 volume_mult 검사에 추가되는
+        #: 조건이지 대체가 아니다.
+        use_rvol_filter: bool = True,
+        min_rvol: float = 1.3,
         #: 상위 추세 판정용 EMA.
         trend_ema: int = 21,
         #: EMA 추세 진입 필터에 허용하는 여유 (2026-09-18, 사용자 요청 --
@@ -244,6 +254,8 @@ class ORB(Strategy):
         self.session_open_minute = session_open_minute
         self.volume_lookback = volume_lookback
         self.volume_mult = volume_mult
+        self.use_rvol_filter = use_rvol_filter
+        self.min_rvol = min_rvol
         self.trend_ema = trend_ema
         self.trend_buffer_pct = trend_buffer_pct
         self.min_bar_strength = min_bar_strength
@@ -515,6 +527,15 @@ class ORB(Strategy):
                 window,
                 f"돌파 거부: 거래량 {vol_ratio:.2f}x < {self.volume_mult}x",
             )
+
+        if self.use_rvol_filter:
+            rvol = relative_volume(window).iloc[-1]
+            if pd.notna(rvol) and rvol < self.min_rvol:
+                return self._hold(
+                    window,
+                    f"상대거래량 {rvol:.2f}x < {self.min_rvol}x -- "
+                    f"이 시간대 평소 대비 거래량 부족",
+                )
 
         if self.min_bar_strength > 0:
             strength = float(bar_strength(window).iloc[-1])

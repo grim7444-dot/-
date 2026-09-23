@@ -29,6 +29,7 @@ from indicators import (
     ema,
     macd,
     nearest_resistance,
+    relative_volume,
     rolling_max,
     rolling_min,
     rsi,
@@ -163,6 +164,14 @@ class PullbackBounce(Strategy):
         #: 오른 뒤 진입) 즉시 되돌리는 가짜 신호는 걸러진다. 0이면 기존처럼
         #: 즉시 진입(비활성).
         confirm_bars: int = 1,
+        #: 상대거래량(RVOL) 필터 (2026-09-23, 사용자 요청 -- 단타 기법
+        #: 리서치 결과 반영). PullbackBounce에는 지금까지 거래량 확인이
+        #: 전혀 없었다 -- 반등봉이 "지금 이 시간대" 기준으로 평소보다
+        #: 거래량이 실린 진짜 매수세인지를 과거 세션의 같은 시간대와
+        #: 비교해서 본다. 이전 세션 데이터가 없으면(당일 첫 세션 등)
+        #: 통과시킨다(advisory, fail-open).
+        use_rvol_filter: bool = True,
+        min_rvol: float = 1.3,
         atr_period: int = 14,
         hard_stop_atr_mult: float = 1.0,
         **params,
@@ -213,6 +222,8 @@ class PullbackBounce(Strategy):
         self.fib_min = fib_min
         self.fib_max = fib_max
         self.confirm_bars = confirm_bars
+        self.use_rvol_filter = use_rvol_filter
+        self.min_rvol = min_rvol
 
     @property
     def warmup(self) -> int:
@@ -404,6 +415,15 @@ class PullbackBounce(Strategy):
                     window,
                     f"반등 확인 대기 -- {self.confirm_bars}봉 연속 전봉고가 갱신 필요 "
                     f"(가짜 반등 필터)",
+                )
+
+        if self.use_rvol_filter:
+            rvol = relative_volume(window).iloc[-1]
+            if pd.notna(rvol) and rvol < self.min_rvol:
+                return self._hold(
+                    window,
+                    f"상대거래량 {rvol:.2f}x < {self.min_rvol}x -- "
+                    f"이 시간대 평소 대비 거래량 부족",
                 )
 
         if self.min_bar_strength > 0:

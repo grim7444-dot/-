@@ -101,6 +101,35 @@ def rolling_mean_volume(df: pd.DataFrame, period: int) -> pd.Series:
     return df["volume"].rolling(window=period, min_periods=period).mean()
 
 
+def relative_volume(df: pd.DataFrame) -> pd.Series:
+    """RVOL: each bar's volume divided by the average volume of the SAME
+    time-of-day bar across every *prior* session present in *df*.
+
+    ``rolling_mean_volume`` treats 13:00 and 09:05 the same -- a trailing
+    window average is naturally lower during a quiet stretch like lunch,
+    so an ordinary volume spike there can still clear a trailing-average
+    filter even though it is not actually unusual for that time of day.
+    RVOL asks the sharper question: is this a lot of volume for *this
+    specific moment*, compared to what that same moment has looked like on
+    prior days?
+
+    NaN wherever no earlier session has a bar at that exact time-of-day yet
+    (the very first session in the frame) -- callers should treat NaN as
+    "not enough history" and fail open, the same convention every other
+    indicator here uses. Only bars from strictly earlier sessions ever
+    feed a given bar's baseline, so this holds the same no-lookahead
+    guarantee as everything else in this module.
+    """
+    validate_ohlcv(df)
+    times = pd.DatetimeIndex(df.index).time
+    volume = pd.Series(df["volume"].to_numpy(), index=df.index)
+    baseline = volume.groupby(times, group_keys=False).apply(
+        lambda g: g.expanding().mean().shift(1)
+    )
+    baseline = baseline.reindex(df.index)
+    return df["volume"] / baseline.replace(0, pd.NA)
+
+
 def on_balance_volume(df: pd.DataFrame) -> pd.Series:
     """Cumulative volume: added on an up close, subtracted on a down close.
 

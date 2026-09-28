@@ -2366,6 +2366,32 @@ def test_single_instance_lock_writes_the_holder_pid(tmp_path):
         lock.release()
 
 
+def test_single_instance_lock_overwrites_stale_content_cleanly(tmp_path):
+    """2026-09-28 live crash: a stale lock file left over from a previous
+    run (its PID a different length than this run's) crashed acquire() with
+    a PermissionError on Windows instead of either succeeding cleanly or
+    raising the OSError this is meant to detect a real second instance
+    with -- "a+" mode's write-always-appends behavior disagreed with the
+    truncate()/write() sequence about where the file actually was. Not
+    reproducible on this platform's fcntl path (flock ignores file
+    position entirely), but the content contract this locks down --
+    stale bytes must never survive into the freshly-acquired file -- is
+    the same on every platform."""
+    import os
+
+    from main import _SingleInstanceLock
+
+    lock_path = tmp_path / ".bot.lock"
+    lock_path.write_text("999999999")  # longer than a typical fresh PID
+
+    lock = _SingleInstanceLock(lock_path)
+    try:
+        assert lock.acquire() is True
+        assert lock_path.read_text() == str(os.getpid())
+    finally:
+        lock.release()
+
+
 # ---------------------------------------------------------------------------
 # 23. cmd_trade end-to-end -- a --once/--dry-run smoke test through the real
 #    CLI entry point, not just through TradingEngine directly. This is the

@@ -3246,7 +3246,21 @@ class _SingleInstanceLock:
         self._fh = None
 
     def acquire(self) -> bool:
-        fh = open(self.path, "a+")
+        # 2026-09-28 (live crash): "a+" mode's write-always-goes-to-EOF
+        # behavior on Windows' CRT applies even after an explicit seek(0) --
+        # once the lock file already has stale content from a prior run
+        # (e.g. a longer PID string), msvcrt.locking() ends up locking a
+        # byte range anchored at that old EOF, while the truncate()/write()
+        # just below operate at position 0. Those two disagreeing about
+        # "where the file is" surfaced as a PermissionError on flush()
+        # instead of the OSError this is supposed to raise on a genuine
+        # second instance -- i.e. it could crash a legitimate solo restart
+        # instead of just detecting a real duplicate. O_RDWR|O_CREAT (no
+        # O_APPEND, no O_TRUNC) sidesteps append-mode semantics entirely --
+        # every seek/write/lock call operates on exactly the position asked
+        # for, and O_CREAT is atomic so there is no create-vs-open race.
+        fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o644)
+        fh = os.fdopen(fd, "r+")
         try:
             if sys.platform == "win32":
                 import msvcrt

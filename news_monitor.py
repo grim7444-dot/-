@@ -1,6 +1,6 @@
-"""트럼프 관련 뉴스 모니터 (구글 뉴스 RSS) — 텔레그램 알림 + 진입 우선 부스트.
+"""트럼프 관련 뉴스 모니터 (구글 뉴스 RSS) — 카카오톡 알림 + 진입 우선 부스트.
 
-'트럼프' 헤드라인 중 무역·관세·산업 키워드가 함께 나오는 것만 감지해 텔레그램
+'트럼프' 헤드라인 중 무역·관세·산업 키워드가 함께 나오는 것만 감지해 카카오톡
 으로 알리고, 매칭된 테마에 속한 종목(``config.yaml``의 ``themes:``)을
 boost_duration_minutes 동안 "진입 우선" 상태로 만든다.
 
@@ -127,7 +127,7 @@ class NewsMonitor:
 
     def _poll_loop(self) -> None:
         # 시작 시 기존 헤드라인은 알림 없이 흡수 -- 안 그러면 시작하자마자
-        # 오늘 이전 뉴스 수십 건이 한꺼번에 텔레그램으로 쏟아진다.
+        # 오늘 이전 뉴스 수십 건이 한꺼번에 카카오톡으로 쏟아진다.
         for title, _ in self._fetch():
             self._seen.add(title)
         logger.info("news: 초기화 완료 -- 기존 헤드라인 %d건 로드", len(self._seen))
@@ -164,4 +164,4 @@ class NewsMonitor:
                             f"관련 테마: {', '.join(themes)}{boost_note}\n{link}"
                         )
                     except Exception as exc:
-                        logger.debug("news: 텔레그램 전송 실패: %s", exc)
+                        logger.debug("news: 카카오톡 전송 실패: %s", exc)

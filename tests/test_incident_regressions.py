@@ -1203,8 +1203,8 @@ def _credentials(label: str, with_keys: bool):
         app_key=key,
         secret_key=secret,
         account_no=blank,
-        telegram_token=blank,
-        telegram_chat_id=blank,
+        kakao_rest_api_key=blank,
+        kakao_refresh_token=blank,
         loaded_for=label,
     )
 

@@ -45,8 +45,8 @@ SECRET_ENV_KEYS = (
     "KIWOOM_LIVE_APP_KEY",
     "KIWOOM_LIVE_SECRET_KEY",
     "KIWOOM_ACCOUNT_NO",
-    "TELEGRAM_BOT_TOKEN",
-    "TELEGRAM_CHAT_ID",
+    "KAKAO_REST_API_KEY",
+    "KAKAO_REFRESH_TOKEN",
 )
 
 REDACTED = "***REDACTED***"
@@ -272,8 +272,8 @@ class Credentials:
     app_key: Secret
     secret_key: Secret
     account_no: Secret
-    telegram_token: Secret
-    telegram_chat_id: Secret
+    kakao_rest_api_key: Secret
+    kakao_refresh_token: Secret
     dart_api_key: Secret
     #: Which key set was loaded. Should always match the ModeDecision.
     loaded_for: str = "PAPER"
@@ -283,8 +283,8 @@ class Credentials:
         return bool(self.app_key) and bool(self.secret_key)
 
     @property
-    def has_telegram(self) -> bool:
-        return bool(self.telegram_token) and bool(self.telegram_chat_id)
+    def has_kakao(self) -> bool:
+        return bool(self.kakao_rest_api_key) and bool(self.kakao_refresh_token)
 
 
 def load_env(dotenv_path: str | os.PathLike[str] | None = None) -> dict[str, str]:
@@ -323,8 +323,8 @@ def load_credentials(
         app_key=Secret(env.get(f"{prefix}APP_KEY")),
         secret_key=Secret(env.get(f"{prefix}SECRET_KEY")),
         account_no=Secret(env.get("KIWOOM_ACCOUNT_NO")),
-        telegram_token=Secret(env.get("TELEGRAM_BOT_TOKEN")),
-        telegram_chat_id=Secret(env.get("TELEGRAM_CHAT_ID")),
+        kakao_rest_api_key=Secret(env.get("KAKAO_REST_API_KEY")),
+        kakao_refresh_token=Secret(env.get("KAKAO_REFRESH_TOKEN")),
         dart_api_key=Secret(env.get("DART_API_KEY")),
         loaded_for="LIVE" if live else "PAPER",
     )

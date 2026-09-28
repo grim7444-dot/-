@@ -35,8 +35,8 @@ def _broker(config):
         app_key=Secret("K" * 43),
         secret_key=Secret("S" * 43),
         account_no=Secret("12345678"),
-        telegram_token=Secret(""),
-        telegram_chat_id=Secret(""),
+        kakao_rest_api_key=Secret(""),
+        kakao_refresh_token=Secret(""),
         dart_api_key=Secret(""),
         loaded_for="PAPER",
     )

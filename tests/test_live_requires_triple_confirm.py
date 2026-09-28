@@ -271,8 +271,8 @@ def test_broker_refuses_mismatched_credentials(config):
         app_key=Secret(PAPER_KEY),
         secret_key=Secret(PAPER_SECRET),
         account_no=Secret(""),
-        telegram_token=Secret(""),
-        telegram_chat_id=Secret(""),
+        kakao_rest_api_key=Secret(""),
+        kakao_refresh_token=Secret(""),
         loaded_for="PAPER",
     )
     with pytest.raises(BrokerError, match="does not match"):

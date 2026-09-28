@@ -150,7 +150,7 @@ python main.py status                     # state, positions, drawdown, capacity
 python main.py stop --close-all           # cancel orders, flatten, persist STOPPED
 python main.py resume                     # clear STOPPED
 
-python report.py morning --dry-run        # pre-session briefing (Telegram preview)
+python report.py morning --dry-run        # pre-session briefing (KakaoTalk preview)
 python report.py evening --dry-run        # end-of-day wrap
 ```
 
@@ -173,7 +173,7 @@ python report.py evening --dry-run        # end-of-day wrap
 | 9 | App keys come from `.env` only and never reach logs, exception messages or reports | `settings.Secret`, `SecretFilter`, `install_exception_masking` | canary test; secrets render as `***REDACTED***` |
 | 10 | Backtest fills start on the bar **after** the signal bar | `backtest.Backtester` | `test_no_lookahead.py` |
 | 11 | Commission, transaction tax and slippage live in `config.yaml` and print with every result | `market/rules.py::TradingCosts` | `test_krx_rules.py`, `test_no_lookahead.py` |
-| 12 | Telegram is dry-run by default; a missing token gives a preview, not an error | `report.send_telegram` | `python report.py morning --dry-run` |
+| 12 | KakaoTalk is dry-run by default; missing credentials give a preview, not an error | `report.send_kakao` | `python report.py morning --dry-run` |
 
 ### The live-trading gate
 
@@ -438,7 +438,7 @@ broker.py                 BrokerBase, KiwoomBroker, DryRunBroker, rate limit + r
 portfolio.py              positions, state.json, trades.csv, daily_pnl.csv
 backtest.py               next-bar-fill engine, KRX cost model, metrics
 universe_profile.py       volatility / liquidity / correlation, strategy suggestions
-report.py                 morning & evening reports, Telegram dry-run
+report.py                 morning & evening reports, KakaoTalk dry-run
 market/
   calendar.py             session phases, business days, auction safety
   rules.py                tick ladder, ±30% limits, asymmetric costs

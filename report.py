@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Morning and evening reports, with Telegram delivery.
+"""Morning and evening reports, with KakaoTalk delivery.
 
     python report.py morning --dry-run
     python report.py evening --dry-run
 
-Safety rule 12: Telegram sending is dry-run by default - you have to pass
-``--send`` to deliver anything. With no bot token configured the report is
+Safety rule 12: KakaoTalk sending is dry-run by default - you have to pass
+``--send`` to deliver anything. With no credentials configured the report is
 printed as a console preview instead of raising.
 
 Safety rule 9: credentials never appear in a report.
@@ -19,6 +19,7 @@ from collections import Counter
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
+from kakao_bot import KakaoNotifier
 from market.calendar import KST, KrxCalendar
 from portfolio import Portfolio
 from risk.manager import RiskManager
@@ -28,7 +29,6 @@ from settings import (
     load_credentials,
     load_env,
     make_console_tolerant,
-    mask_text,
     resolve_mode,
 )
 
@@ -38,55 +38,43 @@ DIVIDER = "-" * 46
 
 
 # --------------------------------------------------------------------------
-# Telegram
+# KakaoTalk
 # --------------------------------------------------------------------------
 
 
-def send_telegram(
+def send_kakao(
     text: str,
     credentials: Credentials,
     dry_run: bool = True,
-    parse_mode: str = "Markdown",
-    timeout: float = 10.0,
 ) -> dict[str, Any]:
-    """Deliver *text* to Telegram, or preview it.
+    """Deliver *text* to the user's own KakaoTalk, or preview it.
 
-    A missing token is *not* an error: the caller gets
-    ``sent=False, reason="no credentials"`` and a console preview, which is
-    what makes ``--dry-run`` usable with no bot set up.
+    Thin wrapper around KakaoNotifier.send_with_result -- the actual HTTP
+    and access-token-refresh mechanics live there (shared with the live
+    bot's alerts) so there is exactly one place that can get token rotation
+    wrong, not two. Missing credentials are *not* an error: the caller gets
+    ``sent=False, reason="no Kakao credentials configured"`` and a console
+    preview, which is what makes ``--dry-run`` usable with nothing set up.
     """
-    if dry_run or not credentials.has_telegram:
-        reason = "dry-run" if dry_run else "no Telegram credentials configured"
+    notifier = KakaoNotifier(
+        rest_api_key=credentials.kakao_rest_api_key.reveal() if credentials.has_kakao else "",
+        refresh_token=credentials.kakao_refresh_token.reveal() if credentials.has_kakao else "",
+        dry_run=dry_run,
+    )
+    result = notifier.send_with_result(text)
+    if result["sent"]:
+        logger.info("Kakao message delivered (%d chars)", len(text))
+    elif result["reason"] in ("dry-run", "no Kakao credentials configured"):
         print()
         print("=" * 60)
-        print(f"  TELEGRAM PREVIEW ({reason} - nothing was sent)")
+        print(f"  KAKAO PREVIEW ({result['reason']} - nothing was sent)")
         print("=" * 60)
         print(text)
         print("=" * 60)
-        return {"sent": False, "reason": reason, "preview": text}
-
-    try:
-        import requests
-
-        response = requests.post(
-            f"https://api.telegram.org/bot{credentials.telegram_token.reveal()}/sendMessage",
-            json={
-                "chat_id": credentials.telegram_chat_id.reveal(),
-                "text": text,
-                "parse_mode": parse_mode,
-            },
-            timeout=timeout,
-        )
-        response.raise_for_status()
-    except Exception as exc:
-        # mask_text keeps the bot token out of the URL requests embeds in errors.
-        message = mask_text(str(exc))
-        logger.error("Telegram send failed: %s", message)
-        print(f"\nTelegram send failed ({message}). Message preview:\n\n{text}\n")
-        return {"sent": False, "reason": message, "preview": text}
-
-    logger.info("Telegram message delivered (%d chars)", len(text))
-    return {"sent": True, "reason": "", "preview": text}
+    else:
+        logger.error("Kakao send failed: %s", result["reason"])
+        print(f"\nKakao send failed ({result['reason']}). Message preview:\n\n{text}\n")
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -378,7 +366,7 @@ def _load(args: argparse.Namespace):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="report.py", description="Morning / evening reports (Telegram dry-run by default)"
+        prog="report.py", description="Morning / evening reports (KakaoTalk dry-run by default)"
     )
     parser.add_argument("--config", default=None, help="path to config.yaml")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -390,7 +378,7 @@ def build_parser() -> argparse.ArgumentParser:
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--dry-run", action="store_true", default=True, help="preview only (default)")
         p.add_argument(
-            "--send", dest="dry_run", action="store_false", help="actually deliver to Telegram"
+            "--send", dest="dry_run", action="store_false", help="actually deliver to KakaoTalk"
         )
     return parser
 
@@ -407,14 +395,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         text = build_evening_report(config, portfolio, risk, decision.label)
 
-    telegram_cfg = config.get("telegram") or {}
-    dry_run = bool(args.dry_run or telegram_cfg.get("dry_run", True))
-    result = send_telegram(
-        text,
-        credentials,
-        dry_run=dry_run,
-        parse_mode=telegram_cfg.get("parse_mode", "Markdown"),
-    )
+    kakao_cfg = config.get("kakao") or {}
+    dry_run = bool(args.dry_run or kakao_cfg.get("dry_run", True))
+    result = send_kakao(text, credentials, dry_run=dry_run)
     if not result["sent"]:
         print(f"\n(not sent: {result['reason']})")
     return 0

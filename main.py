@@ -56,7 +56,7 @@ from strategies import build_strategy, build_strategies
 from strategies.base import Action, Strategy
 from strategies.orb import ORB
 from strategies.pullback import PullbackBounce
-from telegram_bot import TelegramCommandHandler, TelegramNotifier, build_telegram
+from kakao_bot import build_kakao
 from investor_flow import InvestorFlowScanner
 from us_market import USMarketMonitor
 from dart_monitor import DartMonitor
@@ -954,12 +954,10 @@ class TradingEngine:
             code: SessionRules.from_config(rt.universe.get(code, {}))
             for code in rt.strategies
         }
-        # Telegram alerts + remote commands
-        self._tg_notifier, self._tg_handler = build_telegram(
-            rt.credentials, rt.config
-        )
-        self._entries_paused: bool = False  # set by /stop, cleared by /resume
-        self._wire_telegram_commands()
+        # KakaoTalk alerts (2026-09-28: 텔레그램 완전 교체 -- 개인 카카오 API는
+        # 명령 수신이 안 돼서 /stop, /resume, /close_all은 여기 없다. 터미널의
+        # `python main.py stop`/`resume`, 또는 Ctrl+C로 대체한다).
+        self._tg_notifier = build_kakao(rt.credentials, rt.config)
         # Investor flow scanner (외국인·기관 순매수)
         self._flow_scanner = InvestorFlowScanner(rt.config)
         self._flow_scan_date: "date | None" = None
@@ -983,7 +981,7 @@ class TradingEngine:
         self._dart_monitor = DartMonitor(rt.config, cred_dict)
         self._dart_monitor.set_notifier(self._tg_notifier)
         self._dart_relax_pct: float = float((rt.config.get("dart") or {}).get("entry_relax_pct", 0.2))
-        # 트럼프 관련 뉴스 모니터: 텔레그램 알림 + 테마 매칭 시 진입 조건 완화.
+        # 트럼프 관련 뉴스 모니터: 카카오톡 알림 + 테마 매칭 시 진입 조건 완화.
         # 사용자 요청으로 실제 진입에도 반영 (_apply_entry_boost 참고) -- 진입을
         # 강제로 걸지는 않고, 기존 기술적 신호의 문턱만 부스트 지속시간 동안 낮춘다.
         self._news_monitor = NewsMonitor(rt.config)
@@ -1098,74 +1096,6 @@ class TradingEngine:
         elif isinstance(strategy, PullbackBounce):
             strategy.min_bar_strength *= factor
             strategy.pullback_min_pct *= factor
-
-    # -- Telegram wiring ---------------------------------------------------
-
-    def _wire_telegram_commands(self) -> None:
-        h = self._tg_handler
-        rt = self.rt
-
-        def _status() -> str:
-            try:
-                account = rt.broker.get_account()
-                equity = account.equity
-                cash = account.cash
-            except Exception:
-                equity = rt.portfolio.state.last_equity
-                cash = 0.0
-            positions = rt.portfolio.positions()
-            state = rt.portfolio.state
-            lines = [
-                f"*봇 상태* (`{rt.decision.label}`)",
-                f"자산: `{equity:,.0f} KRW`  현금: `{cash:,.0f} KRW`",
-                f"고점대비: `{rt.portfolio.drawdown_pct():.2%}`  상태: `{state.status}`",
-                f"진입: `{'일시정지' if self._entries_paused else '활성'}`",
-                "",
-                f"*포지션 {len(positions)}개*",
-            ]
-            for code, pos in positions.items():
-                name = rt.name_of(code)
-                lines.append(
-                    f"  `{code} {name}` {pos.side} {int(pos.qty)}주 "
-                    f"@ {pos.entry_price:,.0f} 손절 {pos.effective_stop():,.0f}"
-                )
-            if not positions:
-                lines.append("  없음")
-            return "\n".join(lines)
-
-        def _stop() -> str:
-            self._entries_paused = True
-            logger.warning("Telegram /stop: new entries paused")
-            self._tg_notifier.alert_paused("텔레그램 /stop 명령")
-            return "⏸ 신규 진입 중지됨. 기존 포지션 관리는 계속."
-
-        def _resume() -> str:
-            self._entries_paused = False
-            logger.info("Telegram /resume: entries re-enabled")
-            self._tg_notifier.alert_resumed()
-            return "▶️ 진입 재개."
-
-        def _close_all() -> str:
-            try:
-                closed = rt.broker.flatten(rt.portfolio.positions())
-                for code in list(rt.portfolio.positions()):
-                    pos = rt.portfolio.get(code)
-                    if pos:
-                        try:
-                            price = rt.broker.get_current_price(code) or pos.entry_price
-                        except Exception:
-                            price = pos.entry_price
-                        rt.portfolio.close_position(code, exit_price=price, exit_reason="telegram /close_all")
-                self._tg_notifier.alert_close_all_done(closed)
-                return f"🔒 전체 청산 완료 — {closed}개 포지션."
-            except Exception as exc:
-                logger.error("Telegram /close_all error: %s", exc)
-                return f"❌ 청산 실패: {exc}"
-
-        h.on_status = _status
-        h.on_stop = _stop
-        h.on_resume = _resume
-        h.on_close_all = _close_all
 
     def interval_for(self, code: str) -> int:
         timeframe = self.rt.universe.get(code, {}).get("timeframe", "1Day")
@@ -2054,7 +1984,7 @@ class TradingEngine:
         Rate-limited to risk.manual_exits_notify_minutes (default 10) per
         position, tracked on Position.last_manual_exit_notice -- without it
         this would fire on every cycle (every fast_exit_check_seconds, 5s
-        by default, once a position is armed) and flood Telegram.
+        by default, once a position is armed) and flood KakaoTalk.
         """
         rt = self.rt
         entry = position.entry_price
@@ -2581,10 +2511,6 @@ class TradingEngine:
                     )
                     return
 
-        if self._entries_paused:
-            logger.info("%s: entry skipped - paused via Telegram /stop", label)
-            return
-
         lock_reason = _daily_profit_lock_reason(
             account.equity, rt.portfolio.state.day_start_equity, self._daily_profit_lock_pct,
         )
@@ -2899,7 +2825,6 @@ class TradingEngine:
             self.tick_seconds,
             {c: self.interval_for(c) for c in self.rt.strategies},
         )
-        self._tg_handler.start()
         self._dart_monitor.set_universe({str(c) for c in self.rt.strategies})
         self._dart_monitor.start()
         self._news_monitor.start()
@@ -2969,7 +2894,6 @@ class TradingEngine:
         finally:
             self._dart_monitor.stop()
             self._news_monitor.stop()
-            self._tg_handler.shutdown()
 
 
 # --------------------------------------------------------------------------

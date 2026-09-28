@@ -2,8 +2,8 @@
 
 금융감독원 DART OpenAPI를 poll_interval_seconds마다 폴링해 유니버스 종목의
 신규 공시를 감지한다. 긍정 공시(계약·실적)는 해당 종목을 boost_duration_minutes간
-"진입 우선" 상태로 만들고 텔레그램 알림을 보낸다. 부정 공시(CB·유상증자)는
-당일 진입을 차단하고 텔레그램 알림을 보낸다.
+"진입 우선" 상태로 만들고 카카오톡 알림을 보낸다. 부정 공시(CB·유상증자)는
+당일 진입을 차단하고 카카오톡 알림을 보낸다.
 
 설정:
   1. https://opendart.fss.or.kr/ 에서 무료 API키 발급
@@ -187,4 +187,4 @@ class DartMonitor:
                     try:
                         self._notifier.send(msg)
                     except Exception as exc:
-                        logger.debug("dart: 텔레그램 전송 실패: %s", exc)
+                        logger.debug("dart: 카카오톡 전송 실패: %s", exc)

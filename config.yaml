@@ -993,11 +993,13 @@ macro_gauge:
   extra_positions: 1          # 강세일 때 동시 보유 종목 수 +1 (기본 6 -> 7)
   risk_pct_boost: 1.2         # 강세일 때 종목당 리스크 배수 (1% -> 1.2%)
 
-telegram:
-  # Rule 12: dry-run by default. A missing token prints a preview, not an error.
-  # Set dry_run: false and add TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID to .env to enable.
+kakao:
+  # Rule 12: dry-run by default. Missing credentials print a preview, not an
+  # error. Set dry_run: false and add KAKAO_REST_API_KEY + KAKAO_REFRESH_TOKEN
+  # to .env to enable (2026-09-28: 텔레그램 완전 교체, see kakao_bot.py's module
+  # docstring for the one-time browser setup). One-way alerts only -- there
+  # are no /status, /stop, /resume, /close_all commands over KakaoTalk.
   dry_run: false
-  poll_interval_seconds: 3   # how often to poll for commands (/status, /stop, etc.)
   parse_mode: Markdown
 
 live_banner:

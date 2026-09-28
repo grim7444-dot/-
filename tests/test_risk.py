@@ -651,8 +651,8 @@ def test_kill_switch_leaves_unrelated_holdings_alone(config):
         app_key=Secret("K" * 43),
         secret_key=Secret("S" * 43),
         account_no=Secret("12345678"),
-        telegram_token=Secret(""),
-        telegram_chat_id=Secret(""),
+        kakao_rest_api_key=Secret(""),
+        kakao_refresh_token=Secret(""),
         loaded_for="PAPER",
     )
     broker = KiwoomBroker(
@@ -684,8 +684,8 @@ def test_broker_refuses_orders_outside_the_universe(config):
         app_key=Secret("K" * 43),
         secret_key=Secret("S" * 43),
         account_no=Secret("12345678"),
-        telegram_token=Secret(""),
-        telegram_chat_id=Secret(""),
+        kakao_rest_api_key=Secret(""),
+        kakao_refresh_token=Secret(""),
         loaded_for="PAPER",
     )
     broker = KiwoomBroker(

@@ -114,13 +114,15 @@ class Position:
     #: TradingEngine._morning_partial_exit_reason.
     morning_partial_done: bool = False
     #: ISO timestamp of the last "직접 매도 필요" notice sent for this position
-    #: under risk.manual_take_profit (2026-09-21, user request: "손절과 익절은
-    #: 내가 할테니까 종목만 선정하게 하는건 어떨까" -> stop-loss stays
-    #: automatic, every take-profit decision becomes a notify-only alert).
-    #: Empty means never notified yet. Rate-limits repeat notices to
-    #: risk.manual_take_profit_notify_minutes instead of firing every cycle
-    #: (as often as every schedule.fast_exit_check_seconds once armed) --
-    #: see TradingEngine._defer_profit_exit.
+    #: under risk.manual_exits. First added 2026-09-21 for take-profit exits
+    #: only ("손절과 익절은 내가 할테니까 종목만 선정하게 하는건 어떨까");
+    #: widened 2026-09-28 to cover the strategy's own stop_pct exits too
+    #: ("종목만 고르고 손절익절을 내가 해야 되겠어") -- only the engine's own
+    #: ATR-derived hard stop and the scheduled TIME EXIT still sell on their
+    #: own now. Empty means never notified yet. Rate-limits repeat notices to
+    #: risk.manual_exits_notify_minutes instead of firing every cycle (as
+    #: often as every schedule.fast_exit_check_seconds once armed) -- see
+    #: TradingEngine._defer_exit.
     last_manual_exit_notice: str = ""
 
     @property

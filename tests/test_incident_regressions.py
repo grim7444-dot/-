@@ -2392,6 +2392,48 @@ def test_single_instance_lock_overwrites_stale_content_cleanly(tmp_path):
         lock.release()
 
 
+def test_single_instance_lock_locks_more_than_one_byte_on_windows(tmp_path, monkeypatch):
+    """2026-09-28, second live crash: the O_RDWR fix above did not stop the
+    same PermissionError-on-flush() from recurring. Root cause was one
+    layer deeper -- msvcrt.locking(fh, LK_NBLCK, 1) locks exactly one byte
+    at position 0, then the very next call writes a PID string, almost
+    always more than one character, starting at that same position. The
+    write extends past the single locked byte into a range this handle was
+    never granted a lock on, and Windows enforces that even for the
+    lock-holding process itself, so the write fails once flushed. Locking a
+    fixed range comfortably wider than any real PID string (see
+    _LOCK_BYTES) keeps every write fully inside the locked range. This is
+    only reachable through the msvcrt branch, so it fakes sys.platform and
+    the msvcrt module rather than relying on this sandbox's actual OS."""
+    import sys
+    import types
+
+    from main import _SingleInstanceLock
+
+    calls = []
+
+    fake_msvcrt = types.SimpleNamespace(
+        LK_NBLCK=1,
+        LK_UNLCK=2,
+        locking=lambda fd, mode, nbytes: calls.append((mode, nbytes)),
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+
+    lock_path = tmp_path / ".bot.lock"
+    lock = _SingleInstanceLock(lock_path)
+    assert lock.acquire() is True
+    lock.release()
+
+    assert len(calls) == 2
+    lock_call, unlock_call = calls
+    assert lock_call == (fake_msvcrt.LK_NBLCK, _SingleInstanceLock._LOCK_BYTES)
+    assert unlock_call == (fake_msvcrt.LK_UNLCK, _SingleInstanceLock._LOCK_BYTES)
+    # A real PID can run to 10 digits; the locked range must stay wider
+    # than that so a write is never able to spill past what is locked.
+    assert _SingleInstanceLock._LOCK_BYTES > 10
+
+
 # ---------------------------------------------------------------------------
 # 23. cmd_trade end-to-end -- a --once/--dry-run smoke test through the real
 #    CLI entry point, not just through TradingEngine directly. This is the

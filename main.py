@@ -3241,30 +3241,35 @@ class _SingleInstanceLock:
     the instant the process exits, by any means, so it can never go stale.
     """
 
+    # 2026-09-28 (second live crash, same PermissionError at the same
+    # flush() after the O_RDWR fix below): msvcrt.locking()'s byte count is
+    # not a "lock at least this many bytes" hint, it is the exact range
+    # locked. The old call locked a single byte at position 0, then wrote a
+    # PID string (almost always more than one character) starting at that
+    # same position -- so the write extended past the locked range into
+    # bytes msvcrt itself had never granted this handle a lock on. Windows'
+    # mandatory locking enforces that even for the handle that owns the
+    # neighboring lock, so the write's underlying I/O failed once flushed.
+    # A PID is never more than 10 digits; lock a fixed range comfortably
+    # larger than any real PID string so every write this method ever does
+    # stays fully inside the locked range.
+    _LOCK_BYTES = 32
+
     def __init__(self, path: Path) -> None:
         self.path = path
         self._fh = None
 
     def acquire(self) -> bool:
-        # 2026-09-28 (live crash): "a+" mode's write-always-goes-to-EOF
-        # behavior on Windows' CRT applies even after an explicit seek(0) --
-        # once the lock file already has stale content from a prior run
-        # (e.g. a longer PID string), msvcrt.locking() ends up locking a
-        # byte range anchored at that old EOF, while the truncate()/write()
-        # just below operate at position 0. Those two disagreeing about
-        # "where the file is" surfaced as a PermissionError on flush()
-        # instead of the OSError this is supposed to raise on a genuine
-        # second instance -- i.e. it could crash a legitimate solo restart
-        # instead of just detecting a real duplicate. O_RDWR|O_CREAT (no
-        # O_APPEND, no O_TRUNC) sidesteps append-mode semantics entirely --
-        # every seek/write/lock call operates on exactly the position asked
-        # for, and O_CREAT is atomic so there is no create-vs-open race.
+        # O_RDWR|O_CREAT (no O_APPEND, no O_TRUNC): every seek/write/lock
+        # call operates on exactly the position asked for, and O_CREAT is
+        # atomic so there is no create-vs-open race (2026-09-28, first fix
+        # for this same crash -- necessary but not sufficient on its own).
         fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o644)
         fh = os.fdopen(fd, "r+")
         try:
             if sys.platform == "win32":
                 import msvcrt
-                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, self._LOCK_BYTES)
             else:
                 import fcntl
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -3286,7 +3291,7 @@ class _SingleInstanceLock:
             if sys.platform == "win32":
                 import msvcrt
                 fh.seek(0)
-                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, self._LOCK_BYTES)
             else:
                 import fcntl
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)

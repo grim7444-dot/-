@@ -865,6 +865,27 @@ def _symbol_loss_streak_reason(streak: int, max_losses: int) -> str | None:
     return None
 
 
+def _daily_loss_streak_reason(streak: int, max_losses: int) -> str | None:
+    """Reason to refuse ANY fresh entry today, or None to allow one.
+
+    2026-09-28 (user request): the existing symbol_loss_streak only trips
+    when the SAME symbol loses repeatedly. A day where the whole setup just
+    isn't working can instead produce back-to-back losses spread across
+    several different symbols -- 043260, then 069540, then 012210, none of
+    them individually hitting max_symbol_losses_per_day -- and nothing
+    stopped the bot from continuing to chase new symbols on a day this bad.
+    Once the account-wide streak (see Portfolio.record_daily_result) hits
+    max_losses, every new entry is blocked for the rest of the day; any
+    profit exit anywhere resets it to 0. Existing positions are unaffected
+    -- this only blocks new entries, never an exit.
+    """
+    if max_losses <= 0:
+        return None
+    if streak >= max_losses:
+        return f"오늘 계좌 전체 {streak}연속 손절 -- 신규 진입 전체 차단"
+    return None
+
+
 # --------------------------------------------------------------------------
 # Trading engine
 # --------------------------------------------------------------------------
@@ -915,6 +936,14 @@ class TradingEngine:
         # 하루가 바뀌면 mark_equity()에서 함께 초기화된다.
         self._max_symbol_losses_per_day: int = int(
             (rt.config.get("risk") or {}).get("max_symbol_losses_per_day", 2)
+        )
+        # 계좌 전체 당일 연속 손절 회수 제한 (2026-09-28, 사용자 요청) --
+        # max_symbol_losses_per_day와 달리 종목 무관하게 오늘 전체 연속
+        # 손절 횟수를 본다. Portfolio.record_daily_result가 state.json에
+        # 누적하고, 하루가 바뀌면 mark_equity()에서 함께 초기화된다.
+        # 0이면 비활성(기본).
+        self._max_daily_loss_streak: int = int(
+            (rt.config.get("risk") or {}).get("max_daily_loss_streak", 0)
         )
         # NXT pre-market bias: code -> % change vs previous close (set at 08:00-08:30)
         self._nxt_bias: dict[str, float] = {}
@@ -2108,6 +2137,7 @@ class TradingEngine:
             is_profit = "익절" in reason
             self._last_exit_was_profit[code] = is_profit
             rt.portfolio.record_symbol_result(code, is_profit)
+            rt.portfolio.record_daily_result(is_profit)
             self._tg_notifier.alert_exit(
                 code=code,
                 name=rt.name_of(code),
@@ -2572,6 +2602,14 @@ class TradingEngine:
         )
         if streak_reason is not None:
             logger.info("%s: entry skipped - %s", label, streak_reason)
+            return
+
+        daily_streak_reason = _daily_loss_streak_reason(
+            rt.portfolio.state.daily_loss_streak,
+            self._max_daily_loss_streak,
+        )
+        if daily_streak_reason is not None:
+            logger.info("%s: entry skipped - %s", label, daily_streak_reason)
             return
 
         # S&P 500 선물 방향 필터

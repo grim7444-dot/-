@@ -2522,6 +2522,88 @@ def test_record_symbol_result_persists_across_a_restart(tmp_path):
     assert second.state.symbol_loss_streak.get("005930") == 2
 
 
+# ---------------------------------------------------------------------------
+# 27. account-wide same-day consecutive-loss circuit breaker (2026-09-28,
+#    user request: "더 치밀한 단타를 위해 필요한 걸 찾아봐줘") -- unlike #26,
+#    this trips even when the losses are spread across different symbols.
+# ---------------------------------------------------------------------------
+
+
+def test_daily_loss_streak_reason_blocks_once_the_streak_reaches_the_limit():
+    from main import _daily_loss_streak_reason
+
+    reason = _daily_loss_streak_reason(streak=5, max_losses=5)
+    assert reason is not None
+    assert "연속 손절" in reason
+
+
+def test_daily_loss_streak_reason_allows_entries_below_the_limit():
+    from main import _daily_loss_streak_reason
+
+    assert _daily_loss_streak_reason(streak=4, max_losses=5) is None
+
+
+def test_daily_loss_streak_reason_disabled_at_zero_never_blocks():
+    from main import _daily_loss_streak_reason
+
+    assert _daily_loss_streak_reason(streak=99, max_losses=0) is None
+
+
+def test_record_daily_result_increments_on_a_loss(tmp_path):
+    portfolio = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    assert portfolio.record_daily_result(is_profit=False) == 1
+    assert portfolio.record_daily_result(is_profit=False) == 2
+    assert portfolio.state.daily_loss_streak == 2
+
+
+def test_record_daily_result_resets_on_a_profit(tmp_path):
+    portfolio = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    portfolio.record_daily_result(is_profit=False)
+    portfolio.record_daily_result(is_profit=False)
+    assert portfolio.record_daily_result(is_profit=True) == 0
+    assert portfolio.state.daily_loss_streak == 0
+
+
+def test_record_daily_result_accumulates_across_different_symbols(tmp_path):
+    """The whole point: unlike symbol_loss_streak, this counts losses
+    regardless of which symbol they came from."""
+    portfolio = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    portfolio.record_symbol_result("005930", is_profit=False)
+    portfolio.record_daily_result(is_profit=False)
+    portfolio.record_symbol_result("000660", is_profit=False)
+    portfolio.record_daily_result(is_profit=False)
+    portfolio.record_symbol_result("035420", is_profit=False)
+    portfolio.record_daily_result(is_profit=False)
+    # No single symbol repeated, so symbol_loss_streak never exceeds 1 --
+    # but the account-wide streak has climbed to 3.
+    assert max(portfolio.state.symbol_loss_streak.values()) == 1
+    assert portfolio.state.daily_loss_streak == 3
+
+
+def test_record_daily_result_persists_across_a_restart(tmp_path):
+    first = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    first.record_daily_result(is_profit=False)
+    first.record_daily_result(is_profit=False)
+
+    second = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    assert second.state.daily_loss_streak == 2
+
+
+def test_daily_loss_streak_resets_at_day_rollover(tmp_path, monkeypatch):
+    import portfolio as portfolio_module
+
+    portfolio = Portfolio(**_paths(tmp_path), mode_label="LIVE")
+    portfolio.mark_equity(10_000_000.0)
+    portfolio.record_daily_result(is_profit=False)
+    portfolio.record_daily_result(is_profit=False)
+    assert portfolio.state.daily_loss_streak == 2
+
+    tomorrow = datetime.now(KST) + timedelta(days=1)
+    monkeypatch.setattr(portfolio_module, "utcnow", lambda: tomorrow)
+    portfolio.mark_equity(10_050_000.0)
+    assert portfolio.state.daily_loss_streak == 0
+
+
 def test_symbol_loss_streak_resets_on_a_new_day(tmp_path):
     """Tied to the same day-rollover mark_equity() already uses for
     day_start_equity -- a restart mid-streak must not lose it, but a

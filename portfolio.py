@@ -243,6 +243,14 @@ class BotState:
     #: entry; cleared for every code at the same day-rollover as
     #: day_start_equity/day_start_date (see mark_equity()).
     symbol_loss_streak: dict[str, int] = field(default_factory=dict)
+    #: Consecutive losing exits today, account-wide across every symbol
+    #: (2026-09-28, user request) -- unlike symbol_loss_streak, a run of
+    #: losses spread across several different symbols on a day the whole
+    #: setup just isn't working still trips this, even though it never
+    #: repeats the same symbol enough to trip that one. Any profit exit
+    #: anywhere resets it to 0; reset for the day at the same rollover as
+    #: symbol_loss_streak.
+    daily_loss_streak: int = 0
 
     @property
     def stopped(self) -> bool:
@@ -592,6 +600,19 @@ class Portfolio:
         self.save()
         return streak
 
+    def record_daily_result(self, is_profit: bool) -> int:
+        """Update today's account-wide consecutive-loss streak (every
+        symbol combined); returns the new count. Mirrors
+        record_symbol_result but is not keyed by code -- see
+        main._daily_loss_streak_reason for what reads this.
+        """
+        if is_profit:
+            self.state.daily_loss_streak = 0
+        else:
+            self.state.daily_loss_streak += 1
+        self.save()
+        return self.state.daily_loss_streak
+
     # -- equity / status ---------------------------------------------------
 
     def mark_equity(self, equity: float) -> None:
@@ -627,6 +648,7 @@ class Portfolio:
             self.state.day_start_date = today
             self.state.day_start_equity = equity
             self.state.symbol_loss_streak = {}
+            self.state.daily_loss_streak = 0
         self.state.last_run_at = _iso(utcnow())
         self.save()
 

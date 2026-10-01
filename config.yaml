@@ -78,8 +78,10 @@ risk:
   # 여기까지 좁힌다 -- risk_pct(계좌 대비 리스크 금액)는 그대로 유지되고,
   # 손절폭이 좁아진 만큼 수량이 늘어나서 채워진다(Rule 4는 그대로 유지).
   # 조용한 종목의 손절은 전혀 안 바뀐다 -- 원래도 이 폭보다 좁았으니까.
-  # 2%로 설정 (여기 없으면 코드 기본값은 0=비활성, 기존처럼 ATR 그대로).
-  max_stop_pct: 0.02
+  # 2% -> 3% (2026-10-01, 사용자 요청: 너무 자주/타이트하게 걸린다는 피드백.
+  # manual_exits 도입 이후 이게 유일하게 남는 자동 매도 경로라 조금 더
+  # 여유를 줬다). 여기 없으면 코드 기본값은 0=비활성, 기존처럼 ATR 그대로.
+  max_stop_pct: 0.03
   # Never let a single position exceed this share of equity in notional terms.
   max_position_notional_pct: 0.90
   # 당일청산(force_exit_at) 20분 전부터: 고점 대비 1.5% 눌려서 더 못 오르고

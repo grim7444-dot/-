@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+logs/
+data/cache/
+state.json
+trades.csv
+daily_pnl.csv
+.pytest_cache/
+.venv/
+result.txt

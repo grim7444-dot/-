@@ -304,10 +304,10 @@ def test_zero_or_negative_limit_disables_the_kill_switch_entirely(limit_pct):
 
 
 def test_kill_switch_stops_cancels_and_flattens(portfolio, recording_broker, config):
-    # The live config disables the kill switch (max_drawdown_pct: 0, 2026-09-02
-    # user request) -- this test exercises the mechanism itself, which must
-    # still work correctly whenever it *is* enabled, so it sets its own
-    # threshold rather than depend on the live default.
+    # The live config's own threshold has changed more than once (disabled
+    # 2026-09-02, restored at 0.15 on 2026-10-13) -- this test exercises the
+    # mechanism itself, which must work correctly at any threshold, so it
+    # sets its own rather than depend on whatever the live default is today.
     config = {**config, "risk": {**config["risk"], "max_drawdown_pct": 0.10}}
     manager = RiskManager(config, portfolio)
     portfolio.mark_equity(EQUITY)

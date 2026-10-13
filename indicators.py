@@ -203,7 +203,11 @@ def bar_strength(df: pd.DataFrame) -> pd.Series:
     """
     validate_ohlcv(df)
     rng = df["high"] - df["low"]
-    strength = (df["close"] - df["low"]) / rng.replace(0, pd.NA)
+    # float("nan"), not pd.NA: replace(0, pd.NA) upcasts this to an object
+    # dtype, and fillna() on that emits a FutureWarning about an implicit
+    # downcast back to float64 -- using NaN from the start never leaves
+    # float64 at all, so there is nothing to downcast.
+    strength = (df["close"] - df["low"]) / rng.replace(0, float("nan"))
     return strength.fillna(0.5)
 
 

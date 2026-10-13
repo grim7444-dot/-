@@ -886,6 +886,20 @@ def _daily_loss_streak_reason(streak: int, max_losses: int) -> str | None:
     return None
 
 
+def _exit_should_defer_to_manual(reason: str, manual_exits: bool) -> bool:
+    """True when risk.manual_exits should hold this strategy EXIT back as a
+    notify-only decision (see TradingEngine._defer_exit) instead of letting
+    it sell.
+
+    2026-09-21 scope, briefly widened 2026-09-28 to also cover the "손절"
+    half, narrowed back here 2026-10-13 (user request: "손절은 3%고 익절은
+    내가 할 수 있게 해줘"): every stop-loss stays automatic -- both this
+    text match and the engine's own independent ATR-derived hard stop --
+    only a take-profit-style reason is ever deferred.
+    """
+    return manual_exits and "손절" not in reason
+
+
 # --------------------------------------------------------------------------
 # Trading engine
 # --------------------------------------------------------------------------
@@ -1882,7 +1896,7 @@ class TradingEngine:
                 live_breach = self._live_protective_breach(code, position, signal.meta)
                 if live_breach is not None:
                     reason, live_price, urgent = live_breach
-                    if self._manual_exits():
+                    if self._manual_exits() and not urgent:
                         self._defer_exit(code, position, live_price, reason, label)
                         return
                     logger.warning("%s: %s", label, reason)
@@ -1900,17 +1914,15 @@ class TradingEngine:
         if signal.action is Action.EXIT:
             # The strategy's own EXIT covers both its stop_pct stop and its
             # lock_pct/peak_trail_pct take-profit under one Action -- only the
-            # stop needs the urgent (wider) buffer for the automatic path, so
-            # it's the one told apart by its own reason text (see the
-            # f"{stop_pct:.0%} 손절 ..." format both ORB and PullbackBounce
-            # use). This stop_pct is the strategy's own soft, tighter tier --
-            # not the engine's independent ATR-derived hard stop below at
-            # position.effective_stop() -- so risk.manual_exits defers it
-            # exactly like the take-profit half now (2026-09-28): the engine
-            # hard stop is the only automatic stop left once manual_exits is
-            # on.
+            # stop needs the urgent (wider) buffer, so it's the one told apart
+            # by its own reason text (see the f"{stop_pct:.0%} 손절 ..."
+            # format both ORB and PullbackBounce use, and
+            # _exit_should_defer_to_manual's docstring for what that also
+            # decides about risk.manual_exits).
             is_stop = "손절" in signal.reason
-            if position is not None and self._manual_exits():
+            if position is not None and _exit_should_defer_to_manual(
+                signal.reason, self._manual_exits()
+            ):
                 self._defer_exit(code, position, price, signal.reason, label)
                 return
             self._submit_exit(
@@ -1969,17 +1981,18 @@ class TradingEngine:
         self, code: str, position: Position, price: float, reason: str, label: str,
     ) -> None:
         """risk.manual_exits is on -- notify instead of selling, and leave
-        the position exactly as it is. Covers every stop-loss and
-        take-profit decision this engine would otherwise make on its own
-        (2026-09-28, user request: many small tiered stop-loss cuts in a
-        row felt worse than deciding by hand -- "종목만 고르고 손절익절을
-        내가 해야 되겠어"). Two exits are deliberately never routed through
-        here, because they aren't a stop/profit judgment call to defer:
-        the engine's own ATR-derived hard STOP HIT (capped by
-        risk.max_stop_pct) stays automatic as the last-resort safety net
-        for a real panic/gap move the user isn't watching for, and TIME
-        EXIT (day-trade flatten / planned overnight exit) is a mandatory
-        schedule rule, not a price judgment.
+        the position exactly as it is. Covers take-profit-style decisions
+        only (2026-09-21, user request: "손절과 익절은 내가 할테니까 종목만
+        선정하게 하는건 어떨까"). Briefly widened 2026-09-28 to also cover
+        the strategy's own stop_pct, then narrowed back here on 2026-10-13
+        (user request: "손절은 3%고 익절은 내가 할 수 있게 해줘") -- every
+        stop-loss path is automatic again: the strategy's own tiered
+        stop_pct (its Action.EXIT reason contains "손절"), its live-quote
+        equivalent in _live_protective_breach (protective_kind == "stop"),
+        and the engine's own ATR-derived hard STOP HIT (capped by
+        risk.max_stop_pct, currently 3%) as the deepest backstop. TIME EXIT
+        (day-trade flatten / planned overnight exit) was never gated either
+        way -- it's a mandatory schedule rule, not a price judgment.
 
         Rate-limited to risk.manual_exits_notify_minutes (default 10) per
         position, tracked on Position.last_manual_exit_notice -- without it
